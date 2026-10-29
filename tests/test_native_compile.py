@@ -205,7 +205,7 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
     write_report(front, case.ir.value['design']['name'])
     clocks = {clock['id']: 1.0 for clock in case.ir.value['clocks']}
     timing = native_root / 'timing'
-    write_timing(timing, case.ir.value['design']['name'], clocks)
+    write_timing(timing, case.ir.value['design']['name'], clocks, source_ir)
     # Generate a fully bound input request, then place it only during preflight.
     input_configuration = input_request(front, timing, native_root / 'request-staging', native_root / 'platform.normalized.json', clocks)
     state_fields = {

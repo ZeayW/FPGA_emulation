@@ -143,7 +143,7 @@ Facts Audit(SqliteDatabase& db,const std::optional<std::array<double,3>>& normal
     else {
       for(unsigned first:{6,10}) {
         const auto& expected=first==6?endpoints.first:endpoints.second;
-        Check(expected.has_value() && Text(paths,first)==expected->object && Text(paths,first+2)==expected->port && paths.TypedInteger(first+3)==expected->bit,"source endpoint identity disagrees");
+        Check(expected.has_value() && Text(paths,first)==expected->object && Text(paths,first+2)==expected->port && paths.TypedInteger(first+3)==expected->bit,"source endpoint identity disagrees for path "+paths.TypedText(1));
         Check(paths.IsNull(first+1)==!expected->instance,"source endpoint instance presence disagrees");
         if(expected->instance)Check(Text(paths,first+1)==*expected->instance && !paths.IsNull(first==6?14:15),"endpoint instance is invalid");
       }

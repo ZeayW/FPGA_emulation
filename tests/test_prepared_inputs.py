@@ -37,7 +37,7 @@ def boundaries(tmp_path):
     board = read_json(DEFAULT_PLATFORM_PATH)
     write_json(front / "platform.normalized.json", board)
     write_report(front, "counter")
-    write_timing(timing, "counter", {"clk": 10.0})
+    write_timing(timing, "counter", {"clk": 10.0}, front / "design.emuir.sqlite")
     write_json(timing / "experiment-timing-report.json", {"status": "pass", "clocks": {"clk": 10.0}})
     return front, timing
 
@@ -125,7 +125,9 @@ def test_native_published_phase2_checks_clocks_counts_and_source_seals(tmp_path,
     root = tmp_path / "checked"
     adopt(front, timing, root)
     checked = read_json(root / "timing/prepared-timing-summary.json")["validation"]
-    assert checked["publication_validation"] == "native-typed-version-clock-count-and-content-seals-v1"
+    assert checked["publication_validation"] == "native-typed-source-endpoint-net-clock-count-and-content-seals-v2"
+    assert checked["path_source_validation"]["status"] == "pass"
+    assert checked["path_source_validation"]["paths"] == 1
     with pytest.raises(ValidationError, match="clock constraints mismatch"):
         adopt(front, timing, tmp_path / "wrong-clock", clocks={"clk": 20.0})
     with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("graph replay")):
@@ -137,6 +139,38 @@ def test_native_published_phase2_checks_clocks_counts_and_source_seals(tmp_path,
         adopt(front, timing, tmp_path / "invalid")
     assert not (tmp_path / "invalid/frontend/phase1").exists()
     assert not (tmp_path / "invalid/timing").exists()
+
+
+@pytest.mark.parametrize("damage", ["endpoint", "net"])
+def test_prepared_timing_from_another_netlist_is_rejected_before_publication(
+    tmp_path, boundaries, damage
+):
+    import hashlib
+    import sqlite3
+    from emuflow.common.native_tools import native_file_generation
+    front, timing = boundaries
+    selector = read_json(timing / "path-database.json")
+    store = timing / selector["payloads"]["paths"]["path"]
+    with sqlite3.connect(store) as db:
+        if damage == "endpoint":
+            # The selected mapped source has only scalar clk. A freshly sealed
+            # old timing certificate for clk[2] must not be admitted.
+            db.execute("UPDATE paths SET path_id='clk->clk__2#00000000',"
+                "start_object='clk',start_port='clk',start_bit=0,"
+                "end_object='clk__2',end_port='clk',end_bit=2")
+            selector["summary"]["structured_endpoint_paths"] = 1
+        else:
+            db.execute("UPDATE path_nets SET net_id='not-in-selected-source'")
+    selector["payloads"]["paths"]["sha256"] = hashlib.sha256(store.read_bytes()).hexdigest()
+    write_json(timing / "path-database.json", selector)
+    sources = [front / "design.emuir.sqlite", store, timing / "path-database.json"]
+    generations = [native_file_generation(path) for path in sources]
+    with pytest.raises(ValidationError, match="endpoint identity|unknown EmuIR nets"):
+        adopt(front, timing, tmp_path / "rejected")
+    assert [native_file_generation(path) for path in sources] == generations
+    assert not (tmp_path / "rejected/frontend/phase1").exists()
+    assert not (tmp_path / "rejected/timing").exists()
+    assert not list((tmp_path / "rejected").glob(".frontend-input-work-*"))
 
 
 @pytest.mark.parametrize("damage", ["content", "schema", "missing", "escape"])

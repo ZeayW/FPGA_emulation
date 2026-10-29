@@ -11,26 +11,44 @@ from emuflow.frontend.inputs import prepare_inputs
 PROFILE = 'xilinx-ultrascaleplus-open-v1'
 
 
-def write_timing(root, design, clocks):
+def write_timing(root, design, clocks, source_ir):
     root.mkdir(parents=True, exist_ok=True)
-    for kind, schema, fmt, create, rows, summary in (
+    with closing(sqlite3.connect(source_ir)) as db:
+        net = db.execute('SELECT id FROM net_records ORDER BY seq LIMIT 1').fetchone()[0]
+    path_schema = (Path(__file__).resolve().parents[1] /
+        'src/python/emuflow/data/schema/sta_paths.sql').read_text()
+    path_rows = []
+    for i, (clock, period) in enumerate(clocks.items()):
+        path_rows.extend([
+            ('INSERT INTO paths VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+             (i, f'p{i}', clock, period, 0.0, 1.0, *([None] * 8))),
+            ('INSERT INTO path_nets VALUES(?,?,?)', (i, 0, net)),
+        ])
+    for kind, schema, fmt, create, rows, summary, records in (
         ('paths', 'emuflow.sta-path-database/v3', 'sqlite-sta-path/v1',
-         'CREATE TABLE paths(ordinal INTEGER,path_id TEXT,clock_domain TEXT,clock_period_ns REAL,slack_ns REAL,start_instance TEXT,end_instance TEXT); CREATE TABLE path_nets(path_ordinal INTEGER,net_ordinal INTEGER,net_id TEXT);',
-         [('INSERT INTO paths VALUES(?,?,?,?,?,?,?)', (i, f'p{i}', clock, period, 0.0, 'a', 'b')) for i, (clock, period) in enumerate(clocks.items())], {'paths': len(clocks)}),
+         path_schema, path_rows,
+         {'paths': len(clocks), 'structured_endpoint_paths': 0, 'unique_path_nets': 1,
+          'qor': {'wns_ns': 0.0, 'tns_ns': 0.0, 'failing_endpoints': 0,
+                  'timed_endpoints': len(clocks)}}, len(clocks)),
         ('weights', 'emuflow.partition-net-weights/v2', 'sqlite-net-weights/v1',
          'CREATE TABLE net_weights(net_id TEXT,criticality REAL,path_count INTEGER,weight REAL);',
-         [('INSERT INTO net_weights VALUES(?,?,?,?)', ('n0', 1.0, 1, 1.0))], {'weighted_nets': 1}),
+         [('INSERT INTO net_weights VALUES(?,?,?,?)', (net, 1.0, 1, 1.0))], {'weighted_nets': 1}, 1),
     ):
         store = root / (kind + '.sqlite')
         with closing(sqlite3.connect(store)) as db, db:
             db.executescript('PRAGMA user_version=1;' + create)
             for sql, values in rows:
                 db.execute(sql, values)
-        write_json(root / ('path-database.json' if kind == 'paths' else 'partition-net-weights.json'), {
+        value = {
             'schema': schema, 'design': design, 'summary': summary,
-            'source': {'engine': 'opensta'}, 'payloads': {kind: {
-                'path': store.name, 'format': fmt, 'records': len(rows),
-                'sha256': hashlib.sha256(store.read_bytes()).hexdigest()}}})
+            'source': {'engine': 'opensta', 'provider': 'opensta-fpga-path-database-v1'},
+            'payloads': {kind: {'path': store.name, 'format': fmt, 'records': records,
+                'sha256': hashlib.sha256(store.read_bytes()).hexdigest()}}}
+        if kind == 'paths':
+            value['normalization'] = {'positive_slack_scale_ns': 1.0,
+                'negative_slack_scale_ns': 1.0, 'max_clock_period_ns': max(clocks.values())}
+        write_json(root / ('path-database.json' if kind == 'paths' else 'partition-net-weights.json'), value)
+
 
 
 def write_report(front, design):

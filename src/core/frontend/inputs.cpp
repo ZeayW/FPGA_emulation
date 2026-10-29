@@ -4,6 +4,7 @@
 #include "frontend/yosys_hierarchy.hpp"
 #include "ir/resource_view.hpp"
 #include "storage/store.hpp"
+#include "timing/sta_paths.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fcntl.h>
@@ -267,7 +268,7 @@ struct Input {
           "prepared payload content seal disagrees");
     return member.string();
   }
-  void Prepared() {
+  void Prepared(const fs::path &workspace) {
     Stop();
     SqliteStore ir(owners.at("emuir"));
     D metadata(Meta(ir.database(), "design_json"));
@@ -378,6 +379,29 @@ struct Input {
     Check(count == weight_descriptor.Integer("records") &&
               count == weight_summary.Integer("weighted_nets"),
           "prepared net-weight publication count mismatch");
+    // Content seals prove that a store has not changed, not that it belongs
+    // to this mapped netlist. Rebind every final endpoint and net before
+    // publishing an adopted boundary or starting partition search.
+    const auto validation_request = workspace / "validate-paths.bin";
+    CheckedRequestWriter writer(validation_request.string(), sources);
+    writer.Put<std::uint64_t>(0x31505453464d5545ULL);
+    writer.Put<std::uint32_t>(1);
+    writer.Generation(owners.at("emuir").generation());
+    writer.Generation(owners.at("path-store").generation());
+    D path_source(paths.Token("source"));
+    writer.Text(D::Encode({{"design", Text(design)},
+                           {"provider", path_source.Token("provider")},
+                           {"normalization", paths.Token("normalization")},
+                           {"summary", paths.Token("summary")}}));
+    writer.Finish();
+    const auto audit_path = workspace / "path-source-validation.json";
+    ValidateStaPaths(
+        {owners.at("emuir"), owners.at("path-store"),
+         ArtifactRef::Bind(validation_request.string(), "sta-path-request-v1")},
+        audit_path.string());
+    const auto path_validation = D::Read(
+        ArtifactRef::Bind(audit_path.string(), "frontend-input-report-v1"));
+    Stop();
     O derived{
         {"status", Text("pass")},
         {"clocks", periods},
@@ -390,8 +414,9 @@ struct Input {
                                    : "null"
                              : "null"},
               {"paths", std::to_string(path_count)}})},
-        {"publication_validation",
-         Text("native-typed-version-clock-count-and-content-seals-v1")}};
+        {"publication_validation", Text("native-typed-source-endpoint-net-"
+                                        "clock-count-and-content-seals-v2")},
+        {"path_source_validation", path_validation}};
     timing_report = D::Encode(derived);
     if (owners.count("timing-report")) {
       timing_report = D::Read(owners.at("timing-report"));
@@ -474,7 +499,7 @@ StageResult RunFrontendInputs(const ArtifactRef &request,
         std::unique_ptr<Workspace> staged_timing;
         DirectoryReferences references;
         if (input.mode == "prepared") {
-          input.Prepared();
+          input.Prepared(work.path);
           staged_timing =
               std::make_unique<Workspace>(root, ".prepared-timing-generation-");
           fs::create_symlink(input.owners.at("emuir").path(),
