@@ -108,7 +108,7 @@ def test_transformations_are_observations_while_native_physical_failures_reject(
         assert 'NATIVE_ROUTE'not in result.stdout
 
 
-@pytest.mark.parametrize('options',['Explore','-critical_cell_opt -slr_crossing_opt -tns_cleanup'])
+@pytest.mark.parametrize('options',['Explore','-critical_cell_opt','-slr_crossing_opt -tns_cleanup'])
 def test_native_directive_or_explicit_postroute_options_and_requested_route(tmp_path,options):
     result,_=run_optimizer(tmp_path,extra=('0',options,'Explore'))
     assert result.returncode==0,result.stderr
@@ -117,14 +117,15 @@ def test_native_directive_or_explicit_postroute_options_and_requested_route(tmp_
     assert 'NATIVE_ROUTE -directive Explore'in result.stdout
 
 
-@pytest.mark.parametrize('extra',[
-    ('0','Explore','Explore','measured_decode_net'),
-    ('0','-force_replication_on_nets measured_decode_net'),
+@pytest.mark.parametrize('extra,message',[
+    (('0','Explore','Explore','measured_decode_net'),'forced net replication is unavailable post-route'),
+    (('0','-force_replication_on_nets measured_decode_net'),'forced net replication is unavailable post-route'),
+    (('0','-critical_cell_opt -slr_crossing_opt -tns_cleanup'),'TNS cleanup requires a separate'),
 ])
-def test_unsupported_postroute_force_request_rejected_before_checkpoint_load(tmp_path,extra):
+def test_unsupported_postroute_request_rejected_before_checkpoint_load(tmp_path,extra,message):
     result,output=run_optimizer(tmp_path,extra=extra)
     assert result.returncode==2
-    assert 'forced net replication is unavailable post-route'in result.stderr
+    assert message in result.stderr
     assert 'NATIVE_OPEN'not in result.stdout
     assert 'NATIVE_PHYS_OPT'not in result.stdout
     assert not output.exists()

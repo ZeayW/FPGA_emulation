@@ -26,6 +26,13 @@ if {($argc >= 6 && [llength [lindex $argv 5]]) ||
     error "forced net replication is unavailable post-route; use post-place replication or post-route -critical_cell_opt/-slr_crossing_opt"
 }
 
+# In 2024.2, TNS cleanup accepts the dedicated SLR pass only. Combining it
+# with critical-cell optimization produces Vivado_Tcl 4-1061.
+if {[lsearch -exact $phys_opt_options -tns_cleanup] >= 0 &&
+    [lsearch -exact $phys_opt_options -critical_cell_opt] >= 0} {
+    error "post-route TNS cleanup requires a separate -slr_crossing_opt pass; run -critical_cell_opt separately"
+}
+
 if {![file isfile $input_dcp]} {
     error "input checkpoint does not exist: $input_dcp"
 }
