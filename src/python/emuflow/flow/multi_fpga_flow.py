@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from emuflow.timing.sta_projection import project_sta_path_database
-from emuflow.platform.board_link_timing import directed_route_link_delays, validate_board_link_timing
+from emuflow.platform.board_link_timing import validate_board_link_timing
 from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
 from emuflow.transport.chimew.chimew_pipeline import read_chimew_phase6_pipeline, run_chimew_phase6_pipeline
 from emuflow.validation.cut_segment_qualification import build_cut_segment_qualification
@@ -1348,122 +1348,26 @@ def _compile_preflight(ctx: _CompileContext):
             criticality_exponent=ctx.timing_criticality_exponent)
         ctx.native_phase2_configuration_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase2_configuration))
 
-
-def _compile_partition_policy(ctx: _CompileContext):
-    ctx.path_database_payload = (
-        sta_path_database_payload_path(ctx.path_database_path)
-        if ctx.internal_timing_database
-        else None
-    )
-    ctx.net_weights_payload = (
-        partition_net_weights_payload_path(ctx.net_weights_path)
-        if ctx.net_weights_path.is_file()
-        else None
-    )
-
-    ctx.effective_route_constraints = ctx.route_constraints
-    ctx.link_timing_report = None
-    ctx.copied_link_timing_path = None
-    ctx.effective_route_constraints_path = None
-    if ctx.board_link_timing_db is not None:
-        platform = Platform.load(ctx.platform_path)
-        database = ctx.checked_link_timing
-        validation = ctx.checked_link_timing_validation
-        link_delays, projection = directed_route_link_delays(
-            database, platform
-        )
-        ctx.timing_root.mkdir(parents=True, exist_ok=True)
-        ctx.copied_link_timing_path = ctx.timing_root / "board-link-timing.json"
-        write_json(ctx.copied_link_timing_path, database)
-        raw_constraints = (
-            read_json(ctx.route_constraints.resolve())
-            if ctx.route_constraints is not None
-            else {"schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA}
-        )
-        if not isinstance(raw_constraints, dict):
-            raise ValidationError("route constraints must be an object")
-        raw_constraints = dict(raw_constraints)
-        raw_constraints["directed_link_delay_ns"] = link_delays
-        ctx.effective_route_constraints_path = (
-            ctx.timing_root / "board-link-route-constraints.json"
-        )
-        write_json(ctx.effective_route_constraints_path, raw_constraints)
-        ctx.effective_route_constraints = ctx.effective_route_constraints_path
-        ctx.link_timing_report = {
-            "status": "pass",
-            "validation": validation,
-            "routing_projection": projection,
-            "optimization_enabled": ctx.timing_driven,
-            "applied_to": (
-                [
-                    "phase4-system-routing",
-                    "phase5-tdm-ratio-and-schedule-timing",
-                    "phase7c-system-timing-when-physical",
-                ]
-                if ctx.timing_driven
-                else [
-                    "phase4-post-route-timing-evaluation",
-                    "phase5-baseline-schedule-timing-evaluation",
-                    "phase7c-system-timing-when-physical",
-                ]
-            ),
-        }
-        write_json(
-            ctx.timing_root / "board-link-timing-report.json",
-            ctx.link_timing_report,
-        )
-
-    if ctx.timing_report is not None:
-        provider_consumes_weights = ctx.timing_driven
-        hop_refiner_consumes_weights = False
-        if ctx.effective_route_constraints is not None:
-            raw_route_constraints = read_json(
-                ctx.effective_route_constraints.resolve()
-            )
-            if not isinstance(raw_route_constraints, dict):
-                raise ValidationError("route constraints must be an object")
-            hop_refiner_consumes_weights = ctx.timing_driven and (
-                raw_route_constraints.get("max_route_hops") is not None
-            )
-        consumers = []
-        if provider_consumes_weights:
-            consumers.append("phase3-provider")
-        if hop_refiner_consumes_weights:
-            consumers.append("phase3-hop-refinement")
-        ctx.timing_report.update(
-            {
-                "partition_weights_applied": bool(consumers),
-                "partition_provider_weights_applied": (
-                    provider_consumes_weights
-                ),
-                "hop_refinement_weights_applied": (
-                    hop_refiner_consumes_weights
-                ),
-                "partition_weight_consumers": consumers,
-            }
-        )
-
-    from emuflow.partition.phase3_native import write_request
+    from emuflow.partition.phase3_native import prepare_configuration_request as prepare_partition_configuration
     from emuflow.common.native_tools import native_file_generation
-    ctx.phase3_root = ctx.output_dir / "partition"
-    configuration_root = ctx.output_dir / ".native-phase3-request"
-    ctx.native_phase3_request = write_request(configuration_root, ctx.ir_path, ctx.platform_path,
+    ctx.native_phase3_configuration = prepare_partition_configuration(
+        ctx.output_dir / ".native-phase3-configuration", ctx.platform_path,
         constraints_path=ctx.partition_constraints, seed=ctx.seed,
         min_used_fpgas=ctx.min_used_fpgas, balance_tolerance=ctx.balance_tolerance,
         provider=ctx.partition_provider, openroad=ctx.openroad,
         tritonpart_solution=ctx.tritonpart_solution,
-        net_weights_path=ctx.net_weights_path if ctx.timing_driven else None,
         tritonpart_timeout_seconds=ctx.partition_timeout_seconds,
         tritonpart_seed_attempts=ctx.partition_seed_attempts,
         tritonpart_num_initial_solutions=ctx.partition_num_initial_solutions,
         tritonpart_num_best_initial_solutions=ctx.partition_num_best_initial_solutions,
         tritonpart_repair_min_used_fpgas=ctx.partition_repair_min_used_fpgas,
-        route_constraints_path=ctx.effective_route_constraints,
+        route_constraints_path=ctx.route_constraints,
         max_cross_fpga_dependency_depth=ctx.max_cross_fpga_dependency_depth,
         static_exact_candidate_policy=ctx.static_exact_candidate_policy,
-        timing_database_path=ctx.path_database_path if ctx.partition_provider == "patron" else None,
-        patron_max_moves=ctx.patron_max_moves)
-    ctx.native_phase3_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase3_request))
+        patron_max_moves=ctx.patron_max_moves, board_link_timing_db=ctx.board_link_timing_db,
+        timing_driven=ctx.timing_driven)
+    ctx.native_phase3_configuration_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase3_configuration))
+
 
 def _compile_route_policy(ctx: _CompileContext):
     ctx.projected_timing_paths = ctx.timing_paths

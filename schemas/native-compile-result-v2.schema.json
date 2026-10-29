@@ -22,7 +22,7 @@
       "const": "native-orchestration-v1"
     },
     "phase_implementation": {
-      "const": "native-frontend-timing-configuration-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v9"
+      "const": "native-frontend-timing-partition-configuration-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v10"
     },
     "native_data_plane_complete": {
       "const": false
@@ -97,6 +97,7 @@
               "native-baseline-phase6-v1",
               "native-phase2-v1",
               "native-phase2-configuration-v1",
+                "native-phase3-configuration-v1",
               "native-timing-policy-boundary-v1",
               "native-no-physical-stage-v1",
               "native-nonphysical-phase7c-v1",

@@ -13,7 +13,7 @@ from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
 from emuflow.partition.partition_ir import load_partition_ir
 from tests.native_partition_core_fixture import build_native_candidate_ids
-from emuflow.partition.phase3_policy import write_candidate_policy
+from tests.phase3_policy_reference import write_candidate_policy
 from tests.native_build import emuflow_native
 from tests import test_combinational_cut as reference
 

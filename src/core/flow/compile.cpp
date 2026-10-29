@@ -8,6 +8,7 @@
 #include "storage/sqlite.hpp"
 #include "scheduling/phase5.hpp"
 #include "timing/phase2.hpp"
+#include "partition/phase3.hpp"
 #include "physical/flow/controller.hpp"
 
 #include <chrono>
@@ -119,6 +120,217 @@ class ControlJson {
     Require(String("$.state[1].native_prepared_timing_generation[0]")=="tuple","native prepared timing binding is invalid");
     for(unsigned i=0;i<7;++i)Require(Unsigned("$.state[1].native_prepared_timing_generation[1]["+std::to_string(i)+"]")==fields[i],"prepared timing report generation changed");
     return result;
+  }
+  ArtifactRef Phase3Configuration() {
+    auto result = ArtifactRef::Bind(StatePath("native_phase3_configuration"),
+                                    "phase3-configuration-request-v1");
+    const auto &g = result.generation();
+    const std::string values[] = {std::to_string(g.device),
+                                  std::to_string(g.inode),
+                                  std::to_string(g.bytes),
+                                  std::to_string(g.modified_seconds),
+                                  std::to_string(g.modified_nanoseconds),
+                                  std::to_string(g.changed_seconds),
+                                  std::to_string(g.changed_nanoseconds)};
+    Require(String("$.state[1].native_phase3_configuration_generation[0]") ==
+                "tuple",
+            "native partition configuration binding is invalid");
+    for (unsigned i = 0; i < 7; ++i)
+      Require(String("$.state[1].native_phase3_configuration_generation[1][" +
+                     std::to_string(i) + "]") == values[i],
+              "native partition configuration source generation changed");
+    return result;
+  }
+  std::string
+  PartitionPolicyState(const fs::path &root, const ArtifactRef &policy,
+                       const ArtifactRef &summary,
+                       const std::map<std::string, ArtifactRef> &runtime,
+                       std::vector<ArtifactRef> &bindings) {
+    using D = BoundedJson;
+    using O = std::map<std::string, std::string>;
+    D doc(data_);
+    auto top = doc.Fields();
+    auto envelope = D::Array(doc.Token("state"), 2);
+    Require(envelope.size() == 2 && envelope[0] == "\"map\"",
+            "invalid compile state");
+    auto state = D(envelope[1]).Fields();
+    const auto path = [](const fs::path &p) {
+      return "[\"path\"," + JsonQuote(p.string()) + "]";
+    };
+    const auto pack = [&](const auto &self,
+                          const std::string &value) -> std::string {
+      if (value[0] == '{') {
+        O fields;
+        for (const auto &f : D(value).Fields())
+          fields[f.first] = self(self, f.second);
+        return "[\"map\"," + D::Encode(fields) + "]";
+      }
+      if (value[0] == '[') {
+        std::string list = "[";
+        for (const auto &t : D::Array(value)) {
+          if (list.size() > 1)
+            list += ',';
+          list += self(self, t);
+        }
+        return "[\"list\"," + list + "]]";
+      }
+      return value;
+    };
+    D projection(D::Read(summary));
+    projection.Keys({"schema", "effective_route_constraints",
+                     "link_timing_report", "board_link_timing"});
+    Require(projection.Text("schema") ==
+                "emuflow.phase3-configuration-summary/v1",
+            "partition configuration summary identity disagrees");
+    state["path_database_payload"] =
+        runtime.count("timing") ? path(runtime.at("timing").path()) : "null";
+    if (!runtime.count("timing") &&
+        Boolean("$.state[1].internal_timing_database")) {
+      auto selector = ArtifactRef::Bind(StatePath("path_database_path"),
+                                        "sta-path-selector-v1");
+      D manifest(D::Read(selector));
+      D payload(D(manifest.Token("payloads")).Token("paths"));
+      const auto relative = payload.Text("path");
+      Require(fs::path(relative).filename() == relative,
+              "timing payload escapes selector");
+      auto payload_ref = ArtifactRef::Bind(
+          (fs::path(selector.path()).parent_path() / relative).string(),
+          "timing-path-store-v1");
+      bindings.push_back(selector);
+      bindings.push_back(payload_ref);
+      state["path_database_payload"] = path(payload_ref.path());
+    }
+    state["net_weights_payload"] =
+        runtime.count("weights") ? path(runtime.at("weights").path()) : "null";
+    if (!runtime.count("weights") &&
+        fs::is_regular_file(StatePath("net_weights_path"))) {
+      auto selector = ArtifactRef::Bind(StatePath("net_weights_path"),
+                                        "net-weight-selector-v2");
+      D manifest(D::Read(selector));
+      D payload(D(manifest.Token("payloads")).Token("weights"));
+      const auto relative = payload.Text("path");
+      Require(fs::path(relative).filename() == relative,
+              "weight payload escapes selector");
+      auto payload_ref = ArtifactRef::Bind(
+          (fs::path(selector.path()).parent_path() / relative).string(),
+          "net-weight-store-v1");
+      bindings.push_back(selector);
+      bindings.push_back(payload_ref);
+      state["net_weights_payload"] = path(payload_ref.path());
+    }
+    const bool has_link = projection.Token("link_timing_report") != "null";
+    state["effective_route_constraints"] =
+        has_link ? path(root / "timing/board-link-route-constraints.json")
+                 : state.at("route_constraints");
+    state["effective_route_constraints_path"] =
+        has_link ? state["effective_route_constraints"] : "null";
+    state["copied_link_timing_path"] =
+        has_link ? path(root / "timing/board-link-timing.json") : "null";
+    state["link_timing_report"] =
+        pack(pack, projection.Token("link_timing_report"));
+    if (has_link) {
+      for (const auto &item :
+           std::vector<std::pair<const char *, const char *>>{
+               {"board-link-route-constraints.json",
+                "effective_route_constraints"},
+               {"board-link-timing.json", "board_link_timing"},
+               {"board-link-timing-report.json", "link_timing_report"}}) {
+        const auto target = root / "timing" / item.first;
+        fs::create_directories(target.parent_path());
+        PublishTextArtifact(target.string(), bindings,
+                            [&](std::ostream &stream) {
+                              stream << projection.Token(item.second) << '\n';
+                            });
+        bindings.push_back(ArtifactRef::Bind(target.string(),
+                                             "phase3-configuration-source-v1"));
+      }
+    }
+    if (state.count("timing_report") && state.at("timing_report") != "null") {
+      auto timing = D::Array(state.at("timing_report"), 2);
+      Require(timing.size() == 2, "invalid timing report envelope");
+      const auto kind = DecodeJsonString(timing[0]);
+      O report;
+      if (kind == "map")
+        report = D(timing[1]).Fields();
+      else {
+        Require(kind == "timing-report" || kind == "prepared-timing-report",
+                "unknown timing report owner");
+        D receipt(timing[1]);
+        const auto schema = kind == "timing-report"
+                                ? "phase2-report-v1"
+                                : "prepared-timing-summary-v1";
+        Require(receipt.Text("schema") == schema,
+                "timing report schema disagrees");
+        auto ref = ArtifactRef::Bind(receipt.Text("path"), schema);
+        const auto &g = ref.generation();
+        RequireEquivalentJson(
+            db_, receipt.Token("generation"),
+            JsonRecord(std::vector<JsonRecord>{
+                           g.device, g.inode, g.bytes, g.modified_seconds,
+                           g.modified_nanoseconds, g.changed_seconds,
+                           g.changed_nanoseconds})
+                .Encode(),
+            "timing report generation changed");
+        bindings.push_back(ref);
+        D actual(D::Read(ref, 262144));
+        Require(actual.Text("status") == "pass", "timing report did not pass");
+        if (kind == "timing-report")
+          Require(actual.Text("schema") == "emuflow.phase2-report/v1" &&
+                      actual.Text("stage_implementation_id") ==
+                          "native-phase2-v1",
+                  "native timing report identity disagrees");
+        else
+          Require(actual.Text("schema") ==
+                          "emuflow.prepared-timing-summary/v1" &&
+                      actual.Text("implementation_id") ==
+                          "native-frontend-input-v1",
+                  "prepared timing report identity disagrees");
+        // pack() wraps an object. Keep its map body while adding annotations.
+        auto packed = D::Array(pack(pack, kind == "timing-report"
+                                              ? actual.text()
+                                              : actual.Token("summary")),
+                               2);
+        report = D(packed[1]).Fields();
+      }
+      const bool provider = Boolean("$.state[1].timing_driven");
+      D raw(projection.Token("effective_route_constraints") == "null"
+                ? "{}"
+                : projection.Token("effective_route_constraints"));
+      const bool hop = provider && raw.Has("max_route_hops") &&
+                       raw.Token("max_route_hops") != "null";
+      std::vector<JsonRecord> consumers;
+      if (provider)
+        consumers.emplace_back("phase3-provider");
+      if (hop)
+        consumers.emplace_back("phase3-hop-refinement");
+      report["partition_weights_applied"] = provider || hop ? "true" : "false";
+      report["partition_provider_weights_applied"] =
+          provider ? "true" : "false";
+      report["hop_refinement_weights_applied"] = hop ? "true" : "false";
+      report["partition_weight_consumers"] =
+          "[\"list\"," + JsonRecord(consumers).Encode() + "]";
+      state["timing_report"] = "[\"map\"," + D::Encode(report) + "]";
+    }
+    state["phase3_root"] = path(root / "partition");
+    state["native_phase3_request"] = path(policy.path());
+    const auto &g = policy.generation();
+    std::vector<JsonRecord> values;
+    for (const auto &v :
+         {std::to_string(g.device), std::to_string(g.inode),
+          std::to_string(g.bytes), std::to_string(g.modified_seconds),
+          std::to_string(g.modified_nanoseconds),
+          std::to_string(g.changed_seconds),
+          std::to_string(g.changed_nanoseconds)})
+      values.emplace_back(v);
+    state["native_phase3_generation"] =
+        JsonRecord(std::vector<JsonRecord>{"tuple", values}).Encode();
+    state.erase("native_phase3_configuration");
+    state.erase("native_phase3_configuration_generation");
+    state.erase("checked_link_timing");
+    state.erase("checked_link_timing_validation");
+    top["state"] = "[\"map\"," + D::Encode(state) + "]";
+    top["stage"] = JsonQuote("partition-policy");
+    return D::Encode(top);
   }
   ArtifactRef PartitionRequest() {
     auto result=ArtifactRef::Bind(StatePath("native_phase3_request"),"phase3-stage-request-v1");
@@ -398,6 +610,28 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         fs::remove(previous);previous=next;
         std::cout<<"COMPILE_STAGE_COMPLETE timing-policy "<<step.metrics.wall_seconds<<"s\n"<<std::flush;
         continue;
+      }
+      if(std::string(stage)=="partition-policy") {
+        ControlJson prior(previous.string());Require(prior.String("$.stage")=="timing","invalid native partition configuration predecessor");
+        const auto predecessor=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
+        std::optional<ArtifactRef> settings;
+        std::map<std::string,ArtifactRef> runtime;
+        const auto next=scratch.root/"partition-policy.json",policy_root=output/".native-phase3-request";
+        const auto step=RunStage("partition-policy",[&]{
+          Require(prior.Has("$.state[1].native_phase3_configuration"),"native partition configuration policy is missing; Python fallback is forbidden");settings=prior.Phase3Configuration();Require(fs::path(settings->path())==fs::weakly_canonical(output/".native-phase3-configuration/request.json"),"native partition configuration escapes compiler ownership");
+          Require(fs::path(prior.StatePath("ir_path"))==output/"frontend/phase1/design.emuir.sqlite","native partition IR escapes frontend ownership");runtime.emplace("source",ArtifactRef::Bind(prior.StatePath("ir_path"),"emuir-compact-v2"));
+          const auto payload=[&](const char* state,const char* role,const char* schema,const char* payload_role,const char* payload_schema,const char* member){
+            auto selector=ArtifactRef::Bind(prior.StatePath(state),schema);ControlJson manifest(selector.path());const auto relative=manifest.String(std::string("$.payloads.")+member+".path");Require(fs::path(relative).filename()==relative,"native partition payload escapes selector");runtime.emplace(role,selector);runtime.emplace(payload_role,ArtifactRef::Bind((fs::path(selector.path()).parent_path()/relative).string(),payload_schema));
+          };
+          if(prior.String("$.state[1].partition_provider")=="patron")payload("path_database_path","timing_selector","sta-path-selector-v1","timing","timing-path-store-v1","paths");
+          if(prior.Boolean("$.state[1].timing_driven"))payload("net_weights_path","weight_selector","net-weight-selector-v2","weights","net-weight-store-v1","weights");
+          std::vector<ArtifactRef> refs{predecessor,*settings};for(const auto& item:runtime)refs.push_back(item.second);return refs;
+        },[&](const auto& sources){
+          const auto made=PreparePhase3Policy(*settings,policy_root.string(),cancelled,runtime);if(!made.ok())throw StageError(made.error,made.message);Require(made.stage=="phase3.prepare-policy" && made.outputs.size()==3,"native partition configuration producer identity disagrees");
+          Require(fs::path(made.outputs[0].path())==policy_root/"phase3-request.json" && fs::path(made.outputs[2].path())==policy_root/"configuration-summary.json","native partition configuration output escapes ownership");auto bindings=sources;bindings.insert(bindings.end(),made.outputs.begin(),made.outputs.end());const auto state=prior.PartitionPolicyState(output,made.outputs[0],made.outputs[2],runtime,bindings);PublishTextArtifact(next.string(),bindings,[&](std::ostream& stream){stream<<state<<'\n';});
+        },[&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(next.string(),"native-compile-state-v1")};});
+        result.steps.push_back({stage,step.ok(),"native-phase3-configuration-v1",step.metrics.wall_seconds,step.metrics.user_cpu_seconds,step.metrics.system_cpu_seconds,step.metrics.process_peak_rss_kib});if(!step.ok())throw StageError(step.error,"native compile partition configuration: "+step.message);
+        ControlJson state(next.string());Require(state.String("$.stage")=="partition-policy" && state.String("$.run_id")==run_id && state.String("$.status")=="pass" && state.StateShape() && state.Generation(configuration.generation()),"invalid native partition configuration state");const auto config_root=output/".native-phase3-configuration";Require(!fs::is_symlink(config_root),"native partition configuration directory was replaced");std::error_code error;fs::remove_all(config_root,error);Require(!error,"cannot retire native partition configuration");fs::remove(previous);previous=next;std::cout<<"COMPILE_STAGE_COMPLETE partition-policy "<<step.metrics.wall_seconds<<"s\n"<<std::flush;continue;
       }
       if(std::string(stage)=="finalize") {
         auto prior=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
@@ -757,7 +991,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-frontend-timing-configuration-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v9\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-frontend-timing-partition-configuration-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v10\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

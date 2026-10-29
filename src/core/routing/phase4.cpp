@@ -1,4 +1,5 @@
 #include "routing/phase4.hpp"
+#include "routing/policy.hpp"
 #include "storage/schema/phase4_route_schema.hpp"
 #include "transport/bank_allocation.hpp"
 #include "common/artifact_io.hpp"
@@ -184,13 +185,13 @@ void BuildBoard(Model& model,const Raw& board) {
     Check(!(banks && is_sll),"banked link cannot be SLL");
     I slots=is_sll?1:has_ratio?maximum:frame;
     if(model.exact && !is_sll){const auto usable=frame-1-latency;Check(usable>0,"link cannot arrive before commit");slots=std::min(maximum,usable>=quantum?(usable/quantum)*quantum:minimum==1?I(1):I(0));Check(slots>=minimum,"no discrete ratio arrives before commit");}
-    double base=latency*1000.0/frequency,beta=1000.0/frequency;
+    double base=latency*1000.0/frequency,beta=1000.0/frequency,reference=base;
     if(has_ratio){const auto ratio=Fields(Get(l,"tdm_delay_model"));Check(Text(ratio,"model")=="linear-ratio-v1","unsupported delay model");
-      Check(minimum>=Int(ratio,"min_ratio") && maximum<=Int(ratio,"max_ratio") && quantum==Int(ratio,"ratio_quantum"),"route domain contradicts board delay model");base=Num(ratio,"intercept_ns")+Num(ratio,"ratio_coefficient_ns");beta=Num(ratio,"ratio_coefficient_ns");}
+      Check(minimum>=Int(ratio,"min_ratio") && maximum<=Int(ratio,"max_ratio") && quantum==Int(ratio,"ratio_quantum"),"route domain contradicts board delay model");base=Num(ratio,"intercept_ns")+Num(ratio,"ratio_coefficient_ns");beta=Num(ratio,"ratio_coefficient_ns");reference=Num(ratio,"intercept_ns")+beta*Int(ratio,"min_ratio");}
     for(int d=0;d<(kind=="unidirectional"?1:2);++d){Arc a;a.link=id;a.from=ends[d];a.to=ends[1-d];a.source=nodes.at(a.from);a.sink=nodes.at(a.to);a.link_index=link_index;a.direction=group;
-      a.latency=int(latency);a.lanes=int(lanes*payload);a.capacity=a.lanes*slots;a.banks=banks;a.wires=wires;a.sll=is_sll;a.delay=base;a.beta=beta;
-      if(overrides.count(id)){Check(!has_ratio || std::abs(Number(overrides.at(id))-base)<=1e-9,"delay override contradicts board model");if(!has_ratio)a.delay=Number(overrides.at(id));}
-      if(directed.count(id)){const auto sources=Fields(directed.at(id));if(sources.count(a.from)){const auto targets=Fields(sources.at(a.from));if(targets.count(a.to)){const auto value=Number(targets.at(a.to));Check(!has_ratio || std::abs(value-base)<=1e-9,"directed delay contradicts board model");if(!has_ratio)a.delay=value;}}}
+      a.latency=int(latency);a.lanes=int(lanes*payload);Check(slots<=std::numeric_limits<I>::max()/a.lanes,"link capacity overflows");a.capacity=a.lanes*slots;a.banks=banks;a.wires=wires;a.sll=is_sll;a.delay=base;a.beta=beta;
+      if(overrides.count(id)){Check(!has_ratio || std::abs(Number(overrides.at(id))-reference)<=std::max(1e-9,1e-9*std::max(std::abs(Number(overrides.at(id))),std::abs(reference))),"delay override contradicts board model");if(!has_ratio)a.delay=Number(overrides.at(id));}
+      if(directed.count(id)){const auto sources=Fields(directed.at(id));if(sources.count(a.from)){const auto targets=Fields(sources.at(a.from));if(targets.count(a.to)){const auto value=Number(targets.at(a.to));Check(!has_ratio || std::abs(value-reference)<=std::max(1e-9,1e-9*std::max(std::abs(value),std::abs(reference))),"directed delay contradicts board model");if(!has_ratio)a.delay=value;}}}
       Check(a.delay>=0 && a.beta>=0,"negative link delay");
       const bool share=!banks && (kind=="half_duplex" || contains(shared,id));a.capacity_key=id+(share?":shared":":"+a.from+"->"+a.to);
       Raw capacity{{"key",JsonQuote(a.capacity_key)},{"link",JsonQuote(id)},{"direction",JsonQuote(share?"shared":a.from+"->"+a.to)},{"capacity_bits",std::to_string(a.capacity)}};
@@ -575,6 +576,108 @@ Publication PublishRoutes(Model& m,Routed& routed,SqliteDatabase& staging,
   return {report,header,selector};
 }
 } // namespace
+
+PartitionRoutingPolicy BuildPartitionRoutingPolicy(const ArtifactRef &board,
+                                                   const std::string &raw) {
+  const auto normalized = NormalizeRoutePolicy(ReadSmall(board), raw);
+  Model m;
+  m.exact = true;
+  m.constraints = Fields(normalized);
+  BuildBoard(m, Fields(ReadSmall(board)));
+  std::vector<std::string> domains;
+  for (std::size_t i = 0; i < m.capacities.size(); ++i) {
+    const auto &c = m.capacities[i];
+    const auto arc =
+        std::find_if(m.arcs.begin(), m.arcs.end(),
+                     [&](const auto &a) { return a.domain == int(i); });
+    Check(arc != m.arcs.end(), "capacity domain has no arc");
+    int opposite = -1;
+    if (c.count("opposite_capacity_key")) {
+      const auto key = Text(c, "opposite_capacity_key");
+      for (std::size_t j = 0; j < m.capacities.size(); ++j)
+        if (Text(m.capacities[j], "key") == key)
+          opposite = int(j);
+    }
+    domains.push_back(Encode(
+        {{"key", Get(c, "key")},
+         {"lanes", std::to_string(arc->lanes)},
+         {"sll", arc->sll ? "true" : "false"},
+         {"slope", JsonRecord(arc->beta).Encode()},
+         {"opposite", std::to_string(opposite)},
+         {"bank_count", (c.count("bank_count") ? Get(c, "bank_count") : "0")},
+         {"wires_per_bank",
+          (c.count("wires_per_bank") ? Get(c, "wires_per_bank") : "0")},
+         {"capacity_bits", Get(c, "capacity_bits")}}));
+  }
+  Raw paths, hops;
+  using Best = std::tuple<double, int, std::vector<int>>;
+  using Entry = std::tuple<double, int, std::vector<int>, int>;
+  for (std::size_t source = 0; source < m.nodes.size(); ++source) {
+    std::vector<std::optional<Best>> best(m.nodes.size());
+    best[source] = Best{0., 0, {}};
+    std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> queue;
+    queue.push({0., 0, {}, int(source)});
+    while (!queue.empty()) {
+      const auto [delay, count, identity, node] = queue.top();
+      queue.pop();
+      if (!best[node] || *best[node] != Best{delay, count, identity})
+        continue;
+      for (std::size_t i = 0; i < m.arcs.size(); ++i) {
+        const auto &arc = m.arcs[i];
+        if (arc.source != node)
+          continue;
+        auto next = identity;
+        next.push_back(int(i));
+        const auto value = delay + arc.delay;
+        Check(std::isfinite(value), "shortest board delay overflows");
+        Best candidate{value, count + 1, next};
+        if (!best[arc.sink] || candidate < *best[arc.sink]) {
+          best[arc.sink] = candidate;
+          queue.push({value, count + 1, std::move(next), arc.sink});
+        }
+      }
+    }
+    std::vector<int> distance(m.nodes.size(), -1);
+    distance[source] = 0;
+    std::queue<int> breadth;
+    breadth.push(int(source));
+    while (!breadth.empty()) {
+      const int node = breadth.front();
+      breadth.pop();
+      for (const auto &arc : m.arcs)
+        if (arc.source == node && distance[arc.sink] < 0) {
+          distance[arc.sink] = distance[node] + 1;
+          breadth.push(arc.sink);
+        }
+    }
+    Raw by_sink, by_hops;
+    for (std::size_t sink = 0; sink < m.nodes.size(); ++sink) {
+      if (!best[sink])
+        by_sink[m.nodes[sink]] = "null";
+      else {
+        Array path;
+        for (int index : std::get<2>(*best[sink])) {
+          const auto &arc = m.arcs[index];
+          path.emplace_back(std::vector<JsonRecord>{arc.domain, arc.delay});
+        }
+        by_sink[m.nodes[sink]] = JsonRecord(path).Encode();
+      }
+      by_hops[m.nodes[sink]] =
+          distance[sink] < 0 ? "null" : std::to_string(distance[sink]);
+    }
+    paths[m.nodes[source]] = Encode(by_sink);
+    hops[m.nodes[source]] = Encode(by_hops);
+  }
+  board.RequireUnchanged();
+  std::string records = "[";
+  for (const auto &domain : domains) {
+    if (records.size() > 1)
+      records += ',';
+    records += domain;
+  }
+  records += ']';
+  return {normalized, records, Encode(paths), Encode(hops)};
+}
 
 StageResult RunPhase4(const std::vector<ArtifactRef>& inputs,const std::string& directory,
                       const volatile std::sig_atomic_t* cancelled) {

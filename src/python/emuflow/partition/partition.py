@@ -1,5 +1,6 @@
 """Current partition policy constants and indexed-validation diagnostics."""
 from typing import Any, Dict, Iterable, Mapping, Tuple
+from emuflow.partition.structural_policy import STRUCTURAL_POLICY
 
 
 
@@ -9,21 +10,13 @@ PARTITION_CONSTRAINTS_SCHEMA = "emuflow.partition-constraints/v1"
 # Balance overall logic while dedicated resources remain capacity-constrained.
 DEFAULT_BALANCE_DIMENSIONS: Tuple[str, ...] = ("cells", "lut", "ff")
 TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
-LEGAL_CUT_CLASSES = {*TRANSPORTED_CUT_CLASSES, "primary_input"}
-REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
+LEGAL_CUT_CLASSES = set(STRUCTURAL_POLICY["legal_cut_classes"])
+REPLICATED_NET_CLASSES = set(STRUCTURAL_POLICY["replicated_net_classes"])
 CUT_MODE_SEQUENTIAL_ONLY = "sequential-only"
 CUT_MODE_STATIC_EXACT = "static-exact-combinational"
 DEFAULT_PARTITION_CUT_MODE = CUT_MODE_STATIC_EXACT
 DEFAULT_PATRON_ALGORITHM_VERSION = 14
-HARD_MACRO_RESOURCES = {
-    "bram",
-    "dsp",
-    "carry",
-    "bram18k",
-    "uram288",
-    "dsp48",
-    "carry8",
-}
+HARD_MACRO_RESOURCES = set(STRUCTURAL_POLICY["hard_macro_resources"])
 FPGA_SELECTION_POLICIES = {"all", "explicit", "minimum-capacity"}
 
 

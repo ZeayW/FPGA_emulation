@@ -58,6 +58,7 @@ constexpr const char* kUsage =
     "  phase7c run FLOW_ROOT OPENSTA [LAUNCHER_REFERENCE [SPLIT_ROOT PHYSICAL_ROOT RUNTIME_ROOT]]\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  phase2 prepare-policy REQUEST POLICY\n"
+    "  phase3 prepare-policy REQUEST DIRECTORY\n"
     "  phase2 run EMUIR POLICY OUTPUT_DIR\n"
     "  physical build-handoff REQUEST OUTPUT_DIR\n"
     "  physical build-openparf-source REQUEST OUTPUT\n"
@@ -322,6 +323,9 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(argc==7 && std::string(argv[1])=="phase6" && std::string(argv[2])=="split") {
     return Finish(emuflow::core::BuildSplitOverlay({emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),emuflow::core::ArtifactRef::Bind(argv[4],"assignment-index-v4"),emuflow::core::ArtifactRef::Bind(argv[5],"tdm-schedule-store-v4")},argv[6]),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase3" && std::string(argv[2])=="prepare-policy") {
+    ToolSignals signals;return Finish(emuflow::core::PreparePhase3Policy(emuflow::core::ArtifactRef::Bind(argv[3],"phase3-configuration-request-v1"),argv[4],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="phase3" && std::string(argv[2])=="run") {
     ToolSignals signals;return Finish(emuflow::core::RunPhase3(emuflow::core::ArtifactRef::Bind(argv[3],"phase3-stage-request-v1"),argv[4],&tool_cancelled),report);

@@ -185,7 +185,7 @@ def finalize_selected_semantics(ir, platform, records, assignment, instance_assi
         *, max_dependency_depth, candidate_selection_policy):
     """Call the existing source-bound owner; project its current typed outputs."""
     from tests.native_partition_core_fixture import _ownership_sources
-    from emuflow.partition.phase3_policy import write_candidate_policy
+    from tests.phase3_policy_reference import write_candidate_policy
     from tests.native_semantic_facts import read_nodes, read_captures, semantic_arrays
     from tests.native_assignment_publication_fixture import NativeAssignmentOwnership
     from emuflow.partition.combinational_cut import _canonical_sha256

@@ -67,11 +67,13 @@ partition/partition_decision.cpp
 partition/partition_config.cpp
 partition/partition_hops.cpp
 partition/phase3.cpp
+partition/phase3_policy.cpp
 transport/split_overlay.cpp
 transport/transport.cpp
 transport/runtime_calendar.cpp
 physical/placement_lowering.cpp
 routing/phase4.cpp
+routing/policy.cpp
 timing/phase2.cpp
 timing/phase2_policy.cpp
 physical/physical_coverage.cpp

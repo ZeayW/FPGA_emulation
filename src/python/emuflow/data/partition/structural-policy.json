@@ -1,0 +1,89 @@
+{
+  "candidate_selection_policy": "assignment-derived-acyclic-v2",
+  "cut_mode": "static-exact-combinational",
+  "generic_ff_inputs": [
+    "D"
+  ],
+  "generic_ff_prefix": "$_DFF_",
+  "hard_combinational_resources": [
+    "carry",
+    "carry8",
+    "dsp",
+    "dsp48"
+  ],
+  "hard_macro_resources": [
+    "bram",
+    "bram18k",
+    "carry",
+    "carry8",
+    "dsp",
+    "dsp48",
+    "uram288"
+  ],
+  "legal_cut_classes": [
+    "primary_input",
+    "register_input",
+    "register_output"
+  ],
+  "replicated_net_classes": [
+    "clock",
+    "primary_input",
+    "reset"
+  ],
+  "resource_fields": [
+    "lut",
+    "ff",
+    "bram",
+    "dsp",
+    "carry",
+    "bram18k",
+    "uram288",
+    "dsp48",
+    "carry8",
+    "io",
+    "clock",
+    "other"
+  ],
+  "schema": "emuflow.partition-structural-policy/v1",
+  "sequential_inputs": {
+    "FDCE": [
+      "CE",
+      "D"
+    ],
+    "FDPE": [
+      "CE",
+      "D"
+    ],
+    "FDRE": [
+      "CE",
+      "D",
+      "R"
+    ],
+    "FDSE": [
+      "CE",
+      "D",
+      "S"
+    ]
+  },
+  "state_resources": [
+    "bram",
+    "bram18k",
+    "ff",
+    "uram288"
+  ],
+  "transported_cut_classes": [
+    "combinational",
+    "register_input",
+    "register_output"
+  ],
+  "valid_cut_classes": [
+    "clock",
+    "combinational",
+    "multi_driver",
+    "primary_input",
+    "register_input",
+    "register_output",
+    "reset",
+    "undriven"
+  ]
+}

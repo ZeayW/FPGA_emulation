@@ -24,7 +24,8 @@ from emuflow.common.native_protocol import CheckedRequestWriter as _Writer
 from emuflow.ir.resources import RESOURCE_FIELDS
 from emuflow.storage.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
 from emuflow.common.tool_runtime import NativeToolProcess
-from emuflow.partition.phase3_policy import write_candidate_policy, _pattern_range_policy
+from tests.phase3_policy_reference import write_candidate_policy
+from emuflow.partition.structural_policy import _pattern_range_policy
 from tests.partition_views import ClusterColumns, ClusterOwners, CandidateColumns, require_coverage
 
 

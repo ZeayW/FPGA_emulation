@@ -69,7 +69,7 @@ def test_adapter_rejects_mixed_state_before_calling_phase(tmp_path):
     previous = tmp_path / "previous.json"
     previous.write_text(json.dumps({"schema": "emuflow.native-compile-state/v1", "run_id": "other"}))
     with pytest.raises(EmuFlowError, match="mixed or out-of-order"):
-        execute("partition-policy", request, previous, tmp_path / "next", "this-run")
+        execute("route-policy", request, previous, tmp_path / "next", "this-run")
 
 
 def test_shared_preflight_publishes_effective_configuration_and_restores_next_context(tmp_path):
@@ -170,7 +170,7 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
     from emuflow.ir.emuir_compact import write_compact_emuir
     from tests.native_partition_facts import (build_clusters)
     from emuflow.partition.partition_ir import load_partition_ir
-    from emuflow.partition.phase3_native import write_request
+    from emuflow.partition.phase3_native import prepare_configuration_request
     source_ir = native_root / "source.emuir.sqlite"
     write_compact_emuir(source_ir, case.ir.value)
     limits = dict(case._phase5_assignment['constraints'], balance_dimensions=[], balance_tolerance=1.0)
@@ -181,7 +181,7 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
     parts = [fpga.id for fpga in case.platform.fpgas]
     solution = native_root/'solution.txt'
     solution.write_text(''.join(str(parts.index(case._phase5_assignment['instance_assignment'][cluster['instances'][0]]))+'\n' for cluster in clusters['clusters']))
-    partition_request = write_request(native_root/'partition-request', source_ir, native_root/'platform.normalized.json',
+    partition_request = prepare_configuration_request(native_root/'partition-request', native_root/'platform.normalized.json',
         provider='tritonpart', constraints_path=constraint_path, tritonpart_solution=solution,
         max_cross_fpga_dependency_depth=depth)
     from emuflow.transport.phase6_native import prepare_compile_policy
@@ -210,6 +210,8 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
         "effective_tdm_provider": "deterministic-dependency-earliest-slot-v1",
         "optimize_frame_slots": False,
         "phase6_provider":"baseline",
+        "partition_provider":"tritonpart", "timing_driven":False, "route_constraints":None,
+        "net_weights_path":["path",str(tmp_path/"out/timing/partition-net-weights.json")],
         "physical": False,
         "ir_path":["path",str(source_ir)],
         "platform_path":["path",str(native_root/'platform.normalized.json')],
@@ -235,22 +237,22 @@ assert pathlib.Path(os.environ['XDG_CACHE_HOME']).parent==temporary
 with (out/'temporary-paths').open('a') as f:f.write(str(temporary)+'\\n')
 with (out/'calls').open('a') as f:f.write(a.stage+'\\n')
 if a.stage==FAIL:raise SystemExit(7)
-if WAITING and a.stage=='partition-policy':
+if WAITING and a.stage=='route-policy':
  (out/'pid').write_text(str(os.getpid()))
  time.sleep(60)
 st=request.stat();generation=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
-if a.stage in ('timing-policy','tdm','partition','route','signoff') or (a.stage=='split' and v['options'].get('phase6_provider','baseline')=='baseline'):raise AssertionError('Python native-owned phase adapter started')
+if a.stage in ('timing-policy','partition-policy','tdm','partition','route','signoff') or (a.stage=='split' and v['options'].get('phase6_provider','baseline')=='baseline'):raise AssertionError('Python native-owned phase adapter started')
 state=STATE_FIELDS if not a.previous else json.loads(pathlib.Path(a.previous).read_text())['state'][1]
 if a.stage=='preflight':
  root=out/'.native-frontend-input-request';root.mkdir()
  path=root/'inputs.json';path.write_text(pathlib.Path(INPUT_REQUEST).read_text())
  st=path.stat();g=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
  state.update(native_frontend_input_request=['path',str(path)],native_frontend_input_generation=['tuple',g])
-if a.stage=='partition-policy':
- root=out/'.native-phase3-request';root.mkdir()
- request=root/'phase3-request.json';request.write_text(pathlib.Path(PARTITION_REQUEST).read_text())
- st=request.stat();g=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
- state.update(native_phase3_request=['path',str(request)],native_phase3_generation=['tuple',g],phase3_root=['path',str(out/'partition')])
+ root=out/'.native-phase3-configuration';root.mkdir()
+ path=root/'request.json';path.write_text(pathlib.Path(PARTITION_REQUEST).read_text())
+ st=path.stat();g=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
+ state.update(native_phase3_configuration=['path',str(path)],native_phase3_configuration_generation=['tuple',g])
+
 if a.stage=='route-policy':
  assert state['phase3_report'][0]=='partition-report'
  (out/'native-partition-reference.json').write_text(json.dumps(state['phase3_report']))
@@ -269,7 +271,7 @@ if a.stage=='route-policy':
 
 # FIXTURE_CONTROL_STATE_READY
 value={'schema':'emuflow.native-compile-state/v1','run_id':a.run_id,'stage':a.stage,'status':'pass','request_generation':generation,'state':['map',state],'effective_options':v['options']}
-if TEMPORARY_REFERENCE and a.stage=='partition-policy':
+if TEMPORARY_REFERENCE and a.stage=='route-policy':
  path=temporary/'unreleased-engine-cache'/'payload'
  if TEMPORARY_REFERENCE=='alias':
   alias=out/'unpublished-input';alias.symlink_to(path);path=alias
@@ -290,7 +292,7 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     request = fixture_request(tmp_path)
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"frontend", "timing-policy", "timing", "tdm", "partition", "route", "split", "physical", "signoff", "finalize"}]
+    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"frontend", "timing-policy", "partition-policy", "timing", "tdm", "partition", "route", "split", "physical", "signoff", "finalize"}]
     report = json.loads((tmp_path / "out/native-compile-result.json").read_text())
     assert report["operation"]["status"] == "pass"
     assert report["native_data_plane_complete"] is False
@@ -386,7 +388,7 @@ temporary=pathlib.Path(os.environ['TMPDIR'])""")
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     roots = (tmp_path / "out/temporary-paths").read_text().splitlines()
-    assert len(set(roots)) == len(STAGES)-10
+    assert len(set(roots)) == len(STAGES)-11
     assert all(not Path(root).exists() for root in roots)
 
 
@@ -396,7 +398,7 @@ def test_native_controller_rejects_phase_temporary_input_even_through_output_ali
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode != 0
     assert "phase temporary path" in result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == ["preflight", "partition-policy"]
+    assert (tmp_path / "out/calls").read_text().splitlines() == ["preflight", "route-policy"]
     assert json.loads((tmp_path / "out/native-compile-result.json").read_text())["operation"]["status"] == "fail"
     assert not list(tmp_path.glob(".emuflow-compile-*"))
 
@@ -488,12 +490,12 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
 
 @pytest.mark.parametrize("failure", ["failed-phase", "run_id", "stage", "request_generation", "state"])
 def test_native_controller_does_not_advance_retry_or_publish_success_after_failure(tmp_path, failure):
-    request = fixture_request(tmp_path, fail="partition-policy" if failure == "failed-phase" else None,
+    request = fixture_request(tmp_path, fail="route-policy" if failure == "failed-phase" else None,
                               corrupt=None if failure == "failed-phase" else failure)
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode != 0
     calls = (tmp_path / "out/calls").read_text().splitlines()
-    assert calls == (["preflight", "partition-policy"] if failure == "failed-phase" else ["preflight"])
+    assert calls == (["preflight", "route-policy"] if failure == "failed-phase" else ["preflight"])
     assert not (tmp_path / "out/multi-fpga-flow-report.json").exists()
     assert not list(tmp_path.glob(".emuflow-compile-*"))
 
@@ -603,7 +605,6 @@ def _compile_preflight(ctx):
  from emuflow.common.native_tools import native_file_generation
  ctx.native_frontend_input_request=path;ctx.native_frontend_input_generation=tuple(str(v) for v in native_file_generation(path))
  ctx.internal_timing_database=True
-def _compile_partition_policy(ctx):
  (ctx.output_dir/'adapter.pid').write_text(str(os.getpid()))
  engine="import os,signal,time,pathlib;signal.signal(signal.SIGTERM,signal.SIG_IGN);pathlib.Path('engine.pid').write_text(str(os.getpid()));time.sleep(60)"
  with NativeToolProcess({str(emuflow_native())!r},[sys.executable,'-c',engine],cwd=ctx.output_dir,scratch_parent=ctx.output_dir) as p:
@@ -638,6 +639,7 @@ def test_native_partition_report_reference_rejects_changes_and_python_partition_
     reference = json.loads((tmp_path/'out/native-partition-reference.json').read_text())
     assert _unpack(reference)['stage_implementation_id'] == 'native-phase3-v1'
     assert not (tmp_path/'out/.native-phase3-request').exists()
+    assert not (tmp_path/'out/.native-phase3-configuration').exists()
     for field, value in [('schema', 'unknown'), ('generation', [True]*7), ('path', 'relative')]:
         bad = json.loads(json.dumps(reference));bad[1][field] = value
         with pytest.raises(EmuFlowError, match='partition report reference'):
@@ -760,3 +762,42 @@ raise AssertionError('timing extraction must not begin after cancellation')
     finally:
         if process.poll() is None:
             process.send_signal(signal.SIGTERM);process.communicate(timeout=25)
+
+
+@pytest.mark.parametrize('damage', ['configuration-generation', 'source-generation', 'bound-input', 'escaped-owner', 'missing-policy'])
+def test_native_partition_configuration_rejects_mixed_or_unowned_inputs(tmp_path, damage):
+    request = fixture_request(tmp_path)
+    adapter = tmp_path/'source/emuflow/flow/native_compile_adapter.py'
+    injection = '''
+if a.stage=='preflight':
+ path=pathlib.Path(state['native_phase3_configuration'][1])
+ settings=json.loads(path.read_text())
+ if DAMAGE=='source-generation':
+  next(row for row in settings['sources'] if row['role']=='constraints')['generation'][2]+=1
+ elif DAMAGE=='bound-input':
+  original=pathlib.Path(SOURCE_IR);st=original.stat()
+  settings['sources'].append({'role':'source','path':str(original),'schema':'emuir-compact-v2','generation':[st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000)]})
+ path.write_text(json.dumps(settings));st=path.stat()
+ if DAMAGE=='configuration-generation':
+  state['native_phase3_configuration_generation'][1][2]=str(st.st_size+1)
+ else:
+  state['native_phase3_configuration_generation']=['tuple',[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]]
+ if DAMAGE=='escaped-owner':state['native_phase3_configuration']=['path',str(pathlib.Path(ESCAPED_POLICY))]
+ if DAMAGE=='missing-policy':state.pop('native_phase3_configuration')
+'''.replace('DAMAGE', repr(damage)).replace('SOURCE_IR', repr(str(tmp_path/'native-inputs/source.emuir.sqlite'))).replace('ESCAPED_POLICY', repr(str(tmp_path/'native-inputs/partition-request/request.json')))
+    adapter.write_text(adapter.read_text().replace('# FIXTURE_CONTROL_STATE_READY', injection))
+    result = subprocess.run([str(emuflow_native()), 'compile', str(request)], capture_output=True, text=True)
+    assert result.returncode != 0
+    report = json.loads((tmp_path/'out/native-compile-result.json').read_text())
+    assert report['stages'][-1]['stage'] == 'partition-policy'
+    assert report['stages'][-1]['implementation_id'] == 'native-phase3-configuration-v1'
+    assert (tmp_path/'out/calls').read_text().splitlines() == ['preflight']
+    assert not (tmp_path/'out/partition').exists()
+    assert not (tmp_path/'out/multi-fpga-flow-report.json').exists()
+
+
+def test_partition_policy_python_adapter_and_stage_body_are_retired(tmp_path):
+    from emuflow.flow import multi_fpga_flow
+    assert not hasattr(multi_fpga_flow, '_compile_partition_policy')
+    with pytest.raises(EmuFlowError, match='owned by C'):
+        execute('partition-policy', tmp_path/'missing', None, tmp_path/'unused', 'run')

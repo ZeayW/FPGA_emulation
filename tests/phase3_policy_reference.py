@@ -1,25 +1,10 @@
-"""Bounded policy facts shared by the complete native partition stage."""
-import fnmatch
-import re
-from functools import lru_cache
+"""Small binary policy encoder oracle; no production stage dispatch."""
 from pathlib import Path
 import struct
-from emuflow.common.errors import ValidationError
 from emuflow.common.native_tools import native_file_generation
 from emuflow.ir.resources import RESOURCE_FIELDS
 from emuflow.ir.ir import VALID_CUT_CLASSES
-from emuflow.partition.combinational_cut import _STATE_RESOURCES, _HARD_COMBINATIONAL_RESOURCES, _TRANSPORT_SAFE_SEQUENTIAL_INPUTS
-
-
-@lru_cache(maxsize=1)
-def _pattern_range_policy():
-    try:
-        matched = fnmatch.fnmatchcase('a', '[z-aa]')
-    except re.error:
-        return 'strict-ranges-v1'
-    if matched:
-        return 'empty-ranges-v1'
-    raise ValidationError('unsupported instance pattern range convention')
+from emuflow.partition.combinational_cut import _STATE_RESOURCES,_HARD_COMBINATIONAL_RESOURCES,_TRANSPORT_SAFE_SEQUENTIAL_INPUTS
 
 
 def write_candidate_policy(path, ir):

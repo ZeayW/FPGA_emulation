@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any, Mapping
+from emuflow.partition.structural_policy import STRUCTURAL_POLICY
 
 
 STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA = (
@@ -15,7 +16,7 @@ STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS = {
 }
 
 
-STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2 = "assignment-derived-acyclic-v2"
+STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2 = STRUCTURAL_POLICY["candidate_selection_policy"]
 
 
 STATIC_EXACT_DEFAULT_CANDIDATE_POLICY = STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
@@ -64,18 +65,13 @@ SLOT_EDGE_CONVENTION = {
 }
 
 
-_STATE_RESOURCES = {"ff", "bram", "bram18k", "uram288"}
+_STATE_RESOURCES = set(STRUCTURAL_POLICY["state_resources"])
 
 
-_HARD_COMBINATIONAL_RESOURCES = {"dsp", "carry", "dsp48", "carry8"}
+_HARD_COMBINATIONAL_RESOURCES = set(STRUCTURAL_POLICY["hard_combinational_resources"])
 
 
-_TRANSPORT_SAFE_SEQUENTIAL_INPUTS = {
-    "FDCE": {"D", "CE"},
-    "FDPE": {"D", "CE"},
-    "FDRE": {"D", "CE", "R"},
-    "FDSE": {"D", "CE", "S"},
-}
+_TRANSPORT_SAFE_SEQUENTIAL_INPUTS = {name: set(ports) for name, ports in STRUCTURAL_POLICY["sequential_inputs"].items()}
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:

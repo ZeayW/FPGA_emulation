@@ -24,7 +24,7 @@ package-dir = {"" = "src/python"}
 where = ["src/python"]
 
 [tool.setuptools.package-data]
-emuflow = ["data/schema/*.sql", "data/schema/*.tcl", "data/rapidwright/*.json", "data/openparf/*.json", "data/designs/*.json", "data/designs/*.v", "data/platforms/*.json", "data/io/*.json"]
+emuflow = ["data/schema/*.sql", "data/schema/*.tcl", "data/rapidwright/*.json", "data/partition/*.json", "data/openparf/*.json", "data/designs/*.json", "data/designs/*.v", "data/platforms/*.json", "data/io/*.json"]
 
 [tool.setuptools.data-files]
 "share/emuflow/platforms" = ["platforms/virtual/*.wires.csv"]
