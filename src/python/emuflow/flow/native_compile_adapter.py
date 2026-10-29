@@ -84,6 +84,15 @@ def _unpack(value, depth=0):
             if native_file_generation(path) != expected:
                 raise EmuFlowError("native phase report generation changed")
             return _stage_summary("tdm", report)
+        if kind == "prepared-timing-report":
+            if (type(body) is not dict or set(body) != {"schema", "path", "generation"}
+                    or body["schema"] != "prepared-timing-summary-v1"
+                    or not isinstance(body["path"], str) or not Path(body["path"]).is_absolute()
+                    or type(body["generation"]) is not list or len(body["generation"]) != 7
+                    or any(type(item) is not int for item in body["generation"])):
+                raise EmuFlowError("invalid prepared timing report reference")
+            from emuflow.frontend.inputs import read_timing_summary
+            return read_timing_summary(body["path"], body["generation"])["summary"]
         if kind == "timing-report":
             if (type(body) is not dict or set(body)!={"schema","path","generation"}
                     or body.get("schema")!="phase2-report-v1" or type(body.get("path")) is not str
@@ -272,6 +281,8 @@ def _restore_control_state(state):
 
 
 def execute(stage, request_path, previous_path, output_path, run_id):
+    if stage in {"frontend", "timing"}:
+        raise EmuFlowError("native compiler frontend and timing are owned by C++ stages")
     if stage == "signoff":
         raise EmuFlowError("native compiler signoff is owned by the C++ Phase 7C stage")
     if stage == "finalize":
@@ -320,7 +331,7 @@ def execute(stage, request_path, previous_path, output_path, run_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"tdm", "partition", "route", "signoff", "finalize"}], required=True)
+    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"frontend", "timing", "tdm", "partition", "route", "signoff", "finalize"}], required=True)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--output", type=Path, required=True)

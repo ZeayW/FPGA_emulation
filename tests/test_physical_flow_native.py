@@ -181,13 +181,19 @@ def test_native_whole_rapidwright_flow_never_returns_to_python_stage_coordinator
     assert not list(output.glob('**/packed-sites.json'))
 
 
-def test_full_native_controller_binds_original_paths_exact_schedule_and_both_query_populations(tmp_path):
+@pytest.mark.parametrize("linked_paths", [False, True])
+def test_full_native_controller_binds_original_paths_exact_schedule_and_both_query_populations(tmp_path, linked_paths):
     from dataclasses import replace
     from tests.logic_segment_query_fixture import sources
     from tests.phase3_store_fixture import write_current_assignment_fixture
     from emuflow.transport.transport_storage import read_transport
     from emuflow.transport.netlist import transport_endpoint_port
     value=sources(tmp_path/'timing')
+    if linked_paths:
+        description=json.loads(value.paths.read_text())['payloads']['paths']
+        payload=value.paths.parent/description['path']
+        original=tmp_path/'published-paths.sqlite'
+        payload.rename(original);payload.symlink_to(original)
     request=setup(tmp_path/'host')
     platform=replace(value.platform,fpgas=tuple(replace(f,part='xcvu19p-test',capacity={r:100 for r in ('lut','ff','bram18k','dsp48','carry8','uram288')},utilization_limit=.25) for f in value.platform.fpgas))
     board=tmp_path/'query-board.json';board.write_text(json.dumps(platform.to_dict()))

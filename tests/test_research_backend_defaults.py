@@ -53,7 +53,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 _build_parser().parse_args(command)
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.flow.multi_fpga_flow.run_phase1"
+            "emuflow.frontend.frontend_native.prepare_frontend"
         ) as frontend, patch("emuflow.flow.multi_fpga_flow.resolve_native_executable") as tool:
             out = Path(temporary) / "flow"
             with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
@@ -140,7 +140,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                 "--mapping-profile", "generic-soft",
             ])
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.flow.multi_fpga_flow.run_phase1"
+            "emuflow.frontend.frontend_native.prepare_frontend"
         ) as frontend, patch(
             "emuflow.flow.multi_fpga_flow.resolve_native_executable"
         ) as tool:

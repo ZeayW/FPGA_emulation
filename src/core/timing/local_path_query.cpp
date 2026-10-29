@@ -57,17 +57,22 @@ Request ReadRequest(const std::vector<ArtifactRef>& inputs,bool query){
 }
 void AttachOriginal(SqliteDatabase& db,const std::vector<ArtifactRef>& inputs){Attach(db,"original",inputs[0]);Attach(db,"assignment",inputs[1]);Attach(db,"paths",inputs[2]);Attach(db,"routes",inputs[3]);db.Execute("PRAGMA temp_store=FILE; PRAGMA cache_size=-8192; PRAGMA temp.cache_size=-8192");}
 std::string Design(SqliteDatabase& db){auto q=db.Prepare("SELECT json_extract(value,'$.name') FROM original.metadata WHERE key='design_json'");Check(q.Step(),"missing design");return Text(q,0);}
+bool Selects(const ArtifactRef& selector,const std::string& name,const ArtifactRef& payload) {
+  const fs::path member=name;
+  return !name.empty() && member==member.filename() && name!="." && name!=".." &&
+    fs::canonical(fs::path(selector.path()).parent_path()/member)==fs::path(payload.path());
+}
 void ValidateSelectors(const std::vector<ArtifactRef>& inputs,const std::string& design){
   // A selector is only a bounded identity/ref document. The C++ owner checks
   // its payload name, size/hash and count rather than trusting host lookups.
   Doc paths(Doc::Read(inputs[5],8*1024*1024));Check(paths.Text("schema")=="emuflow.sta-path-database/v3" && paths.Text("design")==design,"path selector identity disagrees");Doc path_origin(paths.Token("source"));Check(path_origin.Text("provider")=="opensta-fpga-path-database-v1","unsupported path source provider");Doc payloads(paths.Token("payloads"));Doc path(payloads.Token("paths"));
-  Check(path.Text("format")=="sqlite-sta-path/v1" && (fs::path(inputs[5].path()).parent_path()/path.Text("path")).lexically_normal()==fs::path(inputs[2].path()),"path payload owner disagrees");Check(FileHash(inputs[2].path())==path.Text("sha256"),"path payload seal disagrees");
+  Check(path.Text("format")=="sqlite-sta-path/v1" && Selects(inputs[5],path.Text("path"),inputs[2]),"path payload owner disagrees");Check(FileHash(inputs[2].path())==path.Text("sha256"),"path payload seal disagrees");
   if(inputs[4].path()!=inputs[1].path()){
-    Doc assignment(Doc::Read(inputs[4],8*1024*1024));Check(assignment.Text("schema")=="emuflow.phase3-assignment-storage/v4","assignment selector schema disagrees");Doc document(assignment.Token("document"));Check(document.Text("schema")=="emuflow.partition-assignment/v1" && document.Text("design")==design,"assignment selector identity disagrees");Doc cuts(assignment.Token("cut_nets_index"));Check((fs::path(inputs[4].path()).parent_path()/cuts.Text("artifact")).lexically_normal()==fs::path(inputs[1].path()),"assignment payload owner disagrees");SqliteStore index(inputs[1]);Check(cuts.Text("sha256")==DecodeJsonString(Meta(index.database(),"cut_records_sha256")),"assignment cut seal disagrees");
+    Doc assignment(Doc::Read(inputs[4],8*1024*1024));Check(assignment.Text("schema")=="emuflow.phase3-assignment-storage/v4","assignment selector schema disagrees");Doc document(assignment.Token("document"));Check(document.Text("schema")=="emuflow.partition-assignment/v1" && document.Text("design")==design,"assignment selector identity disagrees");Doc cuts(assignment.Token("cut_nets_index"));Check(Selects(inputs[4],cuts.Text("artifact"),inputs[1]),"assignment payload owner disagrees");SqliteStore index(inputs[1]);Check(cuts.Text("sha256")==DecodeJsonString(Meta(index.database(),"cut_records_sha256")),"assignment cut seal disagrees");
 
   }
   SqliteStore assignment_store(inputs[1]),route_store(inputs[3]);Check(DecodeJsonString(Meta(assignment_store.database(),"design"))==design,"assignment source design disagrees");Doc route_header(Meta(route_store.database(),"header"));Check(route_header.Text("design")==design,"route source design disagrees");
-  Doc routes(Doc::Read(inputs[6],8*1024*1024));Check(routes.Text("schema")=="emuflow.system-route-storage/v1","route selector identity disagrees");Check((fs::path(inputs[6].path()).parent_path()/routes.Text("artifact")).lexically_normal()==fs::path(inputs[3].path()) && routes.Text("store_sha256")==FileHash(inputs[3].path()),"route payload owner/seal disagrees");
+  Doc routes(Doc::Read(inputs[6],8*1024*1024));Check(routes.Text("schema")=="emuflow.system-route-storage/v1","route selector identity disagrees");Check(Selects(inputs[6],routes.Text("artifact"),inputs[3]) && routes.Text("store_sha256")==FileHash(inputs[3].path()),"route payload owner/seal disagrees");
 }
 Object Manifest(SqliteDatabase& db,const std::vector<ArtifactRef>& inputs){
   Sha256 ids;Hash(ids,"[");I count=0;auto paths=db.Prepare("SELECT path_id FROM paths.paths ORDER BY path_id");while(paths.Step()){if(count++)Hash(ids,",");Hash(ids,JsonQuoteUtf8(Text(paths,0)));}Hash(ids,"]");Check(count>0,"empty original path population");

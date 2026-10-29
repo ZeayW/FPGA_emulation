@@ -325,7 +325,7 @@ def test_native_routed_graph_capability_is_required_before_synthesis(tmp_path):
             raise EmuFlowError("missing native routed graph")
     with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
         "emuflow.common.native_tools.require_native_schema", side_effect=capability
-    ), patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")), \
+    ), patch("emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend started")), \
          pytest.raises(EmuFlowError, match="missing native routed graph"):
         run_preflight(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
                            physical=True, physical_backend="rapidwright", output_dir=tmp_path / "flow")

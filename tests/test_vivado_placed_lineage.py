@@ -132,7 +132,7 @@ def test_compile_rejects_incomplete_native_installation_before_frontend(tmp_path
     with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
         "emuflow.common.native_tools.require_native_schema", side_effect=EmuFlowError("missing lineage capability")
     ), patch(
-        "emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")
+        "emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend started")
     ), pytest.raises(EmuFlowError, match="missing lineage capability"):
         run_preflight(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"],
             clock_periods={"clk": 10.0}, physical=True, physical_backend="vivado",

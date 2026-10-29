@@ -22,7 +22,7 @@ def test_retired_provider_rejected_before_phase_input(tmp_path, provider):
 
 @pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart", "greedy"])
 def test_retired_provider_rejected_before_compile_frontend(tmp_path, provider):
-    with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")):
+    with patch("emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")):
         with pytest.raises(EmuFlowError, match="unsupported Phase 3 provider"):
             run_preflight(output_dir=tmp_path / "flow", partition_provider=provider)
     assert not (tmp_path / "flow").exists()
@@ -58,7 +58,7 @@ def test_chimew_and_fixed_binding_entry_remain_available():
 def test_retired_patron_version_is_rejected_before_any_frontend_or_graph_loading(tmp_path, entry, version):
     from emuflow.flow.native_compile import _request
     with patch("emuflow.partition.partition_ir.load_partition_ir", side_effect=AssertionError("graph loaded")), patch(
-        "emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")
+        "emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")
     ), pytest.raises(EmuFlowError, match="version|only PATRON"):
         if entry == "phase3":
             run_phase3(tmp_path / "missing.ir", tmp_path / "missing.platform",

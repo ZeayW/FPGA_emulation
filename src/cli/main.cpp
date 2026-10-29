@@ -26,6 +26,7 @@
 #include "common/bounded_json.hpp"
 #include "frontend/yosys_hierarchy.hpp"
 #include "frontend/frontend.hpp"
+#include "frontend/inputs.hpp"
 #include "timing/phase2.hpp"
 #include "timing/logic_segment_query.hpp"
 #include "timing/local_path_query.hpp"
@@ -92,6 +93,7 @@ constexpr const char* kUsage =
     "  phase3 validate-exact-binary BINARY REQUEST SUMMARY\n"
     "  phase3 publish-partition EMUIR PRIMARY NODES CAPTURES COUNTS CATALOG_REQUEST CANDIDATES [OWNER [ORDER]] REQUEST OUTPUT_DIR\n"
     "  phase1 run REQUEST\n"
+    "  phase1 import-inputs REQUEST RUN_ROOT\n"
     "  phase1 import-yosys REQUEST EMUIR SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
@@ -356,6 +358,9 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     if(argc>=9)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[8],argc==9?"patron-initial-columns-v1":"patron-output-v1"));
     if(argc==10)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[9],"patron-cluster-order-v1"));
     return Finish(emuflow::core::FinalizePartitionSemantics(inputs,argv[7]),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase1" && std::string(argv[2])=="import-inputs") {
+    ToolSignals signals;return Finish(emuflow::core::RunFrontendInputs(emuflow::core::ArtifactRef::Bind(argv[3],"frontend-input-request-v1"),argv[4],&tool_cancelled),report);
   }
   if((argc==4 || argc==5) && std::string(argv[1])=="phase1" && std::string(argv[2])=="run") {
     ToolSignals signals;

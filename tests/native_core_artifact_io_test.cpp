@@ -499,6 +499,36 @@ int main() {
         if(rejected || std::filesystem::exists(staging) || !std::filesystem::is_regular_file(target/"fpga0/nested/data"))throw std::runtime_error("nested stage was not published");
       } else if(!rejected || std::filesystem::exists(target) || !std::filesystem::is_regular_file(staging/"fpga0/nested/data"))throw std::runtime_error("rejected stage tree changed its generation");
     }
+    // Prepared boundaries may reference only explicitly bound immutable files.
+    for(int damage=0;damage<5;++damage) {
+      const auto staging=root/("bound-private-"+std::to_string(damage));
+      const auto target=root/("bound-public-"+std::to_string(damage));
+      const auto original=root/("bound-source-"+std::to_string(damage));
+      {std::ofstream file(original);file<<"source";}
+      const auto input=ArtifactRef::Bind(original.string(),"chimew-rudy-input-v1");
+      std::filesystem::create_directory(staging);
+      if(damage!=3)std::filesystem::create_symlink(original,staging/"data");
+      emuflow::core::DirectoryReferences references{{damage==1?"nested/../data":"data",input}};
+      if(damage==2)references.clear();
+      bool rejected=false;
+      try{emuflow::core::PublishNewDirectory(staging.string(),target.string(),damage==4?std::vector<ArtifactRef>{}:std::vector<ArtifactRef>{input},references);}
+      catch(const emuflow::core::StageError&){rejected=true;}
+      if(damage==0) {
+        if(rejected || !std::filesystem::is_symlink(target/"data") || std::filesystem::canonical(target/"data")!=std::filesystem::canonical(original))throw std::runtime_error("bound directory input was not published");
+      } else if(!rejected || std::filesystem::exists(target))throw std::runtime_error("unbound directory input was published");
+      input.RequireUnchanged();
+    }
+    // A late rejection retires all fresh directories from the same publication.
+    {
+      const auto one=root/"group-private-one",two=root/"group-private-two";
+      const auto dest_one=root/"group-public-one",dest_two=root/"group-public-two";
+      std::filesystem::create_directory(one);std::filesystem::create_directory(two);
+      {std::ofstream file(one/"one");file<<"one";}{std::ofstream file(two/"two");file<<"two";}
+      bool rejected=false;
+      try{emuflow::core::PublishNewDirectoryGroup({{one,dest_one,{}},{two,dest_two,{}}},{},[]{throw std::runtime_error("late rejection");});}
+      catch(const std::runtime_error&){rejected=true;}
+      if(!rejected || std::filesystem::exists(dest_one) || std::filesystem::exists(dest_two))throw std::runtime_error("rejected directory group retained a public generation");
+    }
     const auto sqlite_artifact = (root / "source-artifact.sqlite").string();
     {
       emuflow::core::SqliteDatabase db(sqlite_artifact, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);

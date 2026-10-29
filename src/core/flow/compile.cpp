@@ -3,6 +3,7 @@
 #include "flow/signoff.hpp"
 #include "flow/comparison.hpp"
 #include "common/artifact_io.hpp"
+#include "common/bounded_json.hpp"
 #include "common/json_record.hpp"
 #include "storage/sqlite.hpp"
 #include "scheduling/phase5.hpp"
@@ -81,6 +82,20 @@ class ControlJson {
     for(unsigned i=0;i<7;++i)Require(String("$.state[1].native_frontend_generation[1]["+std::to_string(i)+"]")==fields[i],"native frontend request generation changed");
     return result;
   }
+  ArtifactRef FrontendInputRequest() {
+    auto result=ArtifactRef::Bind(StatePath("native_frontend_input_request"),"frontend-input-request-v1");
+    const auto& g=result.generation();const std::string fields[]={std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)};
+    Require(String("$.state[1].native_frontend_input_generation[0]")=="tuple","native input request binding is invalid");
+    for(unsigned i=0;i<7;++i)Require(String("$.state[1].native_frontend_input_generation[1]["+std::to_string(i)+"]")==fields[i],"native input request generation changed");
+    return result;
+  }
+  ArtifactRef PreparedTimingSummary() {
+    auto result=ArtifactRef::Bind(StatePath("native_prepared_timing_summary"),"prepared-timing-summary-v1");
+    const auto& g=result.generation();const std::uint64_t fields[]={g.device,g.inode,g.bytes,std::uint64_t(g.modified_seconds),std::uint64_t(g.modified_nanoseconds),std::uint64_t(g.changed_seconds),std::uint64_t(g.changed_nanoseconds)};
+    Require(String("$.state[1].native_prepared_timing_generation[0]")=="tuple","native prepared timing binding is invalid");
+    for(unsigned i=0;i<7;++i)Require(Unsigned("$.state[1].native_prepared_timing_generation[1]["+std::to_string(i)+"]")==fields[i],"prepared timing report generation changed");
+    return result;
+  }
   ArtifactRef PartitionRequest() {
     auto result=ArtifactRef::Bind(StatePath("native_phase3_request"),"phase3-stage-request-v1");
     const auto& g=result.generation();const std::string fields[]={std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)};
@@ -124,12 +139,12 @@ class ControlJson {
     auto row=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','partition','$.state[1].phase3_report',json(?2),'$.state[1].phase3_root',json(?3),'$.state[1].assignment_path',json(?4),'$.state[1].has_inter_fpga_cuts',json(?5),'$.state[1].effective_optimize_frame_slots',json(?6)),'$.state[1].native_phase3_request','$.state[1].native_phase3_generation')");
     row.BindText(1,data_);row.BindText(2,reference);row.BindText(3,"[\"path\","+JsonQuote(root.string())+"]");row.BindText(4,"[\"path\","+JsonQuote((root/"assignment.json").string())+"]");row.BindText(5,cuts?"true":"false");row.BindText(6,frame);Require(row.Step(),"cannot construct native partition compiler state");return row.TypedText(0);
   }
-  std::string FrontendState(const std::string& reference,const fs::path& root) {
-    auto row=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','frontend','$.state[1].frontend_report',json(?2),'$.state[1].phase1_root',json(?3),'$.state[1].ir_path',json(?4)),'$.state[1].native_frontend_request','$.state[1].native_frontend_generation')");
+  std::string FrontendState(const std::string& reference,const fs::path& root,const std::string& timing="null") {
+    auto row=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','frontend','$.state[1].frontend_report',json(?2),'$.state[1].phase1_root',json(?3),'$.state[1].ir_path',json(?4),'$.state[1].timing_report',json(?5),'$.state[1].native_prepared_timing_summary',json(CASE WHEN ?5='null' THEN 'null' ELSE json_array('path',json_extract(?5,'$[1].path')) END),'$.state[1].native_prepared_timing_generation',json(CASE WHEN ?5='null' THEN 'null' ELSE json_array('tuple',json_extract(?5,'$[1].generation')) END)),'$.state[1].native_frontend_request','$.state[1].native_frontend_generation','$.state[1].native_frontend_input_request','$.state[1].native_frontend_input_generation')");
     row.BindText(1,data_);row.BindText(2,reference);
     row.BindText(3,"[\"path\","+JsonQuote((root/"phase1").string())+"]");
     row.BindText(4,"[\"path\","+JsonQuote((root/"phase1/design.emuir.sqlite").string())+"]");
-    Require(row.Step(),"cannot construct native frontend compiler state");return row.TypedText(0);
+    row.BindText(5,timing);Require(row.Step(),"cannot construct native frontend compiler state");return row.TypedText(0);
   }
   void Envelope() {
     auto fields = db_.Prepare("SELECT count(*),sum(key IN ('schema','python_executable',"
@@ -201,7 +216,11 @@ class ControlJson {
   }
   std::string AdvanceState(const std::string& stage) {
     auto q=db_.Prepare("SELECT json_set(?1,'$.stage',?2)");q.BindText(1,data_);q.BindText(2,stage);
-    Require(q.Step(),"cannot advance native compiler state");return q.TypedText(0);
+    Require(q.Step(),"cannot advance native compiler state");
+    if(stage=="timing") {
+      auto clean=db_.Prepare("SELECT json_remove(?,'$.state[1].native_prepared_timing_summary','$.state[1].native_prepared_timing_generation')");clean.BindText(1,q.TypedText(0));Require(clean.Step(),"cannot retire native prepared timing binding");return clean.TypedText(0);
+    }
+    return q.TypedText(0);
   }
   void RequirePublishedPaths(const fs::path& temporary) {
     const auto root = fs::weakly_canonical(temporary);
@@ -292,6 +311,11 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       if (result.owns_output) RequireOwner(result);
       for (const auto& input : inputs) input.RequireUnchanged();
       Require(fs::canonical(python) == inputs[2].path(),"native compiler executable alias changed");
+      if(std::string(stage)=="timing-policy") {
+        const auto root=output/".native-frontend-input-request";
+        Require(!fs::is_symlink(root),"native frontend input directory was replaced");
+        std::error_code error;fs::remove_all(root,error);Require(!error,"cannot retire native frontend input request");
+      }
       if(std::string(stage)=="route-policy") {
         const auto private_configuration=output/".native-phase3-request";
         Require(!fs::is_symlink(private_configuration),"native partition configuration directory was replaced");
@@ -407,15 +431,36 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       const bool native_phase3=std::string(stage)=="partition";
       const bool native_phase2=std::string(stage)=="timing" && ControlJson(previous.string()).Has("$.state[1].native_phase2_policy");
       const bool native_phase6=std::string(stage)=="split" && ControlJson(previous.string()).String("$.state[1].phase6_provider")=="baseline";
-      const bool native_frontend=std::string(stage)=="frontend" && ControlJson(previous.string()).Has("$.state[1].native_frontend_request");
-      if(std::string(stage)=="frontend") {
-        ControlJson prior(previous.string());
-        const bool raw_rtl=prior.Has("$.state[1].sources[1][0]") && !prior.Has("$.state[1].yosys_json") && !prior.Has("$.state[1].prepared_frontend");
-        Require(!raw_rtl || native_frontend,"native RTL frontend request is missing; Python fallback is forbidden");
-      }
+      const bool native_frontend=std::string(stage)=="frontend";
+      const bool frontend_inputs=native_frontend && ControlJson(previous.string()).Has("$.state[1].native_frontend_input_request");
+      if(frontend_inputs)Require(!ControlJson(previous.string()).Has("$.state[1].native_frontend_request"),"multiple native frontend requests");
+      if(native_frontend)Require(frontend_inputs || ControlJson(previous.string()).Has("$.state[1].native_frontend_request"),"native frontend request is missing; Python fallback is forbidden");
       if(std::string(stage)=="timing" && !native_phase2) {
         ControlJson prior(previous.string());
         Require(prior.Has("$.state[1].prepared_timing") || !prior.Boolean("$.state[1].internal_timing_database"),"native timing policy is missing; Python fallback is forbidden");
+        const auto previous_ref=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
+        std::vector<ArtifactRef> bindings{previous_ref};
+        if(prior.Has("$.state[1].prepared_timing")) {
+          const auto report=prior.PreparedTimingSummary();
+          const auto path=report.path();
+          Require(fs::path(path)==output/"timing/prepared-timing-summary.json","prepared timing report escapes compiler ownership");
+          ControlJson envelope(path);Require(envelope.String("$.status")=="pass" && envelope.String("$.implementation_id")=="native-frontend-input-v1","prepared native timing was not validated");
+          BoundedJson sealed(BoundedJson::Read(report));
+          for(const auto& token:BoundedJson::Array(sealed.Token("sources"),16)) {
+            BoundedJson row(token);const auto ref=ArtifactRef::Bind(row.Text("path"),row.Text("schema"));
+            const auto& g=ref.generation();const auto generation=JsonRecord(std::vector<JsonRecord>{g.device,g.inode,g.bytes,g.modified_seconds,g.modified_nanoseconds,g.changed_seconds,g.changed_nanoseconds}).Encode();
+            SqliteDatabase check(":memory:",SqliteDatabase::Mode::kReadOnly);RequireEquivalentJson(check,generation,row.Token("generation"),"prepared timing source generation changed");
+            bindings.push_back(ref);
+          }
+          bindings.push_back(report);
+        }
+        const auto state=prior.AdvanceState("timing");
+        PublishTextArtifact(next.string(),bindings,[&](std::ostream& stream){stream<<state<<'\n';});
+        result.steps.push_back({stage,true,"native-timing-boundary-v1",0,0,0,0});
+        fs::remove(previous);previous=next;
+        std::error_code cleanup;fs::remove_all(temporary,cleanup);Require(!cleanup,"cannot retire timing boundary temporary directory");
+        std::cout<<"COMPILE_STAGE_COMPLETE timing source-boundary\n"<<std::flush;
+        continue;
       }
       std::string phase4_report,phase5_report,phase3_report,phase6_report,phase2_report,frontend_summary,physical_report;
       std::optional<ArtifactRef> frontend_request,partition_request,phase2_policy,phase4_policy,phase6_policy,physical_policy,physical_request;
@@ -439,8 +484,9 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         tool.argv={inputs[3].path(),"--report",(temporary/"native-result.json").string(),"physical","run-flow",physical_request->path(),(output/"physical").string()};
       } else if(native_frontend) {
         ControlJson prior(previous.string());Require(prior.String("$.stage")=="preflight","invalid native frontend predecessor");
-        frontend_request=prior.FrontendRequest();frontend_summary=(output/"frontend/phase1/frontend-summary.json").string();
-        tool.argv={inputs[3].path(),"--report",(temporary/"native-result.json").string(),"phase1","run",frontend_request->path(),(output/"frontend/phase1").string()};
+        frontend_request=frontend_inputs?prior.FrontendInputRequest():prior.FrontendRequest();frontend_summary=(output/"frontend/phase1/frontend-summary.json").string();
+        if(frontend_inputs)Require(fs::path(frontend_request->path())==output/".native-frontend-input-request/inputs.json","native frontend input request escapes compiler ownership");
+        tool.argv={inputs[3].path(),"--report",(temporary/"native-result.json").string(),"phase1",frontend_inputs?"import-inputs":"run",frontend_request->path(),frontend_inputs?output.string():(output/"frontend/phase1").string()};
       } else if(native_phase2) {
         ControlJson prior(previous.string());Require(prior.String("$.stage")=="timing-policy","invalid native timing predecessor");
         phase2_policy=prior.Phase2Policy();
@@ -505,7 +551,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       if(physical_policy)step_inputs.push_back(*physical_policy);
       if(physical_request)step_inputs.push_back(*physical_request);
       const auto step = RunExternalTool(tool,cancelled,step_inputs);
-      result.steps.push_back({stage,step.operation.ok(),native_physical?"native-multi-fpga-physical-v1":native_phase6?"native-baseline-phase6-v1":native_phase4?"native-phase4-v1":native_phase5?"native-exact-phase5-v1":native_phase3?"native-phase3-v1":native_phase2?"native-phase2-v1":native_frontend?"native-rtl-frontend-v1":"isolated-python-adapter-v1",step.wall_seconds,step.user_cpu_seconds,
+      result.steps.push_back({stage,step.operation.ok(),native_physical?"native-multi-fpga-physical-v1":native_phase6?"native-baseline-phase6-v1":native_phase4?"native-phase4-v1":native_phase5?"native-exact-phase5-v1":native_phase3?"native-phase3-v1":native_phase2?"native-phase2-v1":native_frontend?(frontend_inputs?"native-frontend-input-v1":"native-rtl-frontend-v1"):"isolated-python-adapter-v1",step.wall_seconds,step.user_cpu_seconds,
                              step.system_cpu_seconds,step.maximum_process_rss_kib});
       if (!step.operation.ok())
         throw StageError(ErrorCode::kExecutionFailed,"native compile " + std::string(stage) + ": " +
@@ -545,12 +591,21 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         PublishTextArtifact(next.string(),bindings,[&](std::ostream& out){out<<state<<'\n';});partition_request->RequireUnchanged();
       } else if(native_frontend) {
         ControlJson producer((temporary/"native-result.json").string());auto summary=ArtifactRef::Bind(frontend_summary,"phase1-summary-v1");
-        Require(producer.String("$.schema")=="emuflow.native-stage-result/v1" && producer.String("$.stage")=="phase1.run" && producer.String("$.status")=="pass" && producer.OutputGeneration(summary),"native frontend producer binding disagrees");
+        Require(producer.String("$.schema")=="emuflow.native-stage-result/v1" && producer.String("$.stage")== (frontend_inputs?"phase1.import-inputs":"phase1.run") && producer.String("$.status")=="pass" && producer.OutputGeneration(summary),"native frontend producer binding disagrees");
         const auto& g=summary.generation();std::vector<JsonRecord> generation;
         for(const auto& item:{std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)})generation.emplace_back(item);
         const auto reference=JsonRecord(std::vector<JsonRecord>{JsonRecord("frontend-report"),JsonRecord(std::map<std::string,JsonRecord>{{"schema",summary.schema()},{"path",summary.path()},{"generation",std::move(generation)}})}).Encode();
         ControlJson prior(previous.string());auto bindings=step_inputs;bindings.push_back(summary);
-        const auto state=prior.FrontendState(reference,output/"frontend");
+        auto ir=ArtifactRef::Bind((output/"frontend/phase1/design.emuir.sqlite").string(),"emuir-compact-v2");
+        Require(producer.OutputGeneration(ir,1),"native frontend IR producer binding disagrees");bindings.push_back(ir);
+        std::string timing="null";
+        if(frontend_inputs && prior.Has("$.state[1].prepared_timing")) {
+          auto report=ArtifactRef::Bind((output/"timing/prepared-timing-summary.json").string(),"prepared-timing-summary-v1");
+          Require(producer.OutputGeneration(report,2),"native prepared timing producer binding disagrees");bindings.push_back(report);
+          const auto& g=report.generation();
+          timing=JsonRecord(std::vector<JsonRecord>{"prepared-timing-report",std::map<std::string,JsonRecord>{{"schema",report.schema()},{"path",report.path()},{"generation",std::vector<JsonRecord>{g.device,g.inode,g.bytes,g.modified_seconds,g.modified_nanoseconds,g.changed_seconds,g.changed_nanoseconds}}}}).Encode();
+        }
+        const auto state=prior.FrontendState(reference,output/"frontend",timing);
         PublishTextArtifact(next.string(),bindings,[&](std::ostream& stream){stream<<state<<'\n';});
       }
       if(native_phase4) {
@@ -637,7 +692,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v7\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-frontend-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v8\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

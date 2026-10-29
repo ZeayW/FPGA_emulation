@@ -164,3 +164,30 @@ def test_retired_python_preparation_and_query_spool_are_absent():
     import emuflow.timing.local_path_timing as local
     for name in ('_LocalPathPreparationWriter','_PreparedLocalPathSequence','_resolve_local_path_fpga','_write_local_path_query'):
         assert not hasattr(local,name)
+
+
+@pytest.mark.parametrize('backend',['xilinx','vivado'])
+def test_prepared_path_and_route_links_bind_their_original_sealed_owners(tmp_path,backend):
+    import json
+    value=sources(tmp_path/'input')
+    aliases=[]
+    for selector,key in ((value.paths,'paths'),(value.routes,None)):
+        document=json.loads(selector.read_text())
+        member=document['payloads'][key]['path'] if key else document['artifact']
+        payload=selector.parent/member
+        target=tmp_path/(key or 'routes')/'original.sqlite'
+        target.parent.mkdir()
+        payload.rename(target)
+        payload.symlink_to(target)
+        aliases.append((payload,target))
+    prepared=prepare(value)
+    report=query(value,tmp_path/'output',backend=backend,prepared=prepared)
+    assert report['validation']['status']=='pass'
+    # Consumers retain the admitted original owner after an alias changes.
+    alias,target=aliases[0]
+    substitute=target.with_name('substitute.sqlite');substitute.write_bytes(target.read_bytes())
+    alias.unlink();alias.symlink_to(substitute)
+    assert query(value,tmp_path/'relinked',backend=backend,prepared=prepared)['validation']['status']=='pass'
+    with target.open('ab') as stream:stream.write(b'changed source')
+    with pytest.raises(ValidationError,match='generation changed|source changed|changed after'):
+        query(value,tmp_path/'changed',backend=backend,prepared=prepared)

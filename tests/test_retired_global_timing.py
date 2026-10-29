@@ -13,7 +13,7 @@ from emuflow.timing.phase7c import run_phase7c
 @pytest.mark.parametrize("entry", ["phase7c", "compile", "native-request"])
 def test_python_engine_rejected_before_input_or_frontend(tmp_path, entry):
     with patch("emuflow.timing.phase7c.read_tdm_schedule", side_effect=AssertionError("schedule opened")), patch(
-        "emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")
+        "emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")
     ), pytest.raises(EmuFlowError, match="only the OpenSTA"):
         if entry == "phase7c":
             run_phase7c(*(tmp_path / name for name in ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")),

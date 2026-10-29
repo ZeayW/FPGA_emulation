@@ -189,7 +189,7 @@ def test_the_canonical_container_launcher_requires_an_explicit_binary(tmp_path,m
 def test_transport_timeout_reaps_the_engine_and_its_child(tmp_path):
     import time
     from tests.test_native_tool_runtime import process_alive
-    options,_,_=case(tmp_path,damage='hang');options['timeout_ms']=1000
+    options,_,_=case(tmp_path,damage='hang');options['timeout_ms']=5000
     with pytest.raises(ValidationError,match='wall-time limit'):synthesize_transport(**options)
     children=json.loads((tmp_path/'children.json').read_text())
     deadline=time.monotonic()+5

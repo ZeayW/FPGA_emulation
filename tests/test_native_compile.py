@@ -68,9 +68,8 @@ def test_adapter_rejects_mixed_state_before_calling_phase(tmp_path):
     request.write_text(json.dumps({"options": {"output_dir": str(tmp_path / "out")}}))
     previous = tmp_path / "previous.json"
     previous.write_text(json.dumps({"schema": "emuflow.native-compile-state/v1", "run_id": "other"}))
-    with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("phase started")):
-        with pytest.raises(EmuFlowError, match="mixed or out-of-order"):
-            execute("frontend", request, previous, tmp_path / "next", "this-run")
+    with pytest.raises(EmuFlowError, match="mixed or out-of-order"):
+        execute("timing-policy", request, previous, tmp_path / "next", "this-run")
 
 
 def test_shared_preflight_publishes_effective_configuration_and_restores_next_context(tmp_path):
@@ -89,10 +88,12 @@ def test_shared_preflight_publishes_effective_configuration_and_restores_next_co
     assert set(value["effective_options"]) == set(inspect.signature(run_multi_fpga_flow).parameters)
     assert value["effective_options"]["clock_periods"] == {"clk": 10.0}
     observed = []
-    def frontend(ctx):
+    def timing_policy(ctx):
         observed.append((ctx.output_dir, ctx.clocks, ctx.seed, ctx.opensta))
-    with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=frontend):
-        execute("frontend", request, previous, tmp_path / "frontend.json", "run")
+    value["stage"] = "frontend"
+    previous.write_text(json.dumps(value))
+    with patch("emuflow.flow.multi_fpga_flow._compile_timing_policy", side_effect=timing_policy):
+        execute("timing-policy", request, previous, tmp_path / "timing-policy.json", "run")
     assert observed == [(tmp_path / "out", (), 0, str(Path(sys.executable).resolve()))]
 
 
@@ -195,6 +196,18 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
     from emuflow.routing.phase4_native import prepare_policy
     phase4_policy=prepare_policy(native_root/'phase4-policy',native_root/'assignment.sqlite',
         native_root/'platform.normalized.json',frame_slots=16,max_iterations=3,timing_driven=False)
+    from tests.frontend_input_fixture import write_timing, write_report, input_request
+    from emuflow.common.native_tools import native_file_generation
+    front = native_root / 'prepared'
+    front.mkdir()
+    (front / 'design.emuir.sqlite').symlink_to(source_ir)
+    (front / 'platform.normalized.json').write_bytes((native_root / 'platform.normalized.json').read_bytes())
+    write_report(front, case.ir.value['design']['name'])
+    clocks = {clock['id']: 1.0 for clock in case.ir.value['clocks']}
+    timing = native_root / 'timing'
+    write_timing(timing, case.ir.value['design']['name'], clocks)
+    # Generate a fully bound input request, then place it only during preflight.
+    input_configuration = input_request(front, timing, native_root / 'request-staging', native_root / 'platform.normalized.json', clocks)
     state_fields = {
         "phase4_root": ["path", str(native_root / "current")],
         "phase3_root": ["path", str(native_root)],
@@ -228,12 +241,17 @@ assert pathlib.Path(os.environ['XDG_CACHE_HOME']).parent==temporary
 with (out/'temporary-paths').open('a') as f:f.write(str(temporary)+'\\n')
 with (out/'calls').open('a') as f:f.write(a.stage+'\\n')
 if a.stage==FAIL:raise SystemExit(7)
-if WAITING and a.stage=='frontend':
+if WAITING and a.stage=='timing-policy':
  (out/'pid').write_text(str(os.getpid()))
  time.sleep(60)
 st=request.stat();generation=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
 if a.stage in ('tdm','partition','route','signoff') or (a.stage=='split' and v['options'].get('phase6_provider','baseline')=='baseline'):raise AssertionError('Python native-owned phase adapter started')
 state=STATE_FIELDS if not a.previous else json.loads(pathlib.Path(a.previous).read_text())['state'][1]
+if a.stage=='preflight':
+ root=out/'.native-frontend-input-request';root.mkdir()
+ path=root/'inputs.json';path.write_text(pathlib.Path(INPUT_REQUEST).read_text())
+ st=path.stat();g=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
+ state.update(native_frontend_input_request=['path',str(path)],native_frontend_input_generation=['tuple',g])
 if a.stage=='partition-policy':
  root=out/'.native-phase3-request';root.mkdir()
  request=root/'phase3-request.json';request.write_text(pathlib.Path(PARTITION_REQUEST).read_text())
@@ -254,14 +272,10 @@ if a.stage=='route-policy':
  g=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
  state.update(native_phase4_policy=['path',str(policy)],native_phase4_generation=['tuple',g],phase4_root=['path',str(out/'system-route')],projected_timing_paths=None)
  partition=json.loads((out/'partition/phase3_report.json').read_text());design=partition['design'];platform=partition['platform']
- frontend=out/'frontend/phase1';frontend.mkdir(parents=True,exist_ok=True)
- shutil.copy2(state['platform_path'][1],frontend/'platform.normalized.json')
- shutil.copy2(state['ir_path'][1],frontend/'design.emuir.sqlite')
- (frontend/'phase1_report.json').write_text(json.dumps({'schema':'emuflow.phase1-report/v1','phase':1,'status':'pass','design':design,'platform':platform,'synthesis':{'mode':'fixture'}}))
 
 # FIXTURE_CONTROL_STATE_READY
 value={'schema':'emuflow.native-compile-state/v1','run_id':a.run_id,'stage':a.stage,'status':'pass','request_generation':generation,'state':['map',state],'effective_options':v['options']}
-if TEMPORARY_REFERENCE and a.stage=='frontend':
+if TEMPORARY_REFERENCE and a.stage=='timing-policy':
  path=temporary/'unreleased-engine-cache'/'payload'
  if TEMPORARY_REFERENCE=='alias':
   alias=out/'unpublished-input';alias.symlink_to(path);path=alias
@@ -269,7 +283,7 @@ if TEMPORARY_REFERENCE and a.stage=='frontend':
 if a.stage=='preflight' and CORRUPT:value[CORRUPT]='invalid'
 pathlib.Path(a.output).write_text(json.dumps(value))
 '''.replace("FAIL", repr(fail)).replace("CORRUPT", repr(corrupt)).replace("WAITING", repr(waiting))
-       .replace("TEMPORARY_REFERENCE", repr(temporary_reference)).replace("STATE_FIELDS", repr(state_fields)).replace("PARTITION_REQUEST", repr(str(partition_request))).replace("PHASE6_POLICY",repr(str(phase6_policy))).replace("PHASE4_POLICY",repr(str(phase4_policy))))
+       .replace("TEMPORARY_REFERENCE", repr(temporary_reference)).replace("STATE_FIELDS", repr(state_fields)).replace("INPUT_REQUEST", repr(str(input_configuration))).replace("PARTITION_REQUEST", repr(str(partition_request))).replace("PHASE6_POLICY",repr(str(phase6_policy))).replace("PHASE4_POLICY",repr(str(phase4_policy))))
     request = tmp_path / "request.json"
     request.write_text(json.dumps({"schema": "emuflow.native-compile/v1", "python_executable": sys.executable,
         "python_source": str(source.parent), "working_directory": str(tmp_path),
@@ -282,7 +296,7 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     request = fixture_request(tmp_path)
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"tdm", "partition", "route", "split", "physical", "signoff", "finalize"}]
+    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"frontend", "timing", "tdm", "partition", "route", "split", "physical", "signoff", "finalize"}]
     report = json.loads((tmp_path / "out/native-compile-result.json").read_text())
     assert report["operation"]["status"] == "pass"
     assert report["native_data_plane_complete"] is False
@@ -313,7 +327,7 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     assert report["effective_configuration"] == json.loads(request.read_text())["options"]
     assert report["request_configuration"] == json.loads(request.read_text())
     assert [step["stage"] for step in report["stages"]] == list(STAGES)
-    assert all(step["maximum_process_rss_kib"] > 0 for step in report["stages"])
+    assert all(step["maximum_process_rss_kib"] > 0 for step in report["stages"] if step["implementation_id"] != "native-timing-boundary-v1")
     assert not list(tmp_path.glob(".emuflow-compile-*"))
 
 
@@ -378,7 +392,7 @@ temporary=pathlib.Path(os.environ['TMPDIR'])""")
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     roots = (tmp_path / "out/temporary-paths").read_text().splitlines()
-    assert len(set(roots)) == len(STAGES)-7
+    assert len(set(roots)) == len(STAGES)-9
     assert all(not Path(root).exists() for root in roots)
 
 
@@ -388,7 +402,7 @@ def test_native_controller_rejects_phase_temporary_input_even_through_output_ali
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode != 0
     assert "phase temporary path" in result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == ["preflight", "frontend"]
+    assert (tmp_path / "out/calls").read_text().splitlines() == ["preflight", "timing-policy"]
     assert json.loads((tmp_path / "out/native-compile-result.json").read_text())["operation"]["status"] == "fail"
     assert not list(tmp_path.glob(".emuflow-compile-*"))
 
@@ -483,7 +497,7 @@ def test_native_controller_does_not_advance_retry_or_publish_success_after_failu
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode != 0
     calls = (tmp_path / "out/calls").read_text().splitlines()
-    assert calls == (["preflight", "frontend", "timing-policy"] if failure == "failed-phase" else ["preflight"])
+    assert calls == (["preflight", "timing-policy"] if failure == "failed-phase" else ["preflight"])
     assert not (tmp_path / "out/multi-fpga-flow-report.json").exists()
     assert not list(tmp_path.glob(".emuflow-compile-*"))
 
@@ -495,7 +509,7 @@ def test_raw_frontend_cannot_fall_back_to_python_when_native_timing_policy_is_mi
     assert result.returncode != 0
     assert "policy" in result.stderr.lower()
     calls = (tmp_path / "out/calls").read_text().splitlines()
-    assert calls == ["preflight", "frontend", "timing-policy"]
+    assert calls == ["preflight", "timing-policy"]
     assert "timing" not in calls
     assert not (tmp_path / "out/multi-fpga-flow-report.json").exists()
     assert json.loads((tmp_path / "out/native-compile-result.json").read_text())["operation"]["status"] == "fail"
@@ -586,8 +600,13 @@ from emuflow.common.tool_runtime import NativeToolProcess
 class _CompileContext:
  def __init__(self,values,**kw):self.__dict__.update(values)
 def run_multi_fpga_flow(output_dir: Path=None, prepared_timing: Path=None):pass
-def _compile_preflight(ctx):ctx.output_dir.mkdir()
-def _compile_frontend(ctx):
+def _compile_preflight(ctx):
+ ctx.output_dir.mkdir()
+ root=ctx.output_dir/'.native-frontend-input-request';root.mkdir()
+ path=root/'inputs.json';path.write_text(Path({str(tmp_path / "native-inputs/request-staging/.native-frontend-input-request/inputs.json")!r}).read_text())
+ from emuflow.common.native_tools import native_file_generation
+ ctx.native_frontend_input_request=path;ctx.native_frontend_input_generation=tuple(str(v) for v in native_file_generation(path))
+def _compile_timing_policy(ctx):
  (ctx.output_dir/'adapter.pid').write_text(str(os.getpid()))
  engine="import os,signal,time,pathlib;signal.signal(signal.SIGTERM,signal.SIG_IGN);pathlib.Path('engine.pid').write_text(str(os.getpid()));time.sleep(60)"
  with NativeToolProcess({str(emuflow_native())!r},[sys.executable,'-c',engine],cwd=ctx.output_dir,scratch_parent=ctx.output_dir) as p:

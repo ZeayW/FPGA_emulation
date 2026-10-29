@@ -396,7 +396,7 @@ def test_native_endpoint_capability_fails_before_frontend(tmp_path):
             raise EmuFlowError("missing native endpoint producer")
     with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), \
          patch("emuflow.common.native_tools.require_native_schema", side_effect=require), \
-         patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")), \
+         patch("emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend started")), \
          pytest.raises(EmuFlowError, match="missing native endpoint producer"):
         run_preflight(sources=[tmp_path / "absent.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
                            physical=True, physical_backend="rapidwright", output_dir=tmp_path / "flow")

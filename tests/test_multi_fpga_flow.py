@@ -534,7 +534,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 )
 
     def test_compile_rejects_retired_cut_mode_before_frontend(self):
-        with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")):
+        with patch("emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend started")):
             with self.assertRaisesRegex(EmuFlowError, "requires static-exact-combinational"):
                 run_preflight(output_dir=Path("unused"), cut_mode="sequential-only")
 
@@ -910,7 +910,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 report["stages"]["frontend"]["synthesis"][
                     "interchange_retention"
                 ],
-                "deleted-after-phase1-import",
+                "source-owned-stream; no graph staging copy",
             )
             self.assertFalse((output / "frontend/synthesized.json").exists())
             self.assertFalse((output / "frontend/synthesized.json.gz").exists())

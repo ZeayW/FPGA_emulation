@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <set>
+#include <map>
 #include "common/artifact_io.hpp"
 #include "common/hash.hpp"
 
@@ -25,6 +28,24 @@
 #endif
 
 namespace emuflow::core {
+std::string Sha256File(const ArtifactRef& source,
+    const volatile std::sig_atomic_t* cancelled) {
+  source.RequireUnchanged();
+  std::ifstream input(source.path(),std::ios::binary);
+  if(!input)throw StageError(ErrorCode::kInvalidArtifact,"cannot read artifact content seal");
+  Sha256 hash;std::array<unsigned char,65536> buffer{};std::uint64_t bytes=0;
+  while(input) {
+    if(cancelled && *cancelled)throw StageError(ErrorCode::kExecutionFailed,"artifact admission cancelled");
+    input.read(reinterpret_cast<char*>(buffer.data()),buffer.size());
+    const auto n=input.gcount();if(n>0){hash.update(buffer.data(),n);bytes+=n;}
+  }
+  source.RequireUnchanged();
+  if(!input.eof() || bytes!=source.generation().bytes)
+    throw StageError(ErrorCode::kInvalidArtifact,"artifact content seal read failed");
+  const auto digest=hash.finish();const char* digits="0123456789abcdef";std::string text;
+  for(const auto byte:digest){text+=digits[byte>>4];text+=digits[byte&15];}return text;
+}
+
 FileGeneration ReadFileGeneration(CheckedRequestReader& reader) {
   FileGeneration value;
   value.device=reader.Read<std::uint64_t>(); value.inode=reader.Read<std::uint64_t>();
@@ -254,21 +275,45 @@ void PublishTextArtifact(const std::string& target,
 }
 
 void PublishNewDirectory(const std::string& temporary,const std::string& target,
-                         const std::vector<ArtifactRef>& inputs) {
+                         const std::vector<ArtifactRef>& inputs,
+                         const DirectoryReferences& references) {
   namespace fs=std::filesystem;
   const fs::path source=temporary,destination=target;
   if(fs::is_symlink(source) || !fs::is_directory(source) || fs::exists(destination) || fs::is_symlink(destination) ||
       fs::weakly_canonical(source.parent_path())!=fs::weakly_canonical(destination.parent_path()))
     throw StageError(ErrorCode::kPublicationFailed,"invalid new stage directory publication");
   for(const auto& input:inputs)input.RequireUnchanged();
+  std::map<fs::path, ArtifactRef> allowed;
+  std::set<fs::path> seen;
+  for (const auto &reference : references) {
+    const auto member=reference.first;
+    bool bound=false;
+    for (const auto &input : inputs)
+      if (input.path()==reference.second.path() && input.schema()==reference.second.schema() &&
+          input.generation()==reference.second.generation()) bound=true;
+    if (!bound || member.empty() || member.is_absolute() || member=="." ||
+        std::find(member.begin(),member.end(),fs::path(".."))!=member.end() ||
+        !allowed.emplace(member,reference.second).second)
+      throw StageError(ErrorCode::kPublicationFailed,"invalid directory input reference");
+  }
   std::vector<fs::path> directories{source};
   for(const auto& member:fs::recursive_directory_iterator(source)) {
-    if(member.is_symlink())throw StageError(ErrorCode::kPublicationFailed,"stage directory contains a symlink");
+    if(member.is_symlink()) {
+      const auto relative=member.path().lexically_relative(source);
+      const auto expected=allowed.find(relative);
+      if(expected==allowed.end() || !member.is_regular_file() ||
+          fs::canonical(member.path())!=fs::path(expected->second.path()) ||
+          !seen.insert(relative).second)
+        throw StageError(ErrorCode::kPublicationFailed,"stage directory contains an unbound symlink");
+      expected->second.RequireUnchanged();
+      continue;
+    }
     if(member.is_directory()){directories.push_back(member.path());continue;}
     if(!member.is_regular_file())throw StageError(ErrorCode::kPublicationFailed,"stage directory contains a non-file member");
     for(const auto& input:inputs)if(fs::equivalent(member.path(),input.path()))throw StageError(ErrorCode::kPublicationFailed,"stage directory member aliases source");
     SyncFile(member.path().string());
   }
+  if(seen.size()!=allowed.size())throw StageError(ErrorCode::kPublicationFailed,"directory input reference is missing");
   for(auto directory=directories.rbegin();directory!=directories.rend();++directory)SyncDirectory(*directory);
   for(const auto& input:inputs)input.RequireUnchanged();
   fs::rename(source,destination);
@@ -276,6 +321,26 @@ void PublishNewDirectory(const std::string& temporary,const std::string& target,
   catch(...) {
     try{fs::rename(destination,source);SyncDirectory(source.parent_path());}
     catch(...){throw StageError(ErrorCode::kPublicationFailed,"stage directory rollback failed; published generation retained at "+target);}
+    throw;
+  }
+}
+
+void PublishNewDirectoryGroup(const std::vector<NewDirectoryPublication>& directories,
+    const std::vector<ArtifactRef>& inputs, const std::function<void()>& accepted) {
+  std::vector<std::filesystem::path> published;
+  try {
+    for(const auto &directory : directories) {
+      PublishNewDirectory(directory.temporary.string(), directory.target.string(), inputs, directory.references);
+      published.push_back(directory.target);
+    }
+    for(const auto &input : inputs)input.RequireUnchanged();
+    if(accepted)accepted();
+  } catch(...) {
+    for(auto path=published.rbegin();path!=published.rend();++path) {
+      std::error_code error;std::filesystem::remove_all(*path,error);
+      if(error)throw StageError(ErrorCode::kPublicationFailed,"new directory group rollback failed; retained generation at "+path->string());
+      SyncDirectory(path->parent_path());
+    }
     throw;
   }
 }

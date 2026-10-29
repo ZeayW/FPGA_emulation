@@ -5,7 +5,6 @@ import sqlite3
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.flow.prepared_inputs import _published_timing_report
 from tests.openparf_input_reference import _write_site_database
 
 
@@ -28,25 +27,6 @@ def assert_closed(connections):
     for connection in connections:
         with pytest.raises(sqlite3.ProgrammingError, match='closed'):
             connection.execute('SELECT 1')
-
-
-@pytest.mark.parametrize('invalid_version', [False, True])
-def test_prepared_readers_close_on_success_and_rejection(tmp_path, retained_connections, invalid_version):
-    original, connections = retained_connections
-    with closing(original(tmp_path/'paths.sqlite')) as database, database:
-        database.executescript('PRAGMA user_version=1; CREATE TABLE paths(clock_domain TEXT,clock_period_ns REAL); INSERT INTO paths VALUES ("clk",10);')
-        if invalid_version: database.execute('PRAGMA user_version=9')
-    with closing(original(tmp_path/'weights.sqlite')) as database, database:
-        database.executescript('PRAGMA user_version=1; CREATE TABLE net_weights(net TEXT); INSERT INTO net_weights VALUES ("n0");')
-    timing = {'design': 'fixture', 'payloads': {'paths': {'path': 'paths.sqlite', 'format': 'sqlite-sta-path/v1', 'records': 1}}, 'summary': {'paths': 1}}
-    weights = {'schema': 'emuflow.partition-net-weights/v2', 'design': 'fixture', 'payloads': {'weights': {'path': 'weights.sqlite', 'format': 'sqlite-net-weights/v1', 'records': 1}}, 'summary': {'weighted_nets': 1}}
-    if invalid_version:
-        with pytest.raises(ValidationError, match='version mismatch'):
-            _published_timing_report(tmp_path, timing, weights, {'clk': 10.0})
-    else:
-        assert _published_timing_report(tmp_path, timing, weights, {'clk': 10.0})['status'] == 'pass'
-    assert len(connections) == (1 if invalid_version else 2)
-    assert_closed(connections)
 
 
 @pytest.mark.parametrize('duplicate_site', [False, True])

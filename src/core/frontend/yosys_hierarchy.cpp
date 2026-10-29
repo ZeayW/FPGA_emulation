@@ -446,8 +446,18 @@ class Hierarchy {
         });
       });else stream.Skip();
     });stream.Finish();
+    if(top_.empty()) {
+      auto marked=db_.Prepare("SELECT name FROM staging_module_defs WHERE COALESCE(CAST(json_extract(attributes_json,'$.top') AS TEXT),'0') NOT IN ('0','') ORDER BY name LIMIT 2");
+      if(marked.Step()){const auto name=marked.TypedText(0);if(!marked.Step())top_=name;}
+      if(top_.empty()) {
+        auto only=db_.Prepare("SELECT name FROM staging_module_defs ORDER BY name LIMIT 2");
+        Check(only.Step(),"Yosys JSON contains no modules");const auto name=only.TypedText(0);
+        Check(!only.Step(),"unable to infer top module; pass --top");top_=name;
+      }
+    }
     auto found=db_.Prepare("SELECT count(*) FROM staging_module_defs WHERE name=?1");found.BindText(1,top_);Check(found.Step() && found.Integer(0)==1,"missing top module");
   }
+  const std::string& top() const {return top_;}
   void Expand() {
     std::vector<std::string> ancestors;ExpandModule(top_,"",nullptr,ancestors);
     if(flat_)return;
@@ -522,7 +532,7 @@ StageResult RunYosysProducer(const ArtifactRef& request,std::istream& stream,con
     CheckedRequestReader r(request.path(),512*1024);Check(r.Read<std::uint64_t>()==(compact?0x31524959464d5545ULL:0x31485953464d5545ULL),"request magic is invalid");
     const auto version=r.Read<std::uint32_t>();Check(version==(compact?1U:normalization_library?2U:1U),"request version is invalid");
     if(compact)Check(r.Read<std::uint32_t>()==(normalization_library?1U:0U),"import request source flags disagree");
-    const auto top=r.ReadString32(false,65536);Check(!top.empty(),"empty top");std::string source;std::vector<std::string> clocks;
+    auto top=r.ReadString32(compact,65536);Check(compact || !top.empty(),"empty top");std::string source;std::vector<std::string> clocks;
     if(compact){source=r.ReadString32(false,65536);const auto count=r.Read<std::uint32_t>();Check(count<=16384,"clock configuration exceeds bound");for(unsigned i=0;i<count;++i)clocks.push_back(r.ReadString32(false,65536));}
     if(normalization_library && !(ReadFileGeneration(r)==normalization_library->generation()))throw StageError(ErrorCode::kMixedGeneration,"normalization primitive library generation changed");
     r.RequireEnd();std::string result;
@@ -531,7 +541,7 @@ StageResult RunYosysProducer(const ArtifactRef& request,std::istream& stream,con
       db.Execute("PRAGMA cache_size=-32768;PRAGMA temp.cache_size=-16384");std::string staging=kYosysHierarchyDDL;
       if(compact){std::size_t at=0;while((at=staging.find("CREATE TABLE ",at))!=std::string::npos){staging.replace(at,13,"CREATE TEMP TABLE ");at+=18;}}
       db.Execute(staging);SqliteTransaction tx(db);
-      {Hierarchy hierarchy(db,top,flat);hierarchy.Parse(stream);hierarchy.Expand();result=hierarchy.Summary();}
+      {Hierarchy hierarchy(db,top,flat);hierarchy.Parse(stream);top=hierarchy.top();hierarchy.Expand();result=hierarchy.Summary();}
       db.Execute("DROP TABLE staging_module_defs;DROP TABLE staging_module_cells;DROP TABLE staging_module_names;DROP TABLE staging_module_ports;DROP TABLE hierarchy_aliases");
       if(normalization_library){XilinxNormalizer normalizer(db,top,*normalization_library);auto fields=Json(db).Object(result);fields["normalization"]=normalizer.Run();fields["implementation_id"]=JsonQuoteUtf8("native-yosys-hierarchy-and-xilinx-normalization-v1");result=Encode(fields);}
       if(compact){db.Execute(kEmuirCompactDDL);auto fields=Json(db).Object(result);std::string counts;{CompactYosysBuilder builder(db,top,Json(db).String(Get(fields,"creator")),source,clocks);counts=builder.Run();}fields["emuir_records"]=counts;fields["schema"]=JsonQuoteUtf8("emuflow.yosys-emuir-import/v1");fields["implementation_id"]=JsonQuoteUtf8("native-yosys-emuir-v1");fields["validation"]=Encode(Fields{{"status",JsonQuoteUtf8("pass")},{"coverage",JsonQuoteUtf8("complete-source-endpoints-and-independent-net-classification")}});result=Encode(fields);}

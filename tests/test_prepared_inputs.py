@@ -1,5 +1,4 @@
 """Completed indexed boundaries stay read-only and skip synthesis/timing."""
-from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,11 +8,19 @@ from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json, write_json
-from emuflow.flow.multi_fpga_flow import _checked_flow_member, run_multi_fpga_flow
-from emuflow.flow.prepared_inputs import (
-    bind_prepared_inputs,
-    validate_prepared_timing_boundary,
-)
+from emuflow.flow.multi_fpga_flow import _checked_flow_member
+from tests.frontend_input_fixture import input_request, write_timing, write_report
+from tests.native_build import emuflow_native
+import subprocess
+
+
+def adopt(front, timing, root, platform=DEFAULT_PLATFORM_PATH, clocks=None):
+    request = input_request(front, timing, root, platform, clocks or {"clk": 10.0})
+    result = subprocess.run([str(emuflow_native()), "phase1", "import-inputs", str(request), str(root)], capture_output=True, text=True)
+    if result.returncode:
+        raise ValidationError(result.stderr)
+    return root / "frontend/phase1"
+
 from emuflow.platform.platform import Platform
 from emuflow.frontend.yosys import import_yosys_json
 
@@ -29,29 +36,19 @@ def boundaries(tmp_path):
     write_compact_emuir(front / "design.emuir.sqlite", ir.to_dict())
     board = read_json(DEFAULT_PLATFORM_PATH)
     write_json(front / "platform.normalized.json", board)
-    write_json(front / "phase1_report.source.json", {
-        "status": "pass", "design": "counter", "indexed_staging_transform": {
-            "primitive_audit": {"status": "pass", "mapping_profile": PROFILE}}})
+    write_report(front, "counter")
+    write_timing(timing, "counter", {"clk": 10.0})
     write_json(timing / "experiment-timing-report.json", {"status": "pass", "clocks": {"clk": 10.0}})
-    for name, value in [
-        ("path-database.json", {"schema": "emuflow.sta-path-database/v3", "design": "counter"}),
-        ("partition-net-weights.json", {"schema": "emuflow.partition-net-weights/v2"}),
-    ]:
-        payload_name = name + ".sqlite"
-        (timing / payload_name).write_bytes(b"fixture-indexed-payload")
-        value["payloads"] = {"paths" if name.startswith("path-") else "weights": {"path": payload_name, "format": "sqlite-sta-path/v1" if name.startswith("path-") else "sqlite-net-weights/v1", "records": 1, "sha256": "a" * 64}}
-        write_json(timing / name, value)
     return front, timing
 
 
 def test_binds_payloads_without_copying_or_loading_graph(tmp_path, boundaries):
     front, timing = boundaries
     with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole graph load")):
-        bind_prepared_inputs(front, timing, tmp_path / "out/front", tmp_path / "out/timing",
-                             DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
-    assert (tmp_path / "out/front/design.emuir.sqlite").resolve() == front / "design.emuir.sqlite"
-    assert (tmp_path / "out/timing/path-database.json.sqlite").is_symlink()
-    assert read_json(tmp_path / "out/front/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
+        adopt(front, timing, tmp_path / "out")
+    assert (tmp_path / "out/frontend/phase1/design.emuir.sqlite").resolve() == front / "design.emuir.sqlite"
+    assert (tmp_path / "out/timing/paths.sqlite").is_symlink()
+    assert read_json(tmp_path / "out/frontend/phase1/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
 
 
 def test_rebinds_legacy_platform_snapshot_without_parsing_obsolete_links(
@@ -68,24 +65,15 @@ def test_rebinds_legacy_platform_snapshot_without_parsing_obsolete_links(
             model.pop("ratio_coefficient_ns")
     write_json(front / "platform.normalized.json", legacy)
 
-    bind_prepared_inputs(
-        front,
-        timing,
-        tmp_path / "out/front",
-        tmp_path / "out/timing",
-        DEFAULT_PLATFORM_PATH,
-        {"clk": 10.0},
-        PROFILE,
-    )
+    adopt(front, timing, tmp_path / "out")
 
-    assert read_json(tmp_path / "out/front/platform.normalized.json") == (
+    assert read_json(tmp_path / "out/frontend/phase1/platform.normalized.json") == (
         Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
     )
 def test_terminal_validation_accepts_only_the_declared_prepared_emuir(tmp_path, boundaries):
     root = tmp_path / "flow"
     front = root / "frontend/phase1"
-    bind_prepared_inputs(*boundaries, front, root / "timing",
-                         DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
+    adopt(*boundaries, root)
     emuir = Path("frontend/phase1/design.emuir.sqlite")
     assert _checked_flow_member(root, emuir, "EmuIR") == root / emuir
     report = read_json(front / "phase1_report.json")
@@ -102,8 +90,7 @@ def test_terminal_validation_accepts_only_the_declared_prepared_emuir(tmp_path, 
 
 def test_rejects_changed_clock_contract(tmp_path, boundaries):
     with pytest.raises(ValidationError, match="clock constraints mismatch"):
-        bind_prepared_inputs(*boundaries, tmp_path / "out/front", tmp_path / "out/timing",
-                             DEFAULT_PLATFORM_PATH, {"clk": 20.0}, PROFILE)
+        adopt(*boundaries, tmp_path / "out", clocks={"clk": 20.0})
 
 
 def test_saved_link_schema_is_not_a_current_routing_input(tmp_path, boundaries):
@@ -117,9 +104,8 @@ def test_saved_link_schema_is_not_a_current_routing_input(tmp_path, boundaries):
     write_json(front / "platform.normalized.json", board)
     with pytest.raises(ValidationError, match="unexpected or missing fields"):
         Platform.load(front / "platform.normalized.json")
-    bind_prepared_inputs(front, timing, tmp_path / "out/front", tmp_path / "out/timing",
-                         DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
-    assert read_json(tmp_path / "out/front/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
+    adopt(front, timing, tmp_path / "out")
+    assert read_json(tmp_path / "out/frontend/phase1/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
     assert read_json(front / "platform.normalized.json") == board
 
 
@@ -130,55 +116,87 @@ def test_saved_device_identity_still_enforced(tmp_path, boundaries, part):
     board["fpgas"][0]["part"] = part
     write_json(front / "platform.normalized.json", board)
     with pytest.raises(ValidationError, match="device identity|device part differs"):
-        bind_prepared_inputs(front, timing, tmp_path / "out/front", tmp_path / "out/timing",
-                             DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
+        adopt(front, timing, tmp_path / "out")
 
 
-def test_prepared_frontend_adapter_binds_without_synthesis_or_sta(tmp_path, boundaries):
-    from tests.compile_adapter_fixture import preflight
-    from emuflow.flow.multi_fpga_flow import _compile_frontend, _compile_timing_policy, _compile_timing
-    with patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"), patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.flow.multi_fpga_flow._resolve_partition_openroad", return_value=None):
-        context = preflight(output_dir=tmp_path / "continued", prepared_frontend=boundaries[0],
-                            prepared_timing=boundaries[1], clock_periods={"clk": 10.0})
-    with patch("emuflow.flow.multi_fpga_flow.run_phase1", side_effect=AssertionError("synthesis")), patch("emuflow.timing.phase2_native.run_native_phase2", side_effect=AssertionError("Phase 2")):
-        _compile_frontend(context)
-        _compile_timing_policy(context)
-        _compile_timing(context)
-    assert context.ir_path.resolve() == boundaries[0] / "design.emuir.sqlite"
-    assert context.timing_report["status"] == "pass"
-    assert not hasattr(context, "native_phase2_policy")
-
-
-def test_native_published_phase2_checks_clocks_and_counts_without_standalone_report(tmp_path, boundaries):
-    import sqlite3
+def test_native_published_phase2_checks_clocks_counts_and_source_seals(tmp_path, boundaries):
     front, timing = boundaries
     (timing / "experiment-timing-report.json").unlink()
-    for name, schema, table, sql in (
-        ("path-database.json", "emuflow.sta-path-database/v3", "paths",
-         "CREATE TABLE paths(clock_domain TEXT,clock_period_ns REAL); INSERT INTO paths VALUES('clk',10.0)"),
-        ("partition-net-weights.json", "emuflow.partition-net-weights/v2", "net_weights",
-         "CREATE TABLE net_weights(net_id TEXT); INSERT INTO net_weights VALUES('n0')"),
-    ):
-        manifest = read_json(timing / name)
-        payload = timing / next(iter(manifest["payloads"].values()))["path"]
-        payload.unlink()
-        with closing(sqlite3.connect(payload)) as connection, connection:
-            connection.executescript("PRAGMA user_version=1; " + sql)
-        manifest["design"] = "counter"
-        manifest["summary"] = {"paths" if table == "paths" else "weighted_nets": 1}
-        write_json(timing / name, manifest)
-    checked = validate_prepared_timing_boundary(
-        front, timing, {"clk": 10.0}
-    )
-    assert checked["publication_validation"] == (
-        "sqlite-version-clocks-row-counts-v1"
-    )
+    root = tmp_path / "checked"
+    adopt(front, timing, root)
+    checked = read_json(root / "timing/prepared-timing-summary.json")["validation"]
+    assert checked["publication_validation"] == "native-typed-version-clock-count-and-content-seals-v1"
     with pytest.raises(ValidationError, match="clock constraints mismatch"):
-        validate_prepared_timing_boundary(front, timing, {"clk": 20.0})
+        adopt(front, timing, tmp_path / "wrong-clock", clocks={"clk": 20.0})
     with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("graph replay")):
-        bind_prepared_inputs(front, timing, tmp_path / "valid/front", tmp_path / "valid/timing",
-                             DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
-    assert read_json(tmp_path / "valid/timing/experiment-timing-report.json")["publication_validation"] == "sqlite-version-clocks-row-counts-v1"
-    with pytest.raises(ValidationError, match="clock constraints mismatch"):
-        bind_prepared_inputs(front, timing, tmp_path / "invalid/front", tmp_path / "invalid/timing",
-                             DEFAULT_PLATFORM_PATH, {"clk": 20.0}, PROFILE)
+        adopt(front, timing, tmp_path / "valid")
+    selector = read_json(timing / "path-database.json")
+    selector["summary"]["paths"] += 1
+    write_json(timing / "path-database.json", selector)
+    with pytest.raises(ValidationError, match="count mismatch"):
+        adopt(front, timing, tmp_path / "invalid")
+    assert not (tmp_path / "invalid/frontend/phase1").exists()
+    assert not (tmp_path / "invalid/timing").exists()
+
+
+@pytest.mark.parametrize("damage", ["content", "schema", "missing", "escape"])
+def test_native_prepared_input_rejects_unsealed_or_incomplete_publication(tmp_path, boundaries, damage):
+    front, timing = boundaries
+    if damage == "content":
+        with (timing / "paths.sqlite").open("ab") as stream:
+            stream.write(b"changed")
+    else:
+        selector = read_json(timing / "path-database.json")
+        if damage == "schema": selector["schema"] = "unknown"
+        if damage == "missing": selector["payloads"]["paths"]["path"] = "missing.sqlite"
+        if damage == "escape": selector["payloads"]["paths"]["path"] = "../paths.sqlite"
+        write_json(timing / "path-database.json", selector)
+    with pytest.raises((ValidationError, FileNotFoundError)):
+        adopt(front, timing, tmp_path / "invalid")
+    assert not (tmp_path / "invalid/frontend/phase1").exists()
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+@pytest.mark.parametrize("top", [None, "counter"])
+def test_supplied_json_is_imported_natively_without_staging_copy(tmp_path, compressed, top):
+    import gzip
+    from types import SimpleNamespace
+    from emuflow.frontend.inputs import prepare_inputs
+    source = ROOT / "examples/yosys/counter.json"
+    if compressed:
+        packed = tmp_path / "source.json.gz"
+        packed.write_bytes(gzip.compress(source.read_bytes()))
+        source = packed
+    ctx = SimpleNamespace(prepared_frontend=None, prepared_timing=None, sources=(),
+        yosys_json=source, include_dirs=(), defines=(), platform_path=DEFAULT_PLATFORM_PATH,
+        output_dir=tmp_path / "out", top=top, clocks=("clk",), clock_periods={"clk": 10.0}, mapping_profile=PROFILE)
+    from emuflow.common.native_tools import native_file_generation
+    generation = native_file_generation(source)
+    request = prepare_inputs(ctx)
+    result = subprocess.run([str(emuflow_native()), "phase1", "import-inputs", str(request), str(ctx.output_dir)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert native_file_generation(source) == generation
+    assert (ctx.output_dir / "frontend/phase1/design.emuir.sqlite").is_file()
+    assert not list((ctx.output_dir / "frontend").glob("synthesized*"))
+    assert not (ctx.output_dir / "timing").exists()
+
+
+def test_prepared_clock_without_paths_is_preserved(tmp_path, boundaries):
+    import json
+    import sqlite3
+    front, timing = boundaries
+    path = front / "design.emuir.sqlite"
+    connection = sqlite3.connect(path)
+    try:
+        row = connection.execute("SELECT record_json FROM clocks LIMIT 1").fetchone()
+        clock = json.loads(row[0]);clock["id"] = "unused_clk"
+        connection.execute("INSERT INTO clocks(seq,record_json) SELECT MAX(seq)+1,? FROM clocks", (json.dumps(clock),))
+        connection.commit()
+    finally:
+        connection.close()
+    clocks = {"clk": 10.0, "unused_clk": 20.0}
+    write_json(timing / "experiment-timing-report.json", {"status": "pass", "clocks": clocks})
+    adopt(front, timing, tmp_path / "out", clocks=clocks)
+    checked = read_json(tmp_path / "out/timing/prepared-timing-summary.json")["validation"]
+    assert checked["clocks"] == clocks
+    assert checked["sta"]["paths"] == 1

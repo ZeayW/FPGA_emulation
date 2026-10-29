@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import math
 import os
-import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -27,7 +26,6 @@ from emuflow.common.io import read_json, write_json
 from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow, validate_multi_fpga_physical_report
 from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, check_opensta_engine_version
 from emuflow.physical.openparf.openparf import validate_openparf_runtime
-from emuflow.frontend.phase1 import run_phase1
 from emuflow.partition.phase3 import validate_phase3_indexed
 from emuflow.routing.phase4 import validate_phase4
 from emuflow.scheduling.phase5 import validate_phase5
@@ -50,7 +48,7 @@ from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from emuflow.timing.sta import partition_net_weights_payload_path, project_sta_path_database, sta_path_database_payload_path
 from emuflow.frontend.synthesis import VALID_XILINX_MAPPING_STRATEGIES
 from emuflow.timing.xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
-from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE, audit_xilinx_mapped_json
+from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v2"
 MULTI_FPGA_FLOW_PROVIDER = (
@@ -1332,58 +1330,9 @@ def _compile_preflight(ctx: _CompileContext):
     if ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources:
         from emuflow.frontend.frontend_native import prepare_frontend
         prepare_frontend(ctx)
-
-def _compile_frontend(ctx: _CompileContext):
-    """Bind prepared boundaries or import supplied JSON; RTL runs natively."""
-    if getattr(ctx, "native_frontend_request", None) is not None:
-        raise EmuFlowError("native compiler RTL frontend is owned by the C++ stage")
-    source_list = [path.resolve() for path in ctx.sources]
-    frontend_root = ctx.output_dir / "frontend"
-    frontend_root.mkdir(parents=True, exist_ok=True)
-    ctx.phase1_root = frontend_root / "phase1"
-    if ctx.prepared_frontend is not None or ctx.prepared_timing is not None:
-        if ctx.prepared_frontend is None or ctx.prepared_timing is None or source_list or ctx.yosys_json is not None:
-            raise EmuFlowError("prepared continuation requires both Phase 1 and Phase 2 boundaries and no synthesis inputs")
-        from emuflow.flow.prepared_inputs import bind_prepared_inputs
-        ctx.frontend_report, ctx.timing_report = bind_prepared_inputs(
-            ctx.prepared_frontend, ctx.prepared_timing, ctx.phase1_root,
-            ctx.output_dir / "timing", ctx.platform_path, ctx.clock_periods, ctx.mapping_profile,
-        )
-    else:
-        if ctx.yosys_json is None:
-            raise EmuFlowError("native compiler RTL frontend is owned by the C++ stage")
-        if source_list:
-            raise EmuFlowError("provide RTL sources or --yosys-json, not both")
-        if ctx.include_dirs or ctx.defines:
-            raise EmuFlowError("Verilog include directories and defines apply only when compiling RTL sources")
-        source = ctx.yosys_json.resolve()
-        if not source.is_file():
-            raise EmuFlowError(f"Yosys JSON does not exist: {source}")
-        staging = frontend_root / ("synthesized.json.gz" if source.suffix == ".gz" else "synthesized.json")
-        shutil.copyfile(source, staging)
-        try:
-            audit_xilinx_mapped_json(staging, top=ctx.top)
-            digest = _sha256(staging)
-            ctx.frontend_report = run_phase1(staging, ctx.platform_path, ctx.phase1_root, top=ctx.top, clocks=ctx.clocks)
-        finally:
-            staging.unlink(missing_ok=True)
-        if ctx.frontend_report["status"] != "pass":
-            raise EmuFlowError("multi-FPGA frontend failed capacity or clock-topology checks")
-        ctx.frontend_report = {
-            **ctx.frontend_report,
-            "synthesis": {
-                "provider": "yosys", "mode": "provided-yosys-json",
-                "mapping_profile": "provided-yosys-json", "sources": [],
-                "include_dirs": [], "defines": [], "yosys_json_sha256": digest,
-                "interchange_retention": "deleted-after-phase1-import",
-            },
-        }
-    ctx.ir_path = ctx.phase1_root / "design.emuir.sqlite"
-    write_json(
-        frontend_root / "orchestration-summary.json",
-        _stage_summary("frontend", ctx.frontend_report),
-    )
-
+    elif ctx.prepared_frontend is not None or ctx.prepared_timing is not None or ctx.yosys_json is not None:
+        from emuflow.frontend.inputs import prepare_inputs
+        prepare_inputs(ctx)
 
 def _timing_paths(ctx: _CompileContext):
     ctx.timing_root = ctx.output_dir / "timing"
@@ -1409,11 +1358,6 @@ def _compile_timing_policy(ctx: _CompileContext):
             criticality_scale=ctx.timing_criticality_scale,
             criticality_exponent=ctx.timing_criticality_exponent)
         ctx.native_phase2_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase2_policy))
-
-
-def _compile_timing(ctx: _CompileContext):
-    if ctx.internal_timing_database and ctx.prepared_timing is None:
-        raise EmuFlowError("native compiler timing is owned by the C++ Phase 2 stage")
 
 
 def _compile_partition_policy(ctx: _CompileContext):

@@ -56,6 +56,8 @@ timing/sta_paths.cpp
 timing/sta_weights.cpp
 frontend/yosys_hierarchy.cpp
 frontend/frontend.cpp
+frontend/report.cpp
+frontend/inputs.cpp
 partition/partition_init.cpp
 partition/partition_semantics.cpp
 partition/phase3_exact_binary.cpp

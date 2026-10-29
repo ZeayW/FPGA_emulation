@@ -1,4 +1,5 @@
 #pragma once
+#include <csignal>
 
 #include "common/stage_runtime.hpp"
 
@@ -85,6 +86,8 @@ class CheckedRequestReader {
 };
 
 FileGeneration ReadFileGeneration(CheckedRequestReader& reader);
+std::string Sha256File(const ArtifactRef& source,
+    const volatile std::sig_atomic_t* cancelled = nullptr);
 
 // Publish an already closed same-directory file (including a SQLite store)
 // through the same synchronization/rename boundary as binary artifacts.
@@ -95,8 +98,19 @@ void PublishTemporaryFile(const std::string& temporary, const std::string& targe
 // closed regular file or directory; existing destinations, source aliases and
 // symlink members are rejected at every depth.
 // Sources remain bound through directory synchronization and rollback.
+// References must name explicit immutable input files. Other symlinks and
+// source aliases remain forbidden in published directories.
+using DirectoryReferences = std::vector<std::pair<std::filesystem::path, ArtifactRef>>;
 void PublishNewDirectory(const std::string& temporary,const std::string& target,
-                         const std::vector<ArtifactRef>& inputs);
+                         const std::vector<ArtifactRef>& inputs,
+                         const DirectoryReferences& references = {});
+struct NewDirectoryPublication {
+  std::filesystem::path temporary, target;
+  DirectoryReferences references;
+};
+void PublishNewDirectoryGroup(const std::vector<NewDirectoryPublication>& directories,
+    const std::vector<ArtifactRef>& inputs,
+    const std::function<void()>& accepted = {});
 
 // Publish an invocation-owned group of closed files, with the report last.
 // Retain prior destinations in the caller's private backup directory and
