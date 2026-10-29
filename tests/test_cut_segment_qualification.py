@@ -12,13 +12,11 @@ from unittest import mock
 from emuflow.partition.combinational_cut import semantic_contract_sha256
 from emuflow.validation.cut_segment_qualification import (
     CUT_SEGMENT_INDEXED_QUALIFICATION_SCHEMA,
-    CUT_SEGMENT_QUALIFICATION_SCHEMA,
     build_cut_segment_qualification,
-    build_cut_segment_qualification_value,
     validate_cut_segment_qualification,
 )
 from emuflow.ir.emuir_compact import write_compact_emuir
-from emuflow.common.io import write_json
+from emuflow.common.io import read_json, write_json
 from emuflow.timing.opensta import (
     DEFAULT_TIMING_MODEL,
     classify_through_net_timing_endpoints,
@@ -26,6 +24,7 @@ from emuflow.timing.opensta import (
 )
 from emuflow.frontend.yosys import import_yosys_json
 from tests.phase3_store_fixture import write_current_assignment_fixture
+from tests.cut_qualification_reference import build_cut_segment_qualification_value, CUT_SEGMENT_QUALIFICATION_SCHEMA
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,7 +100,15 @@ class CutSegmentQualificationTest(unittest.TestCase):
                     "paths": [{"id": "path0", "path_nets": [cut_net]}]}
         write_compact_emuir(ir_path, ir.value)
         write_current_assignment_fixture(assignment_path, ir, assignment)
-        write_json(database_path, database)
+        from tests.test_sta import _write_projection_database
+        database.update(design=ir.value['design']['name'], source={'provider': 'opensta-fpga-path-database-v1'},
+            normalization={'positive_slack_scale_ns':1.0,'negative_slack_scale_ns':1.0,'max_clock_period_ns':10.0})
+        database['paths'][0].update(clock_domain='clk',clock_period_ns=10.0,slack_ns=0.0,fixed_delay_ns=1.0)
+        _write_projection_database(database_path, database)
+        manifest=read_json(database_path)
+        manifest['summary']={'paths':1,'structured_endpoint_paths':0,'unique_path_nets':1,
+            'qor':{'wns_ns':0.0,'tns_ns':0.0,'failing_endpoints':0,'timed_endpoints':1}}
+        write_json(database_path,manifest)
         return (ir_path, assignment_path, database_path), ir, assignment, database, structural
 
     def test_reconstructs_structural_cut_and_segment_identity(self):
@@ -116,9 +123,7 @@ class CutSegmentQualificationTest(unittest.TestCase):
         self.assertEqual(record["source_segment_ids"], ["segment000000"])
         self.assertEqual(record["capture_segment_ids"], ["segment000001"])
 
-    @mock.patch("emuflow.validation.cut_segment_qualification.validate_sta_path_database_path_value",
-                return_value={"status": "pass", "paths": 1})
-    def test_independent_rebuild_rejects_tampering(self, _validate):
+    def test_independent_rebuild_rejects_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:
             paths, _ir, _assignment, _database, _structural = self._fixture(Path(temporary))
             artifact = build_cut_segment_qualification(*paths)
@@ -147,7 +152,7 @@ class CutSegmentQualificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths, ir, assignment, database, structural = self._fixture(Path(temporary))
             reference = build_cut_segment_qualification_value(ir, assignment, database)
-            with mock.patch("emuflow.validation.cut_segment_qualification.EmuIR.load",
+            with mock.patch("emuflow.ir.ir.EmuIR.load",
                             side_effect=AssertionError("whole-graph loading forbidden")):
                 compact = build_cut_segment_qualification(*paths, input_already_validated=True)
             self.assertEqual(compact["summary"], reference["summary"])

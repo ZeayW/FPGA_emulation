@@ -23,6 +23,8 @@ void ProjectExactQueryRecords(const ArtifactRef& artifact,const std::string& des
 // coordinates are retained; net/endpoint identities never form a name catalog.
 std::string ValidateExactBinaryArtifact(const ArtifactRef& artifact,
                                        const std::string& descriptor);
+// Read and bind the bounded manifest/count contract without rescanning sections.
+std::string ReadExactBinaryCounts(const ArtifactRef& artifact,const std::string& descriptor);
 void ValidateExactBinary(const std::vector<ArtifactRef>& inputs,
                          const std::string& summary);
 // Complete native file/manifest/descriptor production from final native records.

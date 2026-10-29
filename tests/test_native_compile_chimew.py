@@ -375,7 +375,7 @@ value['state']=codec._pack(codec._control_snapshot(_CompileContext(state),a.stag
     assert route_store.read_bytes().startswith(b"SQLite format 3")
     if tamper:
         assert result.returncode != 0
-        assert calls == [stage for stage in STAGES[: STAGES.index(tamper) + 1] if stage not in {"frontend", "timing-policy", "partition-policy", "timing", "tdm", "partition", "route", "finalize"}]
+        assert calls == [stage for stage in STAGES[: STAGES.index(tamper) + 1] if stage not in {"frontend", "timing-policy", "partition-policy", "route-policy", "timing", "tdm", "partition", "route", "finalize"}]
         assert "geometry generation changed" in result.stderr
         assert not (root / "out/multi-fpga-flow-report.json").exists()
     else:
@@ -384,7 +384,7 @@ value['state']=codec._pack(codec._control_snapshot(_CompileContext(state),a.stag
         # regain the old Python terminal adapter's fabricated success.
         assert result.returncode != 0
         assert "Chimew signoff requires physical results" in result.stderr
-        assert calls == [stage for stage in STAGES[:STAGES.index("signoff")] if stage not in {"frontend", "timing-policy", "partition-policy", "timing", "tdm", "partition", "route", "finalize"}]
+        assert calls == [stage for stage in STAGES[:STAGES.index("signoff")] if stage not in {"frontend", "timing-policy", "partition-policy", "route-policy", "timing", "tdm", "partition", "route", "finalize"}]
         report = json.loads((root / "out/native-compile-result.json").read_text())
         assert report["native_data_plane_complete"] is False
         assert not (root / "out/multi-fpga-flow-report.json").exists()
@@ -392,4 +392,4 @@ value['state']=codec._pack(codec._control_snapshot(_CompileContext(state),a.stag
         assert route["implementation_id"] == "native-phase4-v1"
         partition = next(step for step in report["stages"] if step["stage"] == "partition")
         assert partition["implementation_id"] == "native-phase3-v1"
-        assert (root / "out/native-partition-reference.json").is_file()
+        assert (root / "out/partition/phase3_report.json").is_file()

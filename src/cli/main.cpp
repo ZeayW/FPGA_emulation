@@ -20,6 +20,7 @@
 #include "flow/native_pipeline.hpp"
 #include "common/tool_runtime.hpp"
 #include "flow/compile.hpp"
+#include "flow/route_policy.hpp"
 #include "flow/signoff.hpp"
 #include "flow/comparison.hpp"
 #include "physical/report.hpp"
@@ -28,6 +29,7 @@
 #include "frontend/frontend.hpp"
 #include "frontend/inputs.hpp"
 #include "timing/phase2.hpp"
+#include "timing/cut_qualification.hpp"
 #include "timing/sta_projection.hpp"
 #include "timing/logic_segment_query.hpp"
 #include "timing/local_path_query.hpp"
@@ -42,6 +44,7 @@
 #include "partition/phase3_exact_binary.hpp"
 #include "partition/phase3.hpp"
 #include "routing/phase4.hpp"
+#include "routing/policy.hpp"
 #include "transport/split_overlay.hpp"
 #include "partition/partition_publish.hpp"
 #include "common/artifact_io.hpp"
@@ -57,6 +60,9 @@ constexpr const char* kUsage =
     "  compile REQUEST_JSON\n"
     "  phase7c run FLOW_ROOT OPENSTA [LAUNCHER_REFERENCE [SPLIT_ROOT PHYSICAL_ROOT RUNTIME_ROOT]]\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
+    "  flow prepare-routing PREVIOUS FLOW_ROOT STATE\n"
+    "  phase4 prepare-policy REQUEST OUTPUT\n"
+    "  timing qualify-cuts REQUEST OUTPUT\n"
     "  phase2 prepare-policy REQUEST POLICY\n"
     "  phase3 prepare-policy REQUEST DIRECTORY\n"
     "  phase2 run EMUIR POLICY OUTPUT_DIR\n"
@@ -83,6 +89,7 @@ constexpr const char* kUsage =
     "  physical run-vivado-partition REQUEST OUTPUT\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
+    "  phase6 prepare-policy EMUIR CONFIGURATION OUTPUT\n"
     "  phase6 compile EMUIR ASSIGNMENT SCHEDULE_SELECTOR BOARD POLICY OUTPUT_DIR\n"
     "  phase6 build-transport ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR [PIN_PLAN]\n"
     "  phase6 audit-transport STORE SUMMARY\n"
@@ -280,6 +287,9 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     const auto request = emuflow::core::ArtifactRef::Bind(argv[2],"sqlite-publication-request-v1");
     return Finish(emuflow::core::PublishSqliteStore(request,argv[3],report),report);
   }
+  if(argc==6 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-policy") {
+    ToolSignals signals;return Finish(emuflow::core::PreparePhase6Policy(emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),emuflow::core::ArtifactRef::Bind(argv[4],"phase6-configuration-v1"),argv[5],&tool_cancelled),report);
+  }
   if(argc==9 && std::string(argv[1])=="phase6" && std::string(argv[2])=="compile") {
     ToolSignals signals;
     return Finish(emuflow::core::CompilePhase6({emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
@@ -323,6 +333,15 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(argc==7 && std::string(argv[1])=="phase6" && std::string(argv[2])=="split") {
     return Finish(emuflow::core::BuildSplitOverlay({emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),emuflow::core::ArtifactRef::Bind(argv[4],"assignment-index-v4"),emuflow::core::ArtifactRef::Bind(argv[5],"tdm-schedule-store-v4")},argv[6]),report);
+  }
+  if(argc==6 && std::string(argv[1])=="flow" && std::string(argv[2])=="prepare-routing") {
+    ToolSignals signals;return Finish(emuflow::core::PrepareRouting(emuflow::core::ArtifactRef::Bind(argv[3],"native-compile-state-v1"),argv[4],argv[5],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase4" && std::string(argv[2])=="prepare-policy") {
+    ToolSignals signals;return Finish(emuflow::core::PreparePhase4Policy(emuflow::core::ArtifactRef::Bind(argv[3],"phase4-configuration-v1"),argv[4],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="timing" && std::string(argv[2])=="qualify-cuts") {
+    ToolSignals signals;return Finish(emuflow::core::QualifyCutSegments(emuflow::core::ArtifactRef::Bind(argv[3],"cut-qualification-request-v1"),argv[4],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="phase3" && std::string(argv[2])=="prepare-policy") {
     ToolSignals signals;return Finish(emuflow::core::PreparePhase3Policy(emuflow::core::ArtifactRef::Bind(argv[3],"phase3-configuration-request-v1"),argv[4],&tool_cancelled),report);

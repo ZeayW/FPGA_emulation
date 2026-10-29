@@ -281,8 +281,8 @@ def _restore_control_state(state):
 
 
 def execute(stage, request_path, previous_path, output_path, run_id):
-    if stage in {"frontend", "timing-policy", "timing", "partition-policy"}:
-        raise EmuFlowError("native compiler frontend, timing and partition preparation/execution are owned by C++ stages")
+    if stage in {"frontend", "timing-policy", "timing", "partition-policy", "route-policy"}:
+        raise EmuFlowError("native compiler frontend, timing, partition and routing preparation/execution are owned by C++ stages")
     if stage == "signoff":
         raise EmuFlowError("native compiler signoff is owned by the C++ Phase 7C stage")
     if stage == "finalize":

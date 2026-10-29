@@ -19,6 +19,8 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& inputs,
                      const std::string& output_directory,
                      const std::vector<ArtifactRef>& enclosing_sources={},
                      const volatile std::sig_atomic_t* cancelled=nullptr);
+StageResult PreparePhase6Policy(const ArtifactRef& source,const ArtifactRef& configuration,
+    const std::string& output,const volatile std::sig_atomic_t* cancelled=nullptr);
 StageResult CompilePhase6(const std::vector<ArtifactRef>& inputs,
                          const std::string& output_directory,
                          const volatile std::sig_atomic_t* cancelled=nullptr);

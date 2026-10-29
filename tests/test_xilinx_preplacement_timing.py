@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.validation.cut_segment_qualification import (
+from tests.cut_qualification_reference import (
     build_cut_segment_qualification_value,
 )
 from emuflow.timing.opensta import (

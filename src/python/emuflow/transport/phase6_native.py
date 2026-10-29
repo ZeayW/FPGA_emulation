@@ -12,25 +12,18 @@ from emuflow.common.tool_runtime import NativeToolProcess
 from emuflow.transport.transport_native import transport_request
 
 
-def prepare_compile_policy(directory, source, platform_path, *, clock_periods,
+def prepare_configuration_request(directory, platform_path, *, clock_periods,
                            transport_cost_path=None, equivalence_cycles=1,
                            equivalence_seed=20260727):
     """Prepare only board/clock policy; no schedule, hop or endpoint records."""
     from emuflow.platform.platform import Platform
-    from emuflow.transport.split_netlist_storage import read_compact_emuir_control_metadata
     from emuflow.transport.virtual_board import build_virtual_board
     from emuflow.common.io import read_json
     from emuflow.transport.transport_cost import validate_transport_cost_database
-    require_native_schema('phase6-compile-policy-v1')
-    source_ref=bind_store_source(source, 'emuir-compact-v2')
+    require_native_schema('phase6-configuration-v1')
     board=bind_store_source(platform_path, 'boarddb-v1')
-    sources=[source_ref,board]
+    sources=[board]
     platform=Platform.load(board.path)
-    if clock_periods is None:
-        clocks=read_compact_emuir_control_metadata(source_ref.path)['clocks']
-        if len(clocks)!=1:
-            raise ValidationError('multi-clock Phase 6 requires explicit periods')
-        clock_periods={clocks[0]['id']:1.0}
     cost=None;extra=[board]
     if transport_cost_path is not None:
         ref=bind_store_source(transport_cost_path,'transport-cost-input-v1')
@@ -41,9 +34,9 @@ def prepare_compile_policy(directory, source, platform_path, *, clock_periods,
     sources.extend((oracle,python))
     def record(ref):
         return {'path':str(ref.path),'schema':ref.schema,'generation':list(ref.generation)}
-    policy={'schema':'emuflow.phase6-compile-policy/v1','source':record(source_ref),
+    policy={'schema':'emuflow.phase6-configuration/v1',
             'configuration_sources':[record(ref) for ref in extra],
-            'clock_periods':dict(clock_periods),
+            'clock_periods':None if clock_periods is None else dict(clock_periods),
             'virtual_board':build_virtual_board(platform) if platform.virtual_board_model is not None else None,
             'transport_cost':cost,
             'small_oracle':{'python':record(python),'source':record(oracle),
@@ -53,9 +46,39 @@ def prepare_compile_policy(directory, source, platform_path, *, clock_periods,
         raise ValidationError('Phase 6 policy exceeds bound')
     require_store_sources_unchanged(sources)
     directory=Path(directory);directory.mkdir(parents=True,exist_ok=False)
-    path=directory/'phase6-policy.json';path.write_text(encoded+'\n')
+    path=directory/'request.json';path.write_text(encoded+'\n')
     require_store_sources_unchanged(sources)
     return path
+
+
+def prepare_compile_policy(directory, source, platform_path, **options):
+    """Optional bounded host; the native producer binds the actual source IR."""
+    directory=Path(directory).resolve();directory.mkdir(parents=True,exist_ok=False)
+    try:
+        with tempfile.TemporaryDirectory(prefix='.phase6-policy-host-',dir=directory) as temporary:
+            root=Path(temporary)
+            settings=prepare_configuration_request(root/'configuration',platform_path,**options)
+            output,operation=directory/'phase6-policy.json',root/'operation.json'
+            native=resolve_native_executable('emuflow-native')
+            argv=[native,'--report',str(operation),'phase6','prepare-policy',str(Path(source).resolve()),str(settings),str(output)]
+            with NativeToolProcess(native,argv,environment=dict(os.environ),scratch_parent=root) as process:
+                result=process.finish()
+            if result.returncode:
+                raise ValidationError('native Phase 6 policy preparation failed: '+result.stdout)
+            if operation.stat().st_size>256*1024:
+                raise ValidationError('native Phase 6 policy operation exceeds bound')
+            proof=json.loads(operation.read_text());outputs=proof.get('outputs',[])
+            fields=('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
+            if (proof.get('schema')!='emuflow.native-stage-result/v1' or proof.get('stage')!='phase6.prepare-policy'
+                    or proof.get('status')!='pass' or len(outputs)!=1 or outputs[0].get('path')!=str(output)
+                    or outputs[0].get('schema')!='phase6-compile-policy-v1'
+                    or tuple(outputs[0].get('generation',{}).get(k) for k in fields)!=native_file_generation(output)):
+                raise ValidationError('native Phase 6 policy producer binding disagrees')
+            return output
+    except BaseException:
+        import shutil
+        shutil.rmtree(directory)
+        raise
 
 
 def run_native_phase6(source, assignment, schedule, platform, platform_path, output,

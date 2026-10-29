@@ -308,6 +308,10 @@ void ProjectExactQueryRecords(const ArtifactRef& artifact,const std::string& des
   auto missing=db.Prepare("SELECT 1 FROM exact_query_segments s LEFT JOIN exact_query_captures c ON c.number=s.target WHERE s.kind=2 AND (c.number IS NULL OR c.net!=s.source) LIMIT 1");Check(!missing.Step(),"query capture consumer ownership disagrees");artifact.RequireUnchanged();
 }
 
+std::string ReadExactBinaryCounts(const ArtifactRef& artifact,const std::string& descriptor) {
+  const auto manifest=Load(artifact,descriptor);artifact.RequireUnchanged();return manifest.counts.JsonText();
+}
+
 std::string ValidateExactBinaryArtifact(const ArtifactRef& artifact,const std::string& descriptor) {
   auto manifest=Load(artifact,descriptor);Validate(artifact,manifest);const auto& c=manifest.counts;
   std::map<std::string,JsonRecord> summary{{"status","pass"},{"schema",Schema(manifest.version)},

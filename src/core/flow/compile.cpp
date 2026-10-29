@@ -1,4 +1,5 @@
 #include "flow/compile.hpp"
+#include "flow/route_policy.hpp"
 #include "flow/finalize.hpp"
 #include "flow/signoff.hpp"
 #include "flow/comparison.hpp"
@@ -245,6 +246,10 @@ class ControlJson {
                                              "phase3-configuration-source-v1"));
       }
     }
+    state["native_effective_route_constraints_generation"]="null";
+    if(has_link){const auto& g=bindings[bindings.size()-3].generation();
+      std::vector<JsonRecord> numbers;for(const auto& n:{std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)})numbers.emplace_back(n);
+      state["native_effective_route_constraints_generation"]=JsonRecord(std::vector<JsonRecord>{"tuple",numbers}).Encode();}
     if (state.count("timing_report") && state.at("timing_report") != "null") {
       auto timing = D::Array(state.at("timing_report"), 2);
       Require(timing.size() == 2, "invalid timing report envelope");
@@ -633,6 +638,15 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         result.steps.push_back({stage,step.ok(),"native-phase3-configuration-v1",step.metrics.wall_seconds,step.metrics.user_cpu_seconds,step.metrics.system_cpu_seconds,step.metrics.process_peak_rss_kib});if(!step.ok())throw StageError(step.error,"native compile partition configuration: "+step.message);
         ControlJson state(next.string());Require(state.String("$.stage")=="partition-policy" && state.String("$.run_id")==run_id && state.String("$.status")=="pass" && state.StateShape() && state.Generation(configuration.generation()),"invalid native partition configuration state");const auto config_root=output/".native-phase3-configuration";Require(!fs::is_symlink(config_root),"native partition configuration directory was replaced");std::error_code error;fs::remove_all(config_root,error);Require(!error,"cannot retire native partition configuration");fs::remove(previous);previous=next;std::cout<<"COMPILE_STAGE_COMPLETE partition-policy "<<step.metrics.wall_seconds<<"s\n"<<std::flush;continue;
       }
+      if(std::string(stage)=="route-policy") {
+        const auto next=scratch.root/"route-policy.json";
+        const auto step=PrepareRouting(ArtifactRef::Bind(previous.string(),"native-compile-state-v1"),output.string(),next.string(),cancelled);
+        result.steps.push_back({stage,step.ok(),"native-routing-preparation-v1",step.metrics.wall_seconds,step.metrics.user_cpu_seconds,step.metrics.system_cpu_seconds,step.metrics.process_peak_rss_kib});
+        if(!step.ok())throw StageError(step.error,"native compile route preparation: "+step.message);
+        ControlJson state(next.string());Require(state.String("$.stage")=="route-policy" && state.String("$.run_id")==run_id && state.String("$.status")=="pass" && state.StateShape() && state.Generation(configuration.generation()),"invalid native routing preparation state");
+        for(const auto* name:{".native-phase4-configuration",".native-phase6-configuration"}){const auto path=output/name;Require(!fs::is_symlink(path),"native routing preparation directory was replaced");std::error_code error;fs::remove_all(path,error);Require(!error,"cannot retire native routing preparation inputs");}
+        fs::remove(previous);previous=next;std::cout<<"COMPILE_STAGE_COMPLETE route-policy "<<step.metrics.wall_seconds<<"s\n"<<std::flush;continue;
+      }
       if(std::string(stage)=="finalize") {
         auto prior=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
         const auto step=RunStage("finalize",[&]{return std::vector<ArtifactRef>{prior};},
@@ -991,7 +1005,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-frontend-timing-partition-configuration-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v10\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-frontend-timing-partition-routing-preparation-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v11\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

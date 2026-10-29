@@ -15,11 +15,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
-from emuflow.timing.sta_projection import project_sta_path_database
 from emuflow.platform.board_link_timing import validate_board_link_timing
 from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
 from emuflow.transport.chimew.chimew_pipeline import read_chimew_phase6_pipeline, run_chimew_phase6_pipeline
-from emuflow.validation.cut_segment_qualification import build_cut_segment_qualification
 from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
 from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.scheduling.frame_search import validate_frame_search_report
@@ -1369,81 +1367,23 @@ def _compile_preflight(ctx: _CompileContext):
     ctx.native_phase3_configuration_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase3_configuration))
 
 
-def _compile_route_policy(ctx: _CompileContext):
-    ctx.projected_timing_paths = ctx.timing_paths
-    if ctx.internal_timing_database:
-        ctx.cut_segment_qualification_path = (
-            ctx.timing_root / "cut-segment-qualification.json"
-        )
-        cut_qualification = build_cut_segment_qualification(
-            ctx.ir_path,
-            ctx.assignment_path,
-            ctx.path_database_path,
-            timing_model_path=ctx.timing_model,
-            architecture_timing_db_path=ctx.architecture_timing_db,
-            input_already_validated=True,
-        )
-        write_json(ctx.cut_segment_qualification_path, cut_qualification)
-        ctx.timing_report["cut_segment_qualification"] = cut_qualification
-        if ctx.has_inter_fpga_cuts:
-            ctx.projected_timing_paths = ctx.timing_root / "cut-timing-paths.json"
-            # Phase 4/5 must optimize the same complete original TimingPathDB
-            # population that Phase 7C later reports.  The post-partition
-            # structural cut-segment qualification is intentionally separate
-            # from this original-path population.
-            projection_report = project_sta_path_database(
-                ctx.path_database_path,
-                ctx.assignment_path,
-                ctx.projected_timing_paths,
-                input_already_validated=True,
-            )
-        else:
-            # A legal single-FPGA partition has no interconnect timing problem.
-            # Do not fabricate an empty STA path record: the Phase 4/5 timing
-            # schema intentionally represents only paths that cross at least
-            # one partition cut.  The original TimingPathDB remains the input
-            # to the physical backend and authoritative global OpenSTA signoff.
-            ctx.projected_timing_paths = None
-            projection_report = {
-                "status": "pass",
-                "design": ctx.phase3_report.get("design"),
-                "mode": "not-required-no-inter-fpga-cuts",
-                "projected_paths": 0,
-                "compressed_paths": 0,
-                "cut_nets": 0,
-                "covered_cut_nets": 0,
-                "uncovered_cut_nets": 0,
-            }
-        ctx.timing_report["cut_path_projection"] = projection_report
+    from emuflow.routing.phase4_native import prepare_configuration_request as prepare_routing
+    route_settings = ctx.output_dir / '.native-phase4-configuration'
+    route_settings.mkdir()
+    ctx.native_phase4_configuration = prepare_routing(route_settings/'request.json', ctx.platform_path,
+        constraints_path=ctx.route_constraints, frame_slots=ctx.frame_slots,
+        max_iterations=ctx.route_max_iterations, candidate_workers=ctx.route_candidate_workers,
+        timing_driven=ctx.timing_driven, external_timing=ctx.timing_paths,
+        timing_model_path=ctx.timing_model if ctx.internal_timing_database else None,
+        architecture_timing_db_path=ctx.architecture_timing_db)
+    ctx.native_phase4_configuration_generation = tuple(str(v) for v in native_file_generation(ctx.native_phase4_configuration))
+    if ctx.phase6_provider == 'baseline':
+        from emuflow.transport.phase6_native import prepare_configuration_request as prepare_transport
+        ctx.native_phase6_configuration = prepare_transport(ctx.output_dir/'.native-phase6-configuration',ctx.platform_path,
+            clock_periods=ctx.clock_periods,transport_cost_path=ctx.transport_cost_db,
+            equivalence_cycles=ctx.equivalence_cycles,equivalence_seed=ctx.equivalence_seed)
+        ctx.native_phase6_configuration_generation = tuple(str(v) for v in native_file_generation(ctx.native_phase6_configuration))
 
-    ctx.effective_route_provider = ctx.route_provider or GLOBAL_CANDIDATE_PROVIDER
-    ctx.effective_tdm_provider = TDM_EXACT_DEPENDENCY_PROVIDER
-    ctx.phase4_root = ctx.output_dir / "system-route"
-    ctx.phase5_root = ctx.output_dir / "tdm"
-    ctx.frame_search_report = None
-    from emuflow.routing.phase4_native import prepare_policy
-    from emuflow.common.native_tools import native_file_generation
-    ctx.native_phase4_policy = prepare_policy(
-        ctx.output_dir / ".native-phase4-request", ctx.phase3_root / "assignment.sqlite",
-        ctx.platform_path, timing_paths=ctx.projected_timing_paths,
-        constraints_path=ctx.effective_route_constraints,
-        frame_slots=ctx.frame_slots, max_iterations=ctx.route_max_iterations,
-        candidate_workers=ctx.route_candidate_workers if ctx.has_inter_fpga_cuts else 1,
-        timing_driven=ctx.timing_driven)
-    ctx.native_phase4_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase4_policy))
-    if ctx.phase6_provider == "baseline":
-        from emuflow.transport.phase6_native import prepare_compile_policy
-        from emuflow.common.native_tools import native_file_generation
-        ctx.native_phase6_policy = prepare_compile_policy(
-            ctx.output_dir / ".native-phase6-request", ctx.ir_path, ctx.platform_path,
-            clock_periods=ctx.clock_periods, transport_cost_path=ctx.transport_cost_db,
-            equivalence_cycles=ctx.equivalence_cycles, equivalence_seed=ctx.equivalence_seed)
-        ctx.native_phase6_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase6_policy))
-    if ctx.timing_report is not None:
-        write_json(
-            ctx.timing_root / "orchestration-summary.json",
-            _timing_report_summary(ctx.timing_report),
-        )
 
 def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
     catalog = getattr(ctx,"chimew_package_geometry",None)

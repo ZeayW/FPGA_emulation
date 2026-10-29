@@ -22,6 +22,7 @@ routing/route_view.cpp
 scheduling/schedule_ingress.cpp
 common/tool_runtime.cpp
 flow/compile.cpp
+flow/route_policy.cpp
 flow/finalize.cpp
 flow/signoff.cpp
 flow/comparison.cpp
@@ -70,12 +71,16 @@ partition/phase3.cpp
 partition/phase3_policy.cpp
 transport/split_overlay.cpp
 transport/transport.cpp
+transport/phase6_policy.cpp
 transport/runtime_calendar.cpp
 physical/placement_lowering.cpp
 routing/phase4.cpp
 routing/policy.cpp
+routing/phase4_policy.cpp
 timing/phase2.cpp
 timing/phase2_policy.cpp
+timing/cell_model.cpp
+timing/cut_qualification.cpp
 physical/physical_coverage.cpp
 physical/evidence_catalog.cpp
 physical/board_timing.cpp
