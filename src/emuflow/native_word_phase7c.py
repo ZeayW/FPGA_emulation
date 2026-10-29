@@ -150,7 +150,8 @@ def _original_members(evidence,output,parents,*,endpoint_index=None,source_ir=No
 def run_native_word_phase7c(summary,runtime,platform,reports,schedule_path,output,*,
                            global_sta_executable=None,global_sta_results_dir=None,
                            endpoint_index=None,source_ir=None,path_database=None,assignment=None,
-                           source_context_inputs=None):
+                           source_context_inputs=None,collect_native_endpoints=False,
+                           native_endpoint_vivado=None,native_endpoint_results_dir=None):
     """Run the native physical-summary path of Phase7c, including its ledger.
 
     Source context and external minimum/startup qualification remain explicit
@@ -195,6 +196,15 @@ def run_native_word_phase7c(summary,runtime,platform,reports,schedule_path,outpu
         events=output/'native-word-checks.tsv';export_native_word_checks(index,observations,events)
         independent=verify_native_word_checks(events,output/'global-opensta',executable=global_sta_executable,
                                               results_dir=global_sta_results_dir)
+    endpoint_timing=None
+    if collect_native_endpoints or native_endpoint_results_dir is not None:
+        from .native_word_analysis import export_native_word_arrivals
+        from .native_word_budgets import write_native_word_budgets,collect_native_word_endpoint_timing
+        arrivals=output/'native-rx-arrivals.tsv';budgets=output/'native-rx-budgets.tsv'
+        export_native_word_arrivals(index,observations,arrivals)
+        write_native_word_budgets(index,analysis,arrivals,budgets)
+        endpoint_timing=collect_native_word_endpoint_timing(evidence,budgets,output/'native-endpoints',
+            executable=native_endpoint_vivado,results_dir=native_endpoint_results_dir)
     originals=_original_members(evidence,output,parents,endpoint_index=endpoint_index,
         source_ir=source_ir,path_database=path_database,assignment=assignment)
     source_contexts=_source_contexts(evidence,summary,output,parents,source_context_inputs)
@@ -223,6 +233,14 @@ def run_native_word_phase7c(summary,runtime,platform,reports,schedule_path,outpu
             'scope':'Original check dispositions and external minimum/startup acceptance remain separate from source membership'},
         'source_binding':{'index':index.name,'analysis':analysis.name},
         'qualification':'routed-local-plus-declared-link-model; board-signoff-not-claimed'}
+    if endpoint_timing is not None:
+        timing['native_endpoints']=endpoint_timing
+        if endpoint_timing['status']=='complete':
+            timing['summary']['endpoint_tns_ns']=endpoint_timing['summary']['tns_ns']
+            timing['target_clock']['total_negative_slack_bound_ns']=endpoint_timing['summary']['tns_ns']
+        timing['target_clock']['endpoint_wns_ns']=endpoint_timing['summary']['wns_ns']
+        timing['target_clock']['endpoint_minus_model_wns_ns']=(None if minimum_slack is None or
+            endpoint_timing['summary']['wns_ns']is None else endpoint_timing['summary']['wns_ns']-minimum_slack/1000.)
     qor=aggregate_qor(runtime,*reports,summary,platform,system_timing_result=timing)
     qor['runtime']={'tdm_period_ns':5.,'tdm_frequency_mhz':200.,
                     'dut_clock_periods_ns':periods,'initial_dut_frequency_mhz':1000000./reference_ps,

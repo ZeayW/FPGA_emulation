@@ -434,6 +434,17 @@ the new runtime directory. Bundle validation follows the sealed runtime and
 physical artifact paths, including independently resumed directories.
 A completed native analysis publishes its actual `pass`, `fail`, or `incomplete`
 outcome; finalization returns exit code 2 for either non-passing outcome.
+Vivado native-word compilation also collects every timed native payload
+endpoint under the resolved RX arrival budgets. Endpoint WNS/TNS use the
+original physical clock trees and include enable/reset/recovery checks.
+They describe an envelope over individually worst phases. Finalization accepts
+`--native-endpoint-vivado` or `--native-endpoint-results-dir` for live collection
+or checked saved measurements. Bundle validation rechecks the retained raw
+endpoint files and recomputes their statistics without launching Vivado.
+Missing RX tags are checked against closed unobservable source cones. Proven
+removals retain an explicit disposition without a numerical delay; unresolved
+roles keep coverage incomplete. The same source-bound proof is recomputed
+during replay, without preserving otherwise removable cells.
 To continue after completed mapping, supply `--prepared-frontend` without
 `--prepared-timing`; Phase 2 runs again using the selected timing inputs while
 the checked Phase 1 database remains read-only. Supplying both boundaries also

@@ -760,6 +760,9 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_finalize.add_argument("--global-sta-executable", help="override the in-tree OpenSTA executable")
     multi_fpga_finalize.add_argument("--global-sta-results-dir", type=Path,
         help="recheck source-matched saved standalone OpenSTA measurements")
+    multi_fpga_finalize.add_argument("--native-endpoint-vivado", help="Vivado for native endpoint budget observations")
+    multi_fpga_finalize.add_argument("--native-endpoint-results-dir", type=Path,
+        help="recheck saved per-FPGA native endpoint measurements without invoking Vivado")
     multi_fpga_compile.add_argument("sources", nargs="*", type=Path)
     multi_fpga_compile.add_argument(
         "--benchmark-run",
@@ -2712,6 +2715,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 runtime_directory=args.runtime_directory,
                 global_sta_executable=args.global_sta_executable,
                 global_sta_results_dir=args.global_sta_results_dir,
+                native_endpoint_vivado=args.native_endpoint_vivado,
+                native_endpoint_results_dir=args.native_endpoint_results_dir,
             )
             _print_json(report["summary"])
             return 0 if report["status"] == "pass" else 2

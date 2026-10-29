@@ -370,6 +370,8 @@ def finalize_multi_fpga_physical_checkpoint(
     runtime_directory: str = "runtime-final",
     global_sta_executable: Optional[str] = None,
     global_sta_results_dir: Optional[Path] = None,
+    native_endpoint_vivado: Optional[str] = None,
+    native_endpoint_results_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Finish Phase 7C and seal a flow after an independently resumed Phase 7.
 
@@ -446,6 +448,9 @@ def finalize_multi_fpga_physical_checkpoint(
         routes_path=paths["routes"],
         global_sta_executable=global_sta_executable,
         global_sta_results_dir=global_sta_results_dir,
+        collect_native_endpoints=True,
+        native_endpoint_vivado=native_endpoint_vivado,
+        native_endpoint_results_dir=native_endpoint_results_dir,
     )
     native_analysis = native_analysis_completed(runtime_report)
     if runtime_report.get("status") != "pass" and not native_analysis:
@@ -1250,6 +1255,8 @@ def validate_multi_fpga_flow_bundle(
             routes_path=routes_path if physical_summary_path is not None else None,
             board_link_timing_path=board_link_timing_path,
             global_sta_results_dir=runtime_root / "global-opensta" if opensta_result else None,
+            native_endpoint_results_dir=(runtime_root/"native-endpoints")
+                if stored_qor.get('timing',{}).get('native_endpoints') is not None else None,
             global_timing_engine="opensta",
         )
         replay_qor = read_json(Path(temporary) / "qor_report.json")
@@ -2046,6 +2053,7 @@ def _compile_split(ctx: _CompileContext):
             board_link_timing_path=ctx.copied_link_timing_path,
             global_sta_executable=ctx.global_sta_executable,
             global_timing_engine=ctx.global_timing_engine,
+            collect_native_endpoints=ctx.physical_backend=='vivado',native_endpoint_vivado=ctx.physical_vivado,
         )
         lookahead_root = comparison_root / "lookahead"
         lookahead = materialize_xilinx_chimew_inputs(
@@ -2238,6 +2246,7 @@ def _compile_signoff(ctx: _CompileContext):
         original_ir_path=ctx.ir_path,
         original_path_database_path=ctx.path_database_path,
         global_timing_engine=ctx.global_timing_engine,
+        collect_native_endpoints=ctx.physical and ctx.physical_backend=='vivado',native_endpoint_vivado=ctx.physical_vivado,
         physical_summary_path=ctx.physical_summary_path,
         routes_path=ctx.routes_path if ctx.physical_summary_path is not None else None,
         board_link_timing_path=(

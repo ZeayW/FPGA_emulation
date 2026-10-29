@@ -14,6 +14,7 @@ from emuflow.native_word_analysis import (
     export_native_word_arrivals,
 )
 from emuflow.store_publication import bind_store_source
+from emuflow.native_word_budgets import write_native_word_budgets
 from tests.native_build import emuflow_native
 from tests.test_native_word_costs import HEADER
 from tests.test_native_word_tx_binding import row
@@ -188,6 +189,55 @@ def test_incomplete_observations_cannot_replace_arrival_bounds(tmp_path):
     assert output.read_text()=='previous complete bounds\n'
 
 
+@pytest.mark.parametrize('root,budget',[(1.,64000),(80.,-15000)])
+def test_native_rx_budget_retains_full_window_and_negative_remaining_time(tmp_path,root,budget):
+    import csv
+    index,observations,analysis=fixture(tmp_path,root=root)
+    analyze_native_word_network(index,observations,analysis)
+    arrivals=tmp_path/'arrivals.tsv';export_native_word_arrivals(index,observations,arrivals)
+    output=tmp_path/'budgets.tsv';write_native_word_budgets(index,analysis,arrivals,output)
+    with output.open(newline='')as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+    assert len(rows)==1
+    r=rows[0]
+    assert bytes.fromhex(r['fpga_hex']).decode()=='fpga1' and r['source_origin']=='s7'
+    assert bytes.fromhex(r['capture_clock_hex']).decode()=='native_clk'
+    assert r['capture_edge']=='1' and int(r['budget_ps'])==budget
+    assert int(r['reference_window_ps'])-int(r['arrival_ps'])==budget
+
+
+def test_native_rx_budget_minimizes_across_launch_families_and_keeps_half_cycles(tmp_path):
+    import csv
+    index,observations,analysis=fixture(tmp_path)
+    rows=[row(0,source='native_clk',edge=edge,cost=cost)for edge,cost in [('rise',1.),('fall',3.)]]
+    observations['fpga0']['tx_costs'].write_text(HEADER+'\n'+''.join('\t'.join(r)+'\n'for r in rows))
+    capture=observations['fpga1']['captures'];rows=capture.read_text().splitlines()
+    r=row(-1,'dut-capture:native_clk:fall',kind='rx',source='s7',edge='',cost=2.)
+    r[13]='native_clk'.encode().hex();rows[-1]='\t'.join(r);capture.write_text('\n'.join(rows)+'\n')
+    analyze_native_word_network(index,observations,analysis)
+    arrivals=tmp_path/'arrivals.tsv';export_native_word_arrivals(index,observations,arrivals)
+    output=tmp_path/'budgets.tsv';write_native_word_budgets(index,analysis,arrivals,output)
+    with output.open(newline='')as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+    assert len(rows)==2
+    assert [(r['capture_edge'],r['launch_edge'],r['reference_window_ps'],r['budget_ps'])for r in rows]==[
+        ('1','2','50000','12000'),('2','1','50000','14000')]
+
+
+@pytest.mark.parametrize('damage',['truncated','extra','owner','header'])
+def test_damaged_arrival_census_cannot_replace_a_complete_native_budget(tmp_path,damage):
+    index,observations,analysis=fixture(tmp_path)
+    analyze_native_word_network(index,observations,analysis)
+    arrivals=tmp_path/'arrivals.tsv';export_native_word_arrivals(index,observations,arrivals)
+    lines=arrivals.read_text().splitlines()
+    if damage=='truncated':lines=lines[:-1]
+    elif damage=='extra':lines.append(lines[-1])
+    elif damage=='owner':lines[-1]=lines[-1].replace(b'fpga1'.hex(),b'fpga0'.hex())
+    else:lines[0]='another header'
+    arrivals.write_text('\n'.join(lines)+'\n')
+    output=tmp_path/'budgets.tsv';output.write_text('previous complete budget\n')
+    with pytest.raises(ValidationError):write_native_word_budgets(index,analysis,arrivals,output)
+    assert output.read_text()=='previous complete budget\n'
+
+
 def test_arrival_export_does_not_turn_an_absent_launch_into_zero_delay(tmp_path):
     import csv
     import sqlite3
@@ -210,6 +260,10 @@ def test_arrival_export_does_not_turn_an_absent_launch_into_zero_delay(tmp_path)
     assert len(rows)==2
     absent=next(r for r in rows if bytes.fromhex(r['transfer_hex']).decode()=='dormant')
     assert absent['arrival_status']=='no-causal-launch' and absent['maximum_arrival_ps']==''
+    analysis=tmp_path/'analysis.json';analyze_native_word_network(index,observations,analysis)
+    budgets=tmp_path/'budgets.tsv';write_native_word_budgets(index,analysis,output,budgets)
+    with budgets.open(newline='')as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+    assert len(rows)==1 and rows[0]['source_origin']=='s7'
 
 
 def test_verification_engine_destination_cannot_overwrite_input(tmp_path):

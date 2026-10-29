@@ -90,6 +90,9 @@ def run_phase7c(
     original_ir_path: Optional[Path] = None,
     original_path_database_path: Optional[Path] = None,
     original_endpoint_index_path: Optional[Path] = None,
+    collect_native_endpoints: bool = False,
+    native_endpoint_vivado: Optional[str] = None,
+    native_endpoint_results_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if global_timing_engine != "opensta":
         raise ValidationError("only the OpenSTA global timing engine is supported")
@@ -221,6 +224,8 @@ def run_phase7c(
                 [read_json(phase3_report_path),read_json(phase4_report_path),phase5_report,phase6_report],
                 schedule_path,output_dir,global_sta_executable=global_sta_executable,
                 global_sta_results_dir=global_sta_results_dir,endpoint_index=original_endpoint_index_path,
+                collect_native_endpoints=collect_native_endpoints,native_endpoint_vivado=native_endpoint_vivado,
+                native_endpoint_results_dir=native_endpoint_results_dir,
                 source_ir=original_ir_path,path_database=original_path_database_path,assignment=assignment_path)
         if physical_summary is not None:
             assert cross_layer_contract is not None

@@ -95,15 +95,21 @@ def test_cli_returns_nonzero_for_completed_nonpassing_analysis(monkeypatch, stat
 @pytest.mark.parametrize("status", ["incomplete", "fail"])
 def test_signoff_adapter_continues_only_after_successful_analysis_execution(tmp_path, monkeypatch, status):
     value = runtime(status)
-    monkeypatch.setattr(flow, "run_phase7c", lambda *a, **kw: value)
+    called = {}
+    def signoff(*args, **kwargs):
+        called.update(kwargs)
+        return value
+    monkeypatch.setattr(flow, "run_phase7c", signoff)
     fields = ["schedule_path", "platform_path", "assignment_path", "global_sta_executable", "ir_path",
               "path_database_path", "routes_path", "physical_summary_path", "copied_link_timing_path"]
     ctx = SimpleNamespace(**dict.fromkeys(fields), output_dir=tmp_path,
         phase3_root=tmp_path, phase4_root=tmp_path, phase5_root=tmp_path, phase6_root=tmp_path,
-        global_timing_engine="opensta", physical=True, phase6_comparison=None,
+        global_timing_engine="opensta", physical=True, physical_backend="vivado", physical_vivado="vivado",
+        phase6_comparison=None,
         measured=lambda stage, function, *a, **kw: function(*a, **kw))
     flow._compile_signoff(ctx)
     assert ctx.runtime_report is value and ctx.runtime_report["status"] == status
+    assert called['collect_native_endpoints'] is True and called['native_endpoint_vivado']=='vivado'
     value["execution_status"] = "fail"
     with pytest.raises(ValidationError): flow._compile_signoff(ctx)
 
