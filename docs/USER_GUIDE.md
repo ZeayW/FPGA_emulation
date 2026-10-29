@@ -484,6 +484,17 @@ They may complete while Phase 7C integration is pending. Routed checkpoints
 remain temporary inputs for that active timing investigation; a completed
 Phase 7B batch does not certify global timing or an operating frequency.
 
+Completed native word-mode analysis publishes a version 3
+`multi-fpga-flow-report.json` even when its timing or coverage outcome is
+`incomplete` or `fail`. `execution_status: pass` records successful execution;
+`status` preserves the Phase 7C outcome, and the compile command still exits
+with code 2 for a non-passing outcome. The summary includes the implementation
+clocks, maximum sampling cost, required DUT period and inferred frequency.
+Sampling cost includes the declared timing adjustments and is not relabeled
+as raw datapath delay. Missing measurements stay null. The report binds the
+native analysis, original-member indexes and independent STA evidence so a
+terminal outcome does not require another physical implementation run.
+
 For independent terminal validation, require the physical endpoint:
 
 ```bash

@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/multi-fpga-flow-v3.schema.json",
+  "title": "EmuFlow multi-FPGA analysis report v3",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "provider",
+    "architecture_policy",
+    "runtime",
+    "stages",
+    "artifacts",
+    "summary",
+    "execution_status"
+  ],
+  "properties": {
+    "schema": {
+      "const": "emuflow.multi-fpga-flow/v3"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "fail",
+        "incomplete"
+      ]
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1
+    },
+    "architecture_policy": {
+      "const": "provider-neutral"
+    },
+    "runtime": {
+      "type": "object",
+      "required": [
+        "schema",
+        "increment",
+        "status",
+        "execution_status",
+        "design",
+        "platform",
+        "physical",
+        "system_timing_summary",
+        "original_members",
+        "implementation_clocks",
+        "artifacts"
+      ],
+      "properties": {
+        "schema": {
+          "const": "emuflow.phase7c-report/v3"
+        },
+        "increment": {
+          "const": "native-word-system-timing"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "incomplete"
+          ]
+        },
+        "execution_status": {
+          "const": "pass"
+        }
+      }
+    },
+    "physical": {
+      "type": "object"
+    },
+    "board_link_timing": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "pass"
+        },
+        "validation": {
+          "type": "object"
+        },
+        "routing_projection": {
+          "type": "object"
+        },
+        "applied_to": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "status",
+        "validation",
+        "routing_projection",
+        "applied_to"
+      ]
+    },
+    "hardware_bsp": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "const": "emuflow.multi-fpga-bsp-flow/v1"
+        },
+        "status": {
+          "const": "pass"
+        }
+      },
+      "required": [
+        "schema",
+        "status"
+      ]
+    },
+    "stages": {
+      "type": "object",
+      "required": [
+        "frontend",
+        "partition",
+        "system_route",
+        "tdm",
+        "split"
+      ]
+    },
+    "artifacts": {
+      "type": "object"
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "status",
+        "design",
+        "platform",
+        "physical_status",
+        "hardware_bsp_status",
+        "execution_status"
+      ]
+    },
+    "execution_status": {
+      "const": "pass"
+    }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "pass"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "status": {
+                "const": "pass"
+              }
+            }
+          },
+          "summary": {
+            "properties": {
+              "status": {
+                "const": "pass"
+              },
+              "execution_status": {
+                "const": "pass"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "fail"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "status": {
+                "const": "fail"
+              }
+            }
+          },
+          "summary": {
+            "properties": {
+              "status": {
+                "const": "fail"
+              },
+              "execution_status": {
+                "const": "pass"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "incomplete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "status": {
+                "const": "incomplete"
+              }
+            }
+          },
+          "summary": {
+            "properties": {
+              "status": {
+                "const": "incomplete"
+              },
+              "execution_status": {
+                "const": "pass"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

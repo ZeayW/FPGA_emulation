@@ -121,7 +121,7 @@ def test_cli_selects_native_control_without_calling_python_compiler():
     assert native.call_args.kwargs["partition_provider"] == "patron"
 
 
-def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, temporary_reference=None):
+def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, temporary_reference=None, final_report=None):
     """A process test double, with no RTL/physical or qualification claims."""
     source = tmp_path / "source/emuflow"
     source.mkdir(parents=True)
@@ -151,14 +151,41 @@ if TEMPORARY_REFERENCE and a.stage=='frontend':
  value['state']=['map',{'next_input':['path',str(path)]}]
 if a.stage=='preflight' and CORRUPT:value[CORRUPT]='invalid'
 pathlib.Path(a.output).write_text(json.dumps(value))
-if a.stage=='finalize':(out/'multi-fpga-flow-report.json').write_text(json.dumps({'schema':'emuflow.multi-fpga-flow/v2','status':'pass'}))
+if a.stage=='finalize':(out/'multi-fpga-flow-report.json').write_text(json.dumps(FINAL_REPORT if FINAL_REPORT is not None else {'schema':'emuflow.multi-fpga-flow/v2','status':'pass'}))
 '''.replace("FAIL", repr(fail)).replace("CORRUPT", repr(corrupt)).replace("WAITING", repr(waiting))
-       .replace("TEMPORARY_REFERENCE", repr(temporary_reference)))
+       .replace("TEMPORARY_REFERENCE", repr(temporary_reference)).replace("FINAL_REPORT", repr(final_report)))
     request = tmp_path / "request.json"
     request.write_text(json.dumps({"schema": "emuflow.native-compile/v1", "python_executable": sys.executable,
         "python_source": str(source.parent), "working_directory": str(tmp_path),
         "options": {"output_dir": str(tmp_path / "out")}}))
     return request
+
+
+@pytest.mark.parametrize("status", ["incomplete", "fail"])
+def test_native_controller_and_bridge_publish_completed_negative_analysis(tmp_path, monkeypatch, status):
+    report = {"schema": "emuflow.multi-fpga-flow/v3", "status": status, "execution_status": "pass",
+        "runtime": {"schema": "emuflow.phase7c-report/v3", "increment": "native-word-system-timing",
+                    "status": status, "execution_status": "pass"}}
+    request = fixture_request(tmp_path, final_report=report)
+    value = json.loads(request.read_text())
+    monkeypatch.setattr("emuflow.native_compile._request", lambda *_: (value, json.dumps(value)))
+    monkeypatch.setattr("emuflow.native_compile.resolve_native_executable", lambda _: str(emuflow_native()))
+    actual = run_native_multi_fpga_flow()
+    assert actual == report
+    output = tmp_path/"out"
+    assert (output/"calls").read_text().splitlines() == list(STAGES)
+    execution = json.loads((output/"native-compile-result.json").read_text())
+    assert execution["operation"]["status"] == "pass"
+    assert execution["operation"]["outputs"][0]["schema"] == "multi-fpga-flow-report-v3"
+
+
+def test_native_controller_rejects_promoting_incomplete_runtime_to_pass(tmp_path):
+    report = {"schema": "emuflow.multi-fpga-flow/v3", "status": "pass", "execution_status": "pass",
+        "runtime": {"schema": "emuflow.phase7c-report/v3", "increment": "native-word-system-timing",
+                    "status": "incomplete", "execution_status": "pass"}}
+    request = fixture_request(tmp_path, final_report=report)
+    result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
+    assert result.returncode != 0 and "final analysis report is invalid" in result.stderr
 
 
 def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):

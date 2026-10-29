@@ -13,6 +13,7 @@ import tempfile
 import threading
 
 from .errors import EmuFlowError
+from .flow_outcome import flow_execution_completed
 from .native_compile_adapter import _pack, _plain
 from .native_tools import resolve_native_executable
 
@@ -128,6 +129,6 @@ def run_native_multi_fpga_flow(*args, **kwargs):
         if report_path.stat().st_size > 8 * 1024 * 1024:
             raise EmuFlowError("native compiler flow summary exceeds bound")
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        if report.get("schema") != "emuflow.multi-fpga-flow/v2" or report.get("status") != "pass":
+        if not flow_execution_completed(report):
             raise EmuFlowError("native compiler flow report is invalid")
         return report

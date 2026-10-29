@@ -214,11 +214,25 @@ CompileResult Compile(const ArtifactRef& configuration, const volatile std::sig_
       std::cout << "COMPILE_STAGE_COMPLETE " << stage << " " << step.wall_seconds << "s\n" << std::flush;
     }
     ControlJson report((output / "multi-fpga-flow-report.json").string());
-    Require(report.String("$.schema") == "emuflow.multi-fpga-flow/v2" && report.String("$.status") == "pass",
-            "native compiler final flow report is invalid");
+    const auto schema=report.String("$.schema"), status=report.String("$.status");
+    if (schema=="emuflow.multi-fpga-flow/v3") {
+      Require(report.String("$.execution_status")=="pass" &&
+          report.String("$.runtime.schema")=="emuflow.phase7c-report/v3" &&
+          report.String("$.runtime.increment")=="native-word-system-timing" &&
+          report.String("$.runtime.execution_status")=="pass" &&
+          report.String("$.runtime.status")==status &&
+          (status=="pass" || status=="fail" || status=="incomplete"),
+          "native compiler final analysis report is invalid");
+    } else {
+      Require(schema=="emuflow.multi-fpga-flow/v2" && status=="pass",
+              "native compiler final flow report is invalid");
+    }
   }, [&] {
+    ControlJson report((fs::path(result.output_directory) / "multi-fpga-flow-report.json").string());
+    const auto schema=report.String("$.schema")=="emuflow.multi-fpga-flow/v3" ?
+        "multi-fpga-flow-report-v3" : "multi-fpga-flow-report-v2";
     return std::vector<ArtifactRef>{ArtifactRef::Bind(
-        (fs::path(result.output_directory) / "multi-fpga-flow-report.json").string(),"multi-fpga-flow-report-v2")};
+        (fs::path(result.output_directory) / "multi-fpga-flow-report.json").string(),schema)};
   });
   return result;
 }

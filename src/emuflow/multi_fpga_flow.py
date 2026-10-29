@@ -23,6 +23,7 @@ from .chimew_pipeline import (
 from .cut_segment_qualification import build_cut_segment_qualification
 from .default_platform import DEFAULT_PLATFORM_PATH
 from .errors import EmuFlowError, ValidationError
+from .flow_outcome import ANALYSIS_FLOW_SCHEMA, flow_execution_completed, native_analysis_completed
 from .frame_search import (
     run_frame_length_search,
     validate_frame_search_report,
@@ -290,6 +291,25 @@ def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
 
 
 def _runtime_timing_artifacts(runtime_root: Path, flow_root: Path, runtime_report):
+    if native_analysis_completed(runtime_report):
+        references = {
+            "runtime_" + role: runtime_root / name
+            for role, name in runtime_report["artifacts"].items()
+        }
+        for role in ("endpoint_index", "lineage_index"):
+            reference = runtime_report.get("original_members", {}).get(role)
+            if reference is not None:
+                references["original_" + role] = Path(reference["path"])
+        for name in ("native-word-checks.tsv", "global-opensta/measurements.tsv",
+                     "global-opensta/opensta.log", "global-opensta/native-word-witness-verification.json"):
+            path = runtime_root / name
+            if path.is_file():
+                references["runtime_" + name.replace("/", "_")] = path
+        artifacts = {}
+        for role, path in references.items():
+            checked = _checked_flow_member(flow_root, path, role)
+            artifacts[role] = {"path": checked.relative_to(flow_root).as_posix(), "sha256": _sha256(checked)}
+        return artifacts
     payload_name = runtime_report.get("artifacts",{}).get("system_timing_paths")
     if payload_name is None:
         return {}
@@ -683,10 +703,11 @@ def _sha256(path: Path) -> str:
 def validate_multi_fpga_flow_report(
     report: Dict[str, Any],
 ) -> Dict[str, Any]:
-    if report.get("schema") != MULTI_FPGA_FLOW_SCHEMA:
+    if report.get("schema") not in {MULTI_FPGA_FLOW_SCHEMA, ANALYSIS_FLOW_SCHEMA}:
         raise ValidationError("multi-FPGA flow report schema is invalid")
-    if report.get("status") != "pass":
+    if not flow_execution_completed(report):
         raise ValidationError("multi-FPGA flow report did not pass")
+    native_analysis = report["schema"] == ANALYSIS_FLOW_SCHEMA
     stages = report.get("stages")
     if (
         not isinstance(stages, dict)
@@ -766,11 +787,15 @@ def validate_multi_fpga_flow_report(
         not isinstance(runtime, dict)
         or runtime.get("design") != design
         or runtime.get("platform") != platform
-        or runtime.get("validation", {}).get("status") != "pass"
-        or runtime_timing.get("status") == "fail"
+        or (not native_analysis and (
+            runtime.get("validation", {}).get("status") != "pass"
+            or runtime_timing.get("status") == "fail"
+        ))
     ):
         raise ValidationError("multi-FPGA runtime contract did not pass")
     physical = report.get("physical")
+    if native_analysis and physical is None:
+        raise ValidationError("native analysis report has no physical implementation")
     if physical is not None:
         physical_validation = (
             validate_multi_fpga_physical_report(physical)
@@ -906,7 +931,8 @@ def validate_multi_fpga_flow_report(
         )
 
     return {
-        "status": "pass",
+        "status": report["status"],
+        **({"execution_status": "pass"} if native_analysis else {}),
         "design": design,
         "platform": platform,
         "instances": partition_validation.get("instances"),
@@ -914,7 +940,10 @@ def validate_multi_fpga_flow_report(
         "cut_nets": partition_validation.get("cut_nets"),
         "scheduled_hops": split_validation.get("scheduled_hops"),
         "equivalence_mismatches": equivalence.get("mismatches"),
-        "frame_slots": runtime["validation"].get("frame_slots"),
+        "frame_slots": (
+            tdm_validation.get("frame_slots") if native_analysis
+            else runtime["validation"].get("frame_slots")
+        ),
         "timing_optimization": (
             "enabled"
             if timing_optimization
@@ -924,9 +953,14 @@ def validate_multi_fpga_flow_report(
                 else "external-path-test"
             )
         ),
-        "nominal_virtual_frequency_mhz": runtime["validation"].get(
-            "nominal_virtual_frequency_mhz"
-        ),
+        **({
+            "system_timing_status": runtime["system_timing_summary"]["status"],
+            "system_timing": runtime["system_timing_summary"]["summary"],
+            "implementation_clocks": runtime["implementation_clocks"],
+            "physical_timing_met": runtime["physical"].get("timing_met"),
+        } if native_analysis else {
+            "nominal_virtual_frequency_mhz": runtime["validation"].get("nominal_virtual_frequency_mhz"),
+        }),
         "physical_status": (
             "pass" if physical is not None else "not-requested"
         ),
@@ -1132,7 +1166,10 @@ def validate_multi_fpga_flow_bundle(
         close_schedule = getattr(terminal_schedule, "close", None)
         if callable(close_schedule):
             close_schedule()
-    if runtime_validation != report["runtime"].get("validation"):
+    if report["schema"] == ANALYSIS_FLOW_SCHEMA:
+        if runtime_validation.get("frame_slots") != report["stages"]["tdm"]["validation"].get("frame_slots"):
+            raise ValidationError("independent runtime frame replay disagrees")
+    elif runtime_validation != report["runtime"].get("validation"):
         raise ValidationError("independent runtime replay disagrees")
 
     physical = report.get("physical")
@@ -2192,7 +2229,8 @@ def _compile_signoff(ctx: _CompileContext):
             else None
         ),
     )
-    if ctx.physical and ctx.runtime_report.get("status") != "pass":
+    if (ctx.physical and ctx.runtime_report.get("status") != "pass"
+            and not native_analysis_completed(ctx.runtime_report)):
         raise ValidationError(
             "full physical flow did not close unified Phase 7C system timing"
         )
@@ -2226,9 +2264,11 @@ def _compile_finalize(ctx: _CompileContext):
     if resolved_route_store is None:
         raise ValidationError("Phase 4 routes have no indexed store")
 
+    native_analysis = native_analysis_completed(ctx.runtime_report)
     ctx.report = {
-        "schema": MULTI_FPGA_FLOW_SCHEMA,
-        "status": "pass",
+        "schema": ANALYSIS_FLOW_SCHEMA if native_analysis else MULTI_FPGA_FLOW_SCHEMA,
+        "status": ctx.runtime_report["status"] if native_analysis else "pass",
+        **({"execution_status": "pass"} if native_analysis else {}),
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
         **(
