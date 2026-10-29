@@ -76,22 +76,64 @@ def _retained_lineage_artifact(output: Path, coverage):
 
 
 def inspect_vivado_log(log_path: Path, returncode: int, script_name: str) -> dict[str, int]:
-    """Keep query-size advice visible without rejecting completed results."""
+    """Retain diagnostics from discarded trials after a verified restore.
+
+    Restore messages are emitted only after reopening the retained checkpoint
+    and checking its clock contract. Restore/final-result diagnostics remain
+    outside the discarded trial and are never exempted.
+    """
     tail: deque[str] = deque(maxlen=40)
-    critical = 0
-    query_scale = 0
+    critical = query_scale = errors = recovered_critical = recovered_errors = 0
+    recovered_trials = 0
+    active = pending = None
+    seen = set()
+    invalid_trial = False
+    trial_pattern = re.compile(r"^EMUFLOW_NATIVE_TRIAL (begin|discard|restore|accept) "
+        r"(locality-placement|locality-route|postroute-(?:explore-hold|critical-cell|slr-crossing))$")
     with log_path.open(encoding="utf-8", errors="replace") as log:
         for line in log:
             tail.append(line.rstrip())
-            critical += "CRITICAL WARNING:" in line
+            if line.startswith("EMUFLOW_NATIVE_TRIAL"):
+                marker = trial_pattern.fullmatch(line.rstrip())
+                if marker is None or script_name != "implement_indexed_partition.tcl":
+                    invalid_trial = True
+                    continue
+                action, name = marker.groups()
+                if action == "begin" and active is None and pending is None and name not in seen:
+                    seen.add(name)
+                    active = [name, 0, 0]
+                elif action == "discard" and active is not None and active[0] == name:
+                    pending, active = active, None
+                elif action == "restore" and pending is not None and pending[0] == name:
+                    recovered_critical += pending[1]
+                    recovered_errors += pending[2]
+                    recovered_trials += 1
+                    pending = None
+                elif action == "accept" and active is not None and active[0] == name:
+                    active = None
+                else:
+                    invalid_trial = True
+                continue
+            is_critical = "CRITICAL WARNING:" in line
+            is_error = bool(re.match(r"^\s*ERROR:", line))
+            critical += is_critical
+            errors += is_error
             # This warning concerns the size of a native collection. The
             # query can still complete with full coverage and valid results.
-            query_scale += bool(re.match(r"^\s*CRITICAL WARNING:\s*\[Vivado 12-4439\]", line))
-    blocking = critical-query_scale
-    if returncode or blocking:
+            advisory = bool(re.match(r"^\s*CRITICAL WARNING:\s*\[Vivado 12-4439\]", line))
+            query_scale += advisory
+            if active is not None:
+                active[1] += is_critical and not advisory
+                active[2] += is_error
+    blocking = critical-query_scale-recovered_critical
+    blocking_errors = errors-recovered_errors
+    if returncode or blocking or blocking_errors or invalid_trial or active is not None or pending is not None:
         raise EmuFlowError(f"Vivado {script_name} failed: exit={returncode}, critical_warnings={critical}\n" + "\n".join(tail))
     return {"critical_warnings":critical, "blocking_critical_warnings":blocking,
-            "query_scale_advisories":query_scale}
+            "query_scale_advisories":query_scale, "errors":errors,
+            "blocking_errors":blocking_errors, "recovered_trials":recovered_trials,
+            "recovered_trial_critical_warnings":recovered_critical,
+            "recovered_trial_errors":recovered_errors}
 
 
 def execute_vivado(executable: str, script: Path, arguments: list[str], output: Path, name: str) -> dict[str, Any]:

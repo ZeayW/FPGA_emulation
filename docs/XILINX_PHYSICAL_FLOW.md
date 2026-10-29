@@ -279,6 +279,15 @@ The optional `vivado` backend consumes the current compact Phase 6 split and
 transport contracts. It streams native Xilinx primitives through the canonical
 mapped SQLite index into RTL, then runs Vivado synthesis, optimization,
 placement, physical optimization, and routing in out-of-context (OOC) mode.
+Every native-word partition uses the same bounded implementation policy.
+Optional placement and post-route trials retain the previous checkpoint; a
+failed locality route restores the original placement and attempts its route
+once. Native errors and critical warnings reject a trial even when its timing
+estimate improves. Diagnostics from a discarded trial remain in the log and
+are classified as recovered only after the retained checkpoint is reopened
+and its clock contract validated. Errors during restoration or final analysis
+remain fatal. Final routing, DRC and timing reports qualify the selected result;
+automatic recovery does not imply timing closure.
 Fixed data pads are implemented, while external clock sources remain abstract;
 absolute clock insertion/skew and board signoff are not qualified. This scope
 is retained in each physical result and its summary projection. The common

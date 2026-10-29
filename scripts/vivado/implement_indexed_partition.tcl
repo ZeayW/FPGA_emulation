@@ -111,11 +111,16 @@ if {[catch {
     emuflow_native_bank_replicate $emuflow_bank_placement_directory $placement_sources $out $prefix
   }
   phys_opt_design
+  set locality ""
   if {$emuflow_native_word_observation && $emuflow_bank_placement_directory ne ""} {
-    emuflow_policy_localize $emuflow_bank_placement_directory $emuflow_word_data_source_origins \
-        $prefix $out $emuflow_clock_contract $place_directive
+    set locality [emuflow_policy_localize $emuflow_bank_placement_directory $emuflow_word_data_source_origins \
+        $prefix $out $emuflow_clock_contract $place_directive]
   }
-  route_design -directive $route_directive
+  if {$emuflow_native_word_observation} {
+    emuflow_policy_route $out $emuflow_clock_contract $route_directive $locality
+  } else {
+    route_design -directive $route_directive
+  }
   if {$emuflow_native_word_observation} {
     # Preserve the first completed router output before optional optimization
     # or reporting can fail. The policy keeps its own best-candidate copy.

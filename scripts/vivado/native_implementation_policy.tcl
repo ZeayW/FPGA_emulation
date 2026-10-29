@@ -1,6 +1,25 @@
 # One bounded implementation policy for every native-word partition.
 # Candidate selection uses native timing and physical validity, never FPGA IDs
 # or preservation of synthesized cell names/types.
+proc emuflow_policy_trial {action name} {
+  puts "EMUFLOW_NATIVE_TRIAL $action $name"
+  flush stdout
+}
+
+proc emuflow_policy_messages {} {
+  return [list [get_msg_config -severity ERROR -count] \
+      [get_msg_config -severity {CRITICAL WARNING} -count] \
+      [get_msg_config -id {Vivado 12-4439} -count]]
+}
+
+proc emuflow_policy_check_messages {before} {
+  lassign $before errors critical advice
+  lassign [emuflow_policy_messages] next_errors next_critical next_advice
+  if {$next_errors>$errors || $next_critical-$critical>$next_advice-$advice} {
+    error "native optional trial emitted an error or critical warning"
+  }
+}
+
 proc emuflow_policy_setup {} {
   set path [get_timing_paths -quiet -max_paths 1 -nworst 1 -delay_type max]
   if {[llength $path]!=1} {error "implementation policy has no native setup path"}
@@ -85,6 +104,8 @@ proc emuflow_policy_localize {placement origins prefix output contract directive
   puts $stream "status\tmoved_cells\tbaseline_estimated_wns_ns\tcandidate_estimated_wns_ns\terror_hex"
   set moved 0
   set candidate ""
+  set messages [emuflow_policy_messages]
+  emuflow_policy_trial begin locality-placement
   set code [catch {
     route_design -unroute
     set sources [emuflow_native_word_source_roles $origins]
@@ -92,17 +113,53 @@ proc emuflow_policy_localize {placement origins prefix output contract directive
     if {$moved} {place_design -directive $directive -no_bufg_opt}
     emuflow_validate_clock_contract $contract true
     set candidate [emuflow_policy_setup]
+    emuflow_policy_check_messages $messages
   } message]
   if {$code || $candidate<$baseline} {
+    emuflow_policy_trial discard locality-placement
     emuflow_policy_restore $checkpoint $contract
+    emuflow_policy_trial restore locality-placement
     set status [expr {$code ? "retained-after-native-error" : "retained-better-placement"}]
   } else {
+    emuflow_policy_trial accept locality-placement
     set status [expr {$moved ? "accepted-local-placement" : "unchanged"}]
   }
   if {!$code} {set message ""}
   puts $stream [join [list $status $moved $baseline $candidate \
       [binary encode hex [encoding convertto utf-8 $message]]] \t]
   close $stream
+  return [dict create accepted [expr {!$code && $candidate>=$baseline && $moved>0}] checkpoint $checkpoint]
+}
+
+proc emuflow_policy_route {output contract directive locality} {
+  if {$locality eq "" || ![dict get $locality accepted]} {
+    route_design -directive $directive
+    return
+  }
+  set messages [emuflow_policy_messages]
+  emuflow_policy_trial begin locality-route
+  set code [catch {
+    route_design -directive $directive
+    emuflow_validate_clock_contract $contract true
+    set metrics [emuflow_policy_measure [file join $output implementation-policy] locality-route]
+    if {[dict get $metrics incomplete] || [dict get $metrics blocking_drc]} {
+      error "native optional locality route is physically incomplete"
+    }
+    emuflow_policy_check_messages $messages
+  } message]
+  if {$code} {
+    emuflow_policy_trial discard locality-route
+    emuflow_policy_restore [dict get $locality checkpoint] $contract
+    emuflow_policy_trial restore locality-route
+    set stream [open [file join $output implementation-policy locality-route-error.txt] w]
+    puts $stream $message
+    close $stream
+    # A failed optional placement gets one baseline route, with the original
+    # constraints. Errors in that route remain fatal, without another retry.
+    route_design -directive $directive
+  } else {
+    emuflow_policy_trial accept locality-route
+  }
 }
 
 proc emuflow_policy_postroute {output contract {initial_checkpoint ""}} {
@@ -128,28 +185,40 @@ proc emuflow_policy_postroute {output contract {initial_checkpoint ""}} {
       {-critical_cell_opt}
       {-slr_crossing_opt}} {
     if {[emuflow_policy_closed $best] || [dict get $best incomplete] || [dict get $best blocking_drc]} {break}
+    set messages [emuflow_policy_messages]
+    emuflow_policy_trial begin postroute-$step
     set code [catch {
       phys_opt_design {*}$options
       if {[llength [emuflow_policy_pending]]} {route_design -preserve}
       emuflow_validate_clock_contract $contract true
       set candidate [emuflow_policy_measure $directory $step]
+      emuflow_policy_check_messages $messages
+      set not_worse [emuflow_policy_not_worse $candidate $best]
+      if {$not_worse} {
+        set next [file join $directory next-routed.dcp]
+        write_checkpoint -force $next
+        emuflow_policy_check_messages $messages
+      }
     } message]
     if {$code} {
       emuflow_policy_row $stream $step retained-after-native-error $best $message
+      emuflow_policy_trial discard postroute-$step
       emuflow_policy_restore $checkpoint $contract
+      emuflow_policy_trial restore postroute-$step
       continue
     }
-    if {[emuflow_policy_not_worse $candidate $best]} {
+    if {$not_worse} {
       # Replace the best snapshot only after a complete checkpoint write.
-      set next [file join $directory next-routed.dcp]
-      write_checkpoint -force $next
       file rename -force $next $checkpoint
       set best $candidate
       set selected $step
       emuflow_policy_row $stream $step accepted $candidate ""
+      emuflow_policy_trial accept postroute-$step
     } else {
       emuflow_policy_row $stream $step rejected-worse $candidate ""
+      emuflow_policy_trial discard postroute-$step
       emuflow_policy_restore $checkpoint $contract
+      emuflow_policy_trial restore postroute-$step
     }
   }
   emuflow_policy_row $stream $selected selected $best ""

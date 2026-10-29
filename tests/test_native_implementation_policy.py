@@ -11,7 +11,7 @@ pytestmark=pytest.mark.skipif(TCL86 is None,reason='Tcl 8.6 required')
 
 
 def state(wns=-.2,tns=-10.,whs=.01,**extra):
-    return {'wns':wns,'tns':tns,'whs':whs,'pending':0,'blocking':0,'warning':0,'raises':0,'repair_error':0,**extra}
+    return {'wns':wns,'tns':tns,'whs':whs,'pending':0,'blocking':0,'warning':0,'raises':0,'repair_error':0,'native_critical':0,**extra}
 
 
 def record(value):
@@ -24,6 +24,10 @@ set repairs 0
 set restores 0
 set phase 0
 set clock_period 5
+set native_critical 0
+proc get_msg_config {args} {
+  return [expr {[lindex $args 1] eq "CRITICAL WARNING" ? $::native_critical : 0}]
+}
 proc get_timing_paths {args} {
   if {[lsearch -exact $args min]>=0} {
     return [expr {[dict get $::current whs] eq "none" ? "" : "hold"}]
@@ -68,6 +72,7 @@ proc phys_opt_design {args} {
   set expected [lindex {{-directive ExploreWithHoldFix} {-critical_cell_opt} {-slr_crossing_opt}} $::phase]
   if {$args ne $expected} {error "unsupported post-route options or phase order"}
   set ::current [lindex $::plans $::phase]
+  incr ::native_critical [dict get $::current native_critical]
   incr ::phase
   if {[dict get $::current raises]} {error "native optimization failed after changing the trial design"}
 }
@@ -102,6 +107,7 @@ def run_policy(tmp_path,baseline,plans):
     (state(),[state(-.4),state(-.1),state(-.05)],-.05,False,0),
     (state(),[state(.3,0,-.2),state(.05,0)],.05,True,0),
     (state(),[state(-9,raises=1),state(.05,0)],.05,True,0),
+    (state(),[state(.2,0,native_critical=1),state(.05,0)],.05,True,0),
     (state(),[state(-.2,-20),state(-.2,-5),state(.05,0)],.05,True,0),
     (state(),[state(.1,0,pending=1)],.1,True,1),
     (state(),[state(.1,0,pending=1,repair_error=1),state(.05,0)],.05,True,1),
@@ -134,7 +140,7 @@ def test_equal_wns_compares_full_native_tns_and_restores_worse_trial(tmp_path):
     assert summary['timing_met']=='0'
 
 
-@pytest.mark.parametrize('mode',['better','worse','error','unchanged'])
+@pytest.mark.parametrize('mode',['better','worse','error','unchanged','critical'])
 def test_bank_locality_uses_same_measured_selection_rule(tmp_path,mode):
     output=tmp_path/'native';output.mkdir()
     script='set current '+record(state())+'\nset plans {}\n'+HARNESS
@@ -150,6 +156,7 @@ proc place_design {args} {
   incr ::places
   if {$args ne {-directive Explore -no_bufg_opt}} {error "unexpected placement strategy"}
   dict set ::current wns [expr {$::locality_mode eq "better" ? .1 : -.5}]
+  if {$::locality_mode eq "critical"} {dict set ::current wns .2;incr ::native_critical}
 }
 '''
     script+='source '+_tcl_word(ROOT/'scripts/vivado/native_implementation_policy.tcl')+'\n'
@@ -159,5 +166,46 @@ proc place_design {args} {
     assert result.returncode==0,result.stdout+result.stderr
     values=next(l.split()[1:]for l in result.stdout.splitlines()if l.startswith('RESULT '))
     assert float(values[0])==pytest.approx(.1 if mode=='better'else-.2)
-    assert int(values[1])==(mode in ('better','worse'))
-    assert int(values[2])==(mode in ('worse','error'))
+    assert int(values[1])==(mode in ('better','worse','critical'))
+    assert int(values[2])==(mode in ('worse','error','critical'))
+
+
+@pytest.mark.parametrize('failure',['none','throw','critical','drc','partial','baseline-fails'])
+def test_optional_locality_route_automatically_falls_back_once(tmp_path,failure):
+    output=tmp_path/'native';directory=output/'implementation-policy';directory.mkdir(parents=True)
+    checkpoint=directory/'before-locality.dcp'
+    # Native checkpoints are opaque in production. The harness serializes
+    # the state dictionary so reopening proves the trial was discarded.
+    script='set current '+record(state())+'\nset plans {}\n'+HARNESS
+    script+='\nwrite_checkpoint -force '+_tcl_word(checkpoint)+'\n'
+    script+='set current '+record(state(.1,0))+'\nset failure '+_tcl_word(failure)+'\n'+r'''
+set routes 0
+proc route_design {args} {
+  incr ::routes
+  if {$args ne {-directive Explore} || $::routes>2} {error "unexpected or unbounded route"}
+  if {$::routes==2} {
+    if {$::failure eq "baseline-fails"} {error "baseline route failed"}
+    return
+  }
+  switch $::failure {
+    throw - baseline-fails {dict set ::current wns 9;error "native candidate route failed"}
+    critical {incr ::native_critical}
+    drc {dict set ::current blocking 1}
+    partial {dict set ::current pending 1}
+  }
+}
+'''
+    script+='source '+_tcl_word(ROOT/'scripts/vivado/native_implementation_policy.tcl')+'\n'
+    script+='set locality [dict create accepted 1 checkpoint '+_tcl_word(checkpoint)+']\n'
+    script+='if {[catch {emuflow_policy_route '+_tcl_word(output)+' original-contract Explore $locality} message]} {puts "FAILED $message";exit 17}\n'
+    script+='puts "RESULT [dict get $::current wns] $::routes $::restores"\n'
+    result=subprocess.run([TCL86],input=script,text=True,capture_output=True)
+    if failure=='baseline-fails':
+        assert result.returncode==17 and 'FAILED baseline route failed'in result.stdout
+        return
+    assert result.returncode==0,result.stdout+result.stderr
+    values=next(l.split()[1:]for l in result.stdout.splitlines()if l.startswith('RESULT '))
+    assert tuple(float(v)for v in values)==pytest.approx((.1,1,0)if failure=='none'else(-.2,2,1))
+    if failure!='none':
+        assert 'EMUFLOW_NATIVE_TRIAL restore locality-route'in result.stdout
+        assert(directory/'locality-route-error.txt').is_file()

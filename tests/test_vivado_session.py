@@ -539,7 +539,8 @@ proc source {path} {
       lappend ::trace bank_replication
     }
   } elseif {[string match native-word* $::proof_mode] && [file tail $path] eq "native_implementation_policy.tcl"} {
-    proc emuflow_policy_localize {args} {lappend ::trace policy_locality}
+    proc emuflow_policy_localize {args} {lappend ::trace policy_locality;return {}}
+    proc emuflow_policy_route {output contract directive locality} {route_design -directive $directive}
     proc emuflow_policy_postroute {args} {
       lappend ::trace policy_postroute
       set ::clock_handles_stale true
