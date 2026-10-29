@@ -31,7 +31,7 @@ def test_device_control_roundtrip_does_not_rescan_the_architecture(case):
     original = XilinxPackageGeometry.open(architecture, platform.fpgas[0].part)
     state = _roundtrip(original.control_snapshot())
     with patch(
-        "emuflow.transport.chimew.xilinx_chimew_geometry.read_xilinx_package_geometry",
+        "emuflow.transport.chimew.xilinx_chimew_geometry._native_package_geometry",
         side_effect=AssertionError("ArchitectureDB was rescanned"),
     ):
         restored = XilinxPackageGeometry.from_control_snapshot(state)

@@ -2,12 +2,26 @@
 #include "storage/store.hpp"
 #include <csignal>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <variant>
 
 namespace emuflow::core {
+struct PackagePinGeometry {
+  std::string site;
+  std::int64_t column, row;
+};
+struct DevicePackageGeometry {
+  ArtifactRef source;
+  std::string part, sha256;
+  std::map<std::string, PackagePinGeometry> pins;
+};
+// The package catalog shares the device owner's bounded structural reader.
+DevicePackageGeometry ReadDevicePackageGeometry(
+    const ArtifactRef &architecture, const std::string &part,
+    const volatile std::sig_atomic_t *cancelled = nullptr);
 using PhysicalBit = std::variant<std::int64_t, std::string>;
 struct PhysicalAssignment {
   std::string instance, type, bel;

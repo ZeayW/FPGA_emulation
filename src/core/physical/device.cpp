@@ -295,6 +295,72 @@ std::string EncodeBits(const std::vector<PhysicalBit> &bits) {
   return JsonRecord(out).Encode();
 }
 } // namespace
+DevicePackageGeometry
+ReadDevicePackageGeometry(const ArtifactRef &architecture,
+                          const std::string &part,
+                          const volatile std::sig_atomic_t *cancelled) {
+  DevicePackageGeometry result{architecture, part, "", {}};
+  SqliteDatabase db(":memory:", SqliteDatabase::Mode::kReadOnly);
+  std::ifstream input(architecture.path(), std::ios::binary);
+  Check(bool(input), "cannot read package geometry");
+  Stream stream(input, db, cancelled);
+  Raw header;
+  std::size_t banks = 0;
+  stream.Object([&](const auto &key) {
+    if (key == "schema" || key == "coordinate_transform" ||
+        key == "physical_region_model" || key == "part")
+      header.emplace(key, stream.Value());
+    else if (key == "physical_regions")
+      stream.Object([&](const auto &field) {
+        if (field != "io_banks") {
+          stream.Skip();
+          return;
+        }
+        stream.Array([&](const auto &token) {
+          Check(++banks <= 256, "package bank catalog exceeds device bounds");
+          BoundedJson bank(token);
+          VisitJsonArrayTokens(bank.Token("pins"), [&](const auto &value) {
+            BoundedJson pin(value), tile(pin.Token("native_tile"));
+            const auto name = Text(pin.Text("package_pin"));
+            const auto site = Text(pin.Text("site"));
+            Check(tile.Text("coordinate_system") ==
+                      "native-device-tile-column-row-v1",
+                  "package pin lacks native tile geometry");
+            const auto x = tile.Integer("column"), y = tile.Integer("row");
+            Check(x >= 0 && y >= 0 &&
+                      result.pins.emplace(name, PackagePinGeometry{site, x, y})
+                          .second,
+                  "package pin geometry is negative or duplicated");
+            Check(result.pins.size() <= 16384,
+                  "package pin catalog exceeds device bounds");
+          });
+        });
+      });
+    else
+      stream.Skip();
+  });
+  stream.Finish();
+  Check(header.size() == 4 &&
+            DecodeJsonString(header.at("schema")) == "emuflow.archdb/v1" &&
+            DecodeJsonString(header.at("part")) == part && !part.empty() &&
+            banks && !result.pins.empty(),
+        "package schema, part or geometry disagrees");
+  BoundedJson transform(header.at("coordinate_transform")),
+      model(header.at("physical_region_model"));
+  Check(transform.Text("name") == "tile-grid-with-site-stride-v1" &&
+            model.Boolean("io_bank_encoded"),
+        "package coordinate model disagrees");
+  BoundedJson overlay(model.Token("overlay"));
+  const auto seal = overlay.Text("sha256");
+  Check(overlay.Text("schema") == "emuflow.physical-region-sidecar/v1" &&
+            seal.size() == 64 &&
+            seal.find_first_not_of("0123456789abcdef") == std::string::npos,
+        "package region source seal is invalid");
+  architecture.RequireUnchanged();
+  result.sha256 = FileHash(architecture, cancelled);
+  architecture.RequireUnchanged();
+  return result;
+}
 struct PhysicalDevice::Impl {
   SqliteDatabase &db;
   ArtifactRef architecture;

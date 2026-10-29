@@ -12,6 +12,7 @@ transport/chimew/bank_channel_assigner.cpp
 transport/chimew/rudy.cpp
 transport/chimew/signal_grouper.cpp
 transport/chimew/position_refiner.cpp
+transport/chimew/geometry.cpp
 common/artifact_io.cpp
 storage/sqlite.cpp
 common/stage_runtime.cpp

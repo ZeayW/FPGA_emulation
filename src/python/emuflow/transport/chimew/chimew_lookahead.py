@@ -25,7 +25,7 @@ from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.routing.system_route_storage import read_system_routes
 from emuflow.transport.virtual_board import INVENTORY_PATH
-from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxChimewGeometry
+from emuflow.transport.chimew.geometry import XilinxChimewGeometry
 XILINX_CHIMEW_LOOKAHEAD_SCHEMA = "emuflow.xilinx-chimew-lookahead/v1"
 XILINX_CHIMEW_LOOKAHEAD_PROVIDER = "indexed-xilinx-placement+fixed-lvds-lookahead-v1"
 XILINX_CHIMEW_TIMING_WEIGHT_PROVIDER = "partition-projected-sta-criticality-v1"
@@ -40,7 +40,9 @@ def materialize_xilinx_chimew_inputs(*, architecture_path: Path, package_geometr
             if callable(getattr(owner, "close", None)):
                 stack.callback(owner.close)
         geometry = stack.enter_context(XilinxChimewGeometry(
-            options["ir_path"], Platform.load(options["platform_path"]), options["physical_report"], architecture_path, package_geometry=package_geometry))
+            options["ir_path"], options["platform_path"], options["physical_report"], architecture_path,
+            schedule_path=options["schedule_path"], output_dir=options["output_dir"] / "sources/geometry",
+            package_geometry=package_geometry))
         return _materialize_xilinx_chimew_inputs(source_schedule=schedule, source_routes=routes,
                                                  geometry=geometry, **options)
 
@@ -455,6 +457,7 @@ def _materialize_xilinx_chimew_inputs(
         "schema": "emuflow.xilinx-chimew-physical-inputs/v1",
         "coordinate_system": "native-device-tile-column-row-v1",
         "fpgas": geometry.sources,
+        "geometry": geometry.reference,
     }, compact=True)
     placement_sha = _sha256(placement_source)
     architecture_source = Path(geometry.architecture["path"])

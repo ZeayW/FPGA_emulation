@@ -20,7 +20,8 @@ from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json, write_json, file_sha256
 
 from tests.vivado_lineage_host import import_cell_lineage, PLACEMENT_COORDINATE_SYSTEM
-from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxChimewGeometry, read_xilinx_package_geometry
+from emuflow.transport.chimew.geometry import XilinxChimewGeometry
+from tests.chimew_geometry_reference import XilinxChimewGeometry as GeometryReference, read_package_geometry_reference
 from tests.test_chimew_fixed_wiring import fixed_case
 
 
@@ -101,10 +102,30 @@ def case(tmp_path, fixed_case, request):
     return platform, source, architecture, {'fpgas':records}, schedule_path, routes
 
 
+
+def geometry_case(case,**options):
+    platform,source,architecture,report,schedule,*_=case
+    return XilinxChimewGeometry(source,research_platform_path(len(platform.fpgas)),report,architecture,
+        schedule_path=schedule,**options)
+
+
+def selected_entries(case,entries):
+    from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+    path=case[4]
+    with closing(read_tdm_schedule(path)) as view:
+        header=view.native_validation_header()
+        template=dict(next(iter(view['entries'])))
+    rows=[dict(template,**entry) for entry in entries]
+    write_tdm_schedule_storage(path,{**header,'entries':rows,'routes':[],
+        'demand_completions':[],'domain_schedules':[]})
+
 def test_selected_native_locations_and_full_paper_pipeline(case, tmp_path):
     platform, source, architecture, report, schedule, routes = case
     initial_schedule_hash = file_sha256(schedule)
-    with XilinxChimewGeometry(source, platform, report, architecture) as geometry:
+    from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
+    catalog=XilinxPackageGeometry.open(architecture,platform.fpgas[0].part)
+    assert dict(catalog.pins)==read_package_geometry_reference(architecture,platform.fpgas[0].part)
+    with geometry_case(case) as geometry:
         for fpga, kind in ((platform.fpgas[0].id, 'tx'), (platform.fpgas[1].id, 'rx')):
             point = geometry.point(fpga, 'n5', 's0', kind)
             assert all(isinstance(v, float) for v in point)
@@ -113,9 +134,14 @@ def test_selected_native_locations_and_full_paper_pipeline(case, tmp_path):
                 index = 0 if kind == "tx" else 1
                 assert point[:2] == (3+index*10,4+index*10)
         assert geometry.forwarded == 0
-        # No materialized location view / instance map hides a per-entry scan.
-        for db in geometry.databases.values():
-            assert db.execute("SELECT name FROM sqlite_temp_master").fetchall() == []
+        from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+        with GeometryReference(source,platform,report,architecture) as reference, closing(read_tdm_schedule(schedule)) as selected:
+            for entry in selected['entries']:
+                for kind,owner in (('tx',entry['from']),('rx',entry['to'])):
+                    assert geometry.point(owner,entry['net'],entry['id'],kind)==reference.point(owner,entry['net'],entry['id'],kind)
+        assert geometry.header['implementation_id']=='native-indexed-xilinx-geometry-v1'
+        assert geometry.header['metrics']['points']==geometry._db.execute('SELECT count(*) FROM points').fetchone()[0]
+        assert geometry._db.execute('SELECT name FROM sqlite_temp_master').fetchall()==[]
     lookahead = materialize_xilinx_chimew_inputs(ir_path=source, schedule_path=schedule,
         routes_path=routes, platform_path=research_platform_path(2), architecture_path=architecture,
         physical_report=report, output_dir=tmp_path/'lookahead')
@@ -147,20 +173,20 @@ def test_geometry_rejects_missing_or_forged_fixed_pin_facts(case, mutation):
     else: pins.append(copy.deepcopy(pins[0]))
     write_json(architecture,value)
     with pytest.raises(ValidationError):
-        XilinxChimewGeometry(source,platform,report,architecture)
+        geometry_case(case)
 
 
 def test_missing_active_placement_is_not_a_synthetic_centre(case):
     platform, source, architecture, report, *_=case
-    with XilinxChimewGeometry(source,platform,report,architecture) as geometry:
-        with pytest.raises(ValidationError,match='lacks placed source or boundary'):
+    with geometry_case(case) as geometry:
+        with pytest.raises(ValidationError,match='selected schedule endpoint'):
             geometry.point(platform.fpgas[0].id,'n7','s0','rx')
 
 
 def test_generation_mutation_is_rejected(case):
     platform, source, architecture, report, *_=case
     with pytest.raises(ValidationError,match='generation changed'):
-        with XilinxChimewGeometry(source,platform,report,architecture):
+        with geometry_case(case):
             architecture.write_text(architecture.read_text()+'\n')
 
 
@@ -172,7 +198,7 @@ def test_wrong_mapped_generation_seal_is_rejected(case):
     else:
         stages['rapidwright_implementation']['result']['artifacts']['mapped']['sha256']='0'*64
     with pytest.raises(ValidationError,match='placement/source identity'):
-        XilinxChimewGeometry(source,platform,report,architecture)
+        geometry_case(case)
 
 
 def test_timing_guard_has_one_owner_without_cloning_the_hop_store(case, tmp_path):
@@ -236,23 +262,24 @@ def test_multicast_query_cache_is_bounded_and_uses_indexes(case):
     platform,source,architecture,report,*_=case
     with closing(sqlite3.connect(source)) as db,db:
         seq=db.execute("SELECT seq FROM net_records WHERE id='n5'").fetchone()[0]
-        # Repeated independent net records exercise the design-sized query count.
         first=db.execute('SELECT max(seq)+1 FROM net_records').fetchone()[0]
         for index in range(4100):
             db.execute('INSERT INTO net_records SELECT ?,?,name,flags,yosys_bit,bus_index,fanout,cut_class,extras_seq FROM net_records WHERE seq=?',
                        (first+index,f'repeated-{index}',seq))
             db.execute('INSERT INTO endpoint_records SELECT ?,role,ordinal,instance_seq,port_seq,bit,extras_seq FROM endpoint_records WHERE net_seq=?',
                        (first+index,seq))
-    with XilinxChimewGeometry(source,platform,report,architecture) as geometry:
+    selected_entries(case,[{'id':f'selected-{i:05}','demand':f'demand-{i:05}','net':f'repeated-{i}'} for i in range(4100)])
+    with geometry_case(case) as geometry:
+        assert geometry.header['metrics']['points']==8200
+        assert geometry.header['metrics']['source_cache_peak']==4096
+        assert geometry.header['metrics']['source_queries']==8200
+        for plan in geometry.header['lookup_plans'].values():
+            plan=' '.join(plan)
+            assert 'SCAN cell' not in plan and 'SCAN a' not in plan
+            if 'rapidwright_implementation' in report['fpgas'][0]['stages']:
+                assert 'physical_sites_name' in plan
         fpga=platform.fpgas[0].id
-        for index in range(4100):
-            geometry.point(fpga,f'repeated-{index}','s0','tx')
-        assert len(geometry.source_points)==4096
-        expr=geometry.location_sql[fpga].format(axis='column' if 'tile_' in geometry.location_sql[fpga] else 'x',instance="'launch'")
-        plan=' '.join(row[3] for row in geometry.databases[fpga].execute('EXPLAIN QUERY PLAN '+expr))
-        assert 'SCAN cell' not in plan and 'SCAN a' not in plan
-        if 'tile_' not in geometry.location_sql[fpga]:
-            assert 'physical_sites_name' in plan
+        assert geometry.point(fpga,'repeated-4099','selected-04099','tx')[0]>=0
 
 
 @pytest.mark.parametrize('registers',[['capture'],['capture','missing']])
@@ -267,25 +294,29 @@ def test_forwarded_hop_uses_complete_source_bound_register_geometry(case, regist
         'merged_ir':{'external_port':'tx','external_port_bit':0,'external_net':'wire0','logical_net':'n5',
                      'boundary_register_instances':registers}}
     view=write_boundary_identity_storage(boundary,header,[endpoint]);view.close()
-    fpga=record['fpga']
-    with XilinxChimewGeometry(source,platform,report,architecture) as geometry:
-        if len(registers)==1:
-            expected=geometry.point(fpga,'n5','original','rx')
-            assert geometry.point(fpga,'n5','relay','tx')==expected
-            assert geometry.forwarded==1
-        else:
-            with pytest.raises(ValidationError,match='boundary coverage'):
-                geometry.point(fpga,'n5','relay','tx')
+    return_boundary=Path(report['fpgas'][0]['stages']['placement_ir']['boundary_identity']['output'])
+    receiver=copy.deepcopy(endpoint);receiver.update(id='rx-forwarded',kind='rx',peer=platform.fpgas[1].id,source_class='captured-shadow')
+    receiver['merged_ir'].update(external_port='rx',boundary_register_instances=['launch'])
+    view=write_boundary_identity_storage(return_boundary,read_json(return_boundary)['header'],[receiver]);view.close()
+    selected_entries(case,[{'id':'relay','demand':'d0','from':platform.fpgas[1].id,'to':platform.fpgas[0].id}])
+    if len(registers)>1:
         with pytest.raises(ValidationError,match='boundary coverage'):
-            geometry.point(fpga,'wrong-net','relay','tx')
+            geometry_case(case)
+        return
+    with GeometryReference(source,platform,report,architecture) as reference, geometry_case(case) as geometry:
+        expected=reference.point(platform.fpgas[1].id,'n5','original','rx')
+        assert geometry.point(platform.fpgas[1].id,'n5','relay','tx')==expected
+        assert geometry.forwarded==2
+        with pytest.raises(ValidationError,match='selected schedule endpoint'):
+            geometry.point(platform.fpgas[1].id,'wrong-net','relay','tx')
 
 
 def test_preflight_catalog_is_reused_without_rescanning_the_device_graph(case):
     from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
     platform,source,architecture,report,*_=case
     catalog=XilinxPackageGeometry.open(architecture,platform.fpgas[0].part)
-    with patch('emuflow.transport.chimew.xilinx_chimew_geometry.read_xilinx_package_geometry',side_effect=AssertionError('device graph reread')):
-        with XilinxChimewGeometry(source,platform,report,architecture,package_geometry=catalog) as geometry:
+    with patch('emuflow.transport.chimew.xilinx_chimew_geometry._native_package_geometry',side_effect=AssertionError('device graph reread')):
+        with geometry_case(case,package_geometry=catalog) as geometry:
             geometry.point(platform.fpgas[0].id,'n5','s0','tx')
 
 
@@ -314,15 +345,10 @@ def test_shared_site_map_seal_is_published_once_and_survives_later_hardlinks(cas
     assert producer_hash.call_count==1
     first=Path(report['fpgas'][0]['stages']['rapidwright_implementation']['placement']['site_database']['path'])
     os.link(first,tmp_path/'later-reader.sqlite')
-    reads=[]
-    def checked_hash(path):
-        if Path(path).samefile(first): reads.append(path)
-        return file_sha256(path)
-    with patch('emuflow.transport.chimew.xilinx_chimew_geometry.file_sha256',side_effect=checked_hash):
-        with XilinxChimewGeometry(source,platform,report,architecture) as geometry:
-            assert geometry.point(platform.fpgas[0].id,'n5','s0','tx')[:2]==(3,4)
-            assert geometry.point(platform.fpgas[1].id,'n5','s0','rx')[:2]==(13,14)
-    assert len(reads)==1
+    with geometry_case(case) as geometry:
+        assert geometry.point(platform.fpgas[0].id,'n5','s0','tx')[:2]==(3,4)
+        assert geometry.point(platform.fpgas[1].id,'n5','s0','rx')[:2]==(13,14)
+        assert geometry.header['metrics']['site_map_seal_rechecks']==1
 
 
 @pytest.mark.parametrize("case",["rapidwright"],indirect=True)
@@ -335,7 +361,7 @@ def test_site_map_edit_cannot_hide_behind_restored_mtime(case):
         db.execute('UPDATE sites SET physical_x=99')
     os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))
     with pytest.raises(ValidationError,match='content seal disagrees'):
-        XilinxChimewGeometry(source,platform,report,architecture)
+        geometry_case(case)
 
 
 @pytest.mark.parametrize('case',['rapidwright'],indirect=True)
@@ -355,3 +381,59 @@ def test_site_map_publisher_rejects_a_changed_shared_generation(case, tmp_path):
     with pytest.raises(ValidationError,match='changed after publication'):
         _materialize_site_database(destination,device)
     assert not destination.exists()
+
+
+@pytest.mark.parametrize('damage', ['unknown-schema','duplicate-role','source-generation',
+    'catalog-namespace','catalog-generation','schedule-selector-escape',
+    'boundary-selector-escape','late-entry-point','late-schedule-order','physical-sha'])
+def test_native_geometry_rejects_forged_inputs_without_publishing_a_partial_owner(case,tmp_path,monkeypatch,damage):
+    import emuflow.transport.chimew.geometry as host
+    from emuflow.common.native_tools import native_file_generation
+    if damage.startswith('late-'):
+        selected_entries(case,[{'id':'s0','demand':'d0'},{'id':'s1','demand':'d1'}])
+    real=host.NativeToolProcess
+    def corrupt(native,argv,**options):
+        index=argv.index('prepare-chimew-geometry')
+        request=Path(argv[index+1]);value=read_json(request)
+        if damage=='unknown-schema':value['schema']='emuflow.chimew-geometry-input/unknown'
+        elif damage=='duplicate-role':value['sources'][-1]=copy.deepcopy(value['sources'][0])
+        elif damage=='source-generation':value['sources'][1]['generation'][2]+=1
+        elif damage=='catalog-namespace':value['package_geometry']['path']=str(case[1])
+        elif damage=='catalog-generation':value['package_geometry']['generation'][2]+=1
+        elif damage=='physical-sha':
+            stages=value['physical_report']['fpgas'][0]['stages']
+            if 'vivado_implementation' in stages:stages['vivado_implementation']['cell_coverage']['sha256']='f'*64
+            else:stages['rapidwright_implementation']['result']['artifacts']['physical_handoff']['sha256']='f'*64
+        elif damage=='boundary-selector-escape':
+            path=Path(value['physical_report']['fpgas'][0]['stages']['placement_ir']['boundary_identity']['output'])
+            selector=read_json(path);selector['artifact']='../escape.sqlite';write_json(path,selector)
+        else:
+            source=next(row for row in value['sources'] if row['role']=='schedule')
+            path=Path(source['path']);selector=json.loads(path.read_text())
+            if damage=='schedule-selector-escape':selector['artifact']='../escape.sqlite'
+            else:
+                store=path.parent/selector['artifact']
+                with closing(sqlite3.connect(store)) as db,db:
+                    if damage=='late-entry-point':db.execute("UPDATE schedule_entries SET net='absent-net' WHERE seq=1")
+                    else:db.execute('UPDATE schedule_entries SET seq=seq+1000')
+                digest=file_sha256(store);destination=store.with_name('schedule.'+digest+'.sqlite')
+                store.rename(destination);selector.update(artifact=destination.name,store_sha256=digest,store_bytes=destination.stat().st_size)
+            write_json(path,selector);source['generation']=list(native_file_generation(path))
+        write_json(request,value)
+        return real(native,argv,**options)
+    monkeypatch.setattr(host,'NativeToolProcess',corrupt)
+    output=tmp_path/'rejected-native-owner'
+    with pytest.raises(ValidationError):geometry_case(case,output_dir=output)
+    assert not output.exists()
+    assert not list(tmp_path.glob('.chimew-geometry-*'))
+
+
+def test_native_geometry_does_not_replace_a_published_owner(case,tmp_path):
+    output=tmp_path/'preserved'
+    with geometry_case(case,output_dir=output) as view:
+        original=file_sha256(view.store_path)
+        assert {row['schema'] for row in view.header['input_artifacts']} >= {
+            'emuir-compact-v2','tdm-schedule-selector-v4','tdm-schedule-store-v4'}
+    with pytest.raises(ValidationError,match='already exists'):
+        geometry_case(case,output_dir=output)
+    assert file_sha256(output/'geometry.sqlite')==original
