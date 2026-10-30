@@ -661,7 +661,7 @@ def test_only_opensta_engine_is_exposed():
 def test_physical_binding_uses_raw_measurements():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow_tools.platform.board_link_timing import build_board_link_timing_model
-    from emuflow.transport.runtime import build_virtual_runtime
+    from emuflow_tools.transport.runtime_audit import build_virtual_runtime
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()
     _, routes, _ = fixture._system_inputs()
@@ -732,7 +732,7 @@ def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path)
     from emuflow_tools.timing.logic_segment_timing_storage import logic_segment_timing_reference
     from tests.timing_facts import logic_timing_facts
     from emuflow_tools.physical.physical_summary_storage import publish_logic_segment_timing_store, read_physical_summary
-    from emuflow.transport.runtime import build_virtual_runtime
+    from emuflow_tools.transport.runtime_audit import build_virtual_runtime
     from tests.system_timing_oracle import build_system_timing
 
     fixture = StaticExactSystemTimingTest()
@@ -838,7 +838,7 @@ def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
     from emuflow_tools.timing.logic_segment_timing_storage import logic_segment_timing_reference
     from tests.timing_facts import logic_timing_facts
     from emuflow_tools.physical.physical_summary_storage import read_physical_summary
-    from emuflow.transport.runtime import build_virtual_runtime
+    from emuflow_tools.transport.runtime_audit import build_virtual_runtime
 
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()
@@ -918,7 +918,7 @@ def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
 def test_physical_binding_does_not_reindex_schedule_entries():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow_tools.platform.board_link_timing import build_board_link_timing_model
-    from emuflow.transport.runtime import build_virtual_runtime
+    from emuflow_tools.transport.runtime_audit import build_virtual_runtime
 
     class SinglePassEntries(list):
         iterations = 0
@@ -954,7 +954,7 @@ def test_physical_binding_does_not_reindex_schedule_entries():
 def test_indexed_physical_binding_streams_routes_paths_and_schedule(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow_tools.platform.board_link_timing import build_board_link_timing_model
-    from emuflow.transport.runtime import build_virtual_runtime
+    from emuflow_tools.transport.runtime_audit import build_virtual_runtime
     from emuflow_tools.routing.system_route_storage import SystemRouteSequence, read_system_routes
     from tests.native_route_seal_fixture import write_route_store_fixture
     from emuflow.scheduling.tdm_schedule_storage import (read_tdm_schedule)

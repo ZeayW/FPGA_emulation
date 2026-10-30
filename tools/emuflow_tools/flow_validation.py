@@ -23,7 +23,7 @@ from emuflow_tools.stage_clients.timing_replay import run_phase7c
 from emuflow_tools.physical.physical_summary_storage import read_physical_summary
 from emuflow.partition.partition import CUT_MODE_STATIC_EXACT
 from emuflow.platform.platform import Platform
-from emuflow.transport.runtime import validate_virtual_runtime
+from emuflow_tools.transport.runtime_audit import validate_virtual_runtime
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow_tools.stage_clients.routing import GLOBAL_CANDIDATE_PROVIDER

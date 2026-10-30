@@ -26,7 +26,7 @@ from emuflow_tools.document_io import read_json
 from emuflow.common.json_io import write_json
 from emuflow_tools.transport.netlist import transport_to_systemverilog
 from emuflow.platform.platform import Platform
-from emuflow.transport.runtime import virtual_runtime_controller_to_systemverilog
+from emuflow_tools.transport.runtime_audit import virtual_runtime_controller_to_systemverilog
 from emuflow_tools.frontend.frontend_native import run_rtl_frontend
 from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
 from emuflow.common.json_io import file_sha256
@@ -428,7 +428,7 @@ def characterize_open_transport_case(
                 "transport_sv_sha256": _sha256_bytes(transport_rtl.encode("utf-8")),
                 "runtime_sv_sha256": _sha256_bytes(runtime_rtl.encode("utf-8")),
                 "generator": "emuflow_tools.transport.netlist.transport_to_systemverilog",
-                "runtime_generator": "emuflow.transport.runtime.virtual_runtime_controller_to_systemverilog",
+                "runtime_generator": "emuflow_tools.transport.runtime_audit.virtual_runtime_controller_to_systemverilog",
             },
             "runtime_seconds": time.monotonic() - started,
             "provenance": {"class": OPEN_TRANSPORT_PROVENANCE},

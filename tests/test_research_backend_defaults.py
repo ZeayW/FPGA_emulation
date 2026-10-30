@@ -80,7 +80,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                     root / "physical", vpr="retired")
             self.assertEqual(list(root.iterdir()), [])
         import json
-        from emuflow.physical.physical_backend import PHYSICAL_BACKENDS
+        from emuflow_tools.physical.backend_audit import PHYSICAL_BACKENDS
         descriptor = json.loads((ROOT / "schemas/physical-backend-v1.schema.json").read_text())
         result = json.loads((ROOT / "schemas/physical-partition-result-v1.schema.json").read_text())
         self.assertEqual(set(descriptor["properties"]["id"]["enum"]), set(PHYSICAL_BACKENDS))

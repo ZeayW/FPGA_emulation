@@ -17,7 +17,7 @@ from emuflow_tools.stage_clients.schedule import (
 from emuflow_tools.stage_clients.timing_replay import run_phase7c
 from emuflow.platform.platform import Platform
 from emuflow_tools.timing.local_path_timing import path_id_set_sha256
-from emuflow.transport.runtime import (
+from emuflow_tools.transport.runtime_audit import (
     PHYSICAL_SUMMARY_SCHEMA,
     aggregate_qor as _aggregate_qor,
     build_virtual_runtime,

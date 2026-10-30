@@ -2275,7 +2275,7 @@ def simulate_static_exact_partition_equivalence(
         }
     if enforce_clock_contract:
         model.validate_clock_domains(clock_periods)
-    from emuflow.transport.runtime import build_virtual_clock_contract
+    from emuflow.transport.clock_contract import build_virtual_clock_contract
 
     clock_events = build_virtual_clock_contract(
         clock_periods, 1.0
@@ -2417,7 +2417,7 @@ def exhaustively_verify_static_exact_partition_equivalence(
         }
     if enforce_clock_contract:
         model.validate_clock_domains(clock_periods)
-    from emuflow.transport.runtime import build_virtual_clock_contract
+    from emuflow.transport.clock_contract import build_virtual_clock_contract
 
     clock_events = build_virtual_clock_contract(
         clock_periods, 1.0

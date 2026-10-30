@@ -6,7 +6,7 @@ import pytest
 from emuflow.common.errors import ValidationError
 from emuflow_tools.document_io import read_json
 from emuflow_tools.timing.qor_storage import QOR_REPORT_STORAGE_SCHEMA, QorReportView, read_qor_report, write_qor_report
-from emuflow.transport.runtime import QOR_REPORT_SCHEMA
+from emuflow_tools.transport.runtime_audit import QOR_REPORT_SCHEMA
 
 
 def _report(count=3):

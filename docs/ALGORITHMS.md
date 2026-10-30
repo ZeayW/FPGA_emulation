@@ -294,19 +294,19 @@ adapter.
 | --- | --- | --- |
 | Yosys / ABC synthesis | Direct upstream tool execution; EmuFlow mapping profiles and import | [native frontend](../src/core/frontend/frontend.cpp) |
 | OpenSTA path extraction | Native input generation, engine execution and typed path import | [phase2.cpp](../src/core/timing/phase2.cpp) |
-| TritonPart | Upstream initializer integration; shared assignment/legality contracts | [partition.py](../src/python/emuflow/partition/partition.py) |
+| TritonPart | Upstream initializer integration; shared assignment/legality contracts | [native partition stage](../src/core/partition/phase3.cpp) |
 | PATRON | EmuFlow path-aware K-way refinement initialized by TritonPart; not an external paper implementation | [patron_refiner.cpp](../src/core/partition/patron_refiner.cpp) |
-| Static Exact semantic analysis | EmuFlow structural dependency/capture traversal with a Python reference and native large-design implementation | [static_exact_analyzer.cpp](../src/core/partition/static_exact_analyzer.cpp) |
+| Static Exact semantic analysis | Native structural dependency/capture traversal with independent bounded test references | [static_exact_analyzer.cpp](../src/core/partition/static_exact_analyzer.cpp) |
 | System router | EmuFlow implementation drawing on DAC 2025 delay-demand balancing and ASP-DAC 2026 timing-aware routing, with additional candidate trees | [tlr_router.cpp](../src/core/routing/global_router.cpp) |
 | Static Exact TDM scheduler | EmuFlow deterministic dependency ordering, earliest legal TX events, and independent readiness validation | [tdm_exact_scheduler.cpp](../src/core/scheduling/exact_scheduler.cpp) |
 | Chimew initial grouping | Paper Algorithm 1 crossing-encoding grouping | [chimew_signal_grouper.cpp](../src/core/transport/chimew/signal_grouper.cpp) |
 | Chimew position refinement | Paper Section 3.3.2 with explicitly documented implementation choices | [position_refiner.cpp](../src/core/transport/chimew/position_refiner.cpp) |
 | Chimew bank/channel assignment | Paper Section 3.4 two-stage min-cost-flow kernel | [chimew_bank_channel_assigner.cpp](../src/core/transport/chimew/bank_channel_assigner.cpp) |
 | Chimew integration | Native baseline physical/timing comparison, placed lookahead, pipeline publication and independent electrical/slot qualification | [chimew.cpp](../src/core/flow/chimew.cpp), [pipeline.cpp](../src/core/transport/chimew/pipeline.cpp) |
-| Split netlists and transport | EmuFlow runtime implementation and validation | [phase6.py](../tools/emuflow_tools/stage_clients/transport.py) |
-| OpenPARF/RWRoute / Vivado | Physical-tool integrations selected by backend and device contract | [physical_backend.py](../src/python/emuflow/physical/physical_backend.py) |
-| RapidWright / RWRoute | Device-resource, site/BEL, and native routing integration | [rapidwright_provider.py](../tools/emuflow_tools/physical/rapidwright/rapidwright_provider.py) |
-| Global OpenSTA | EmuFlow timing-model exporter and upstream STA execution | [global_sta.py](../tools/emuflow_tools/timing/global_sta.py) |
+| Split netlists and transport | EmuFlow runtime implementation and validation | [transport.cpp](../src/core/transport/transport.cpp) |
+| OpenPARF/RWRoute / Vivado | Physical-tool integrations selected by backend and device contract | [physical flow](../src/core/physical/flow/context.cpp) |
+| RapidWright / RWRoute | Device-resource, site/BEL, and native routing integration | [RWRoute stage](../src/core/physical/rapidwright/rwroute_stage.cpp), [route validation](../src/core/physical/rapidwright/route_validation.cpp) |
+| Global OpenSTA | EmuFlow timing-model exporter and upstream STA execution | [physical_global_sta.cpp](../src/core/timing/physical_global_sta.cpp) |
 
 In particular, neither the Chimew paper's reported timing gains nor a placement
 engine's published benchmark results transfer automatically to EmuFlow. Those

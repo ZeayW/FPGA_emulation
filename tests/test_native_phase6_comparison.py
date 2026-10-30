@@ -7,7 +7,7 @@ import pytest
 
 from tests.native_build import emuflow_native
 from tests.test_physical_backend import PhysicalBackendContractTest
-from emuflow.physical.physical_backend import physical_backend_descriptor
+from emuflow_tools.physical.backend_audit import physical_backend_descriptor
 from emuflow_tools.stage_clients.physical import validate_multi_fpga_physical_report
 from emuflow_tools.flow_validation import _phase6_physical_metrics, validate_phase6_ab_comparison
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.common.errors import ValidationError
-from emuflow.physical.vivado.vivado_lineage import (INVENTORY_HEADER, LINEAGE_POLICY,
+from emuflow_tools.physical.vivado.lineage_contract import (INVENTORY_HEADER, LINEAGE_POLICY,
                                     PLACEMENT_COORDINATE_SYSTEM)
 from tests.vivado_lineage_host import import_cell_lineage
 from tests.vivado_query_host import resolve_vivado_query as resolve_timing_query

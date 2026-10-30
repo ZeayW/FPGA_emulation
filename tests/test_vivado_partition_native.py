@@ -16,7 +16,7 @@ from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow_tools.ir.indexed_physical_ir import IndexedPhysicalIR
 from emuflow_tools.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
 from emuflow_tools.physical.vivado.vivado_physical import run_indexed_vivado_partition
-from emuflow.physical.physical_backend import validate_physical_partition_result
+from emuflow_tools.physical.backend_audit import validate_physical_partition_result
 from tests.test_vivado_indexed_physical import fixture
 from tests.test_vivado_backend import RUNTIME
 

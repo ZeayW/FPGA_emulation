@@ -17,7 +17,7 @@ from emuflow.storage.store_publication import (
 )
 from emuflow.common.json_io import file_sha256, write_json
 from emuflow_tools.frontend.verilog import _emittable_parameters, _identifier, _parameter
-from emuflow.physical.vivado.vivado_lineage import LINEAGE_POLICY
+from emuflow_tools.physical.vivado.lineage_contract import LINEAGE_POLICY
 
 
 def primitive_function_signature(cell: Mapping[str, Any]) -> str:

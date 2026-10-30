@@ -195,7 +195,7 @@ def test_native_rejects_wrong_full_original_source_coverage(tmp_path):
 def test_native_multicast_relay_and_affine_physical_chains(tmp_path,monkeypatch,kind):
     from tests.test_phase5_timing_native import _timed_case
     from tests.tdm_timing_oracle import path_facts
-    from emuflow.transport.runtime import build_virtual_runtime
+    from emuflow_tools.transport.runtime_audit import build_virtual_runtime
     from emuflow_tools.platform.board_link_timing import build_board_link_timing_model
     with patch('tests.test_phase5_timing_native.install_runtime'):
         case,routes,semantic,ir,ischedule,schedule=_timed_case(tmp_path,monkeypatch,kind,count=9)

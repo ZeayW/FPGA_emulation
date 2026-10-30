@@ -13,7 +13,7 @@ from emuflow_tools.document_io import read_json
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import require_native_schema, resolve_native_executable
 from emuflow.common.tool_runtime import NativeToolProcess
-from emuflow.physical.vivado.vivado_lineage import LINEAGE_POLICY
+from emuflow_tools.physical.vivado.lineage_contract import LINEAGE_POLICY
 
 
 def emit_indexed_vivado_verilog(

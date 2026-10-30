@@ -37,7 +37,7 @@ def main(source_root: Path, install_root: Path) -> None:
     )
     from emuflow.timing.engine_runtime import OPENSTA_RUNTIME_CHECK_SCRIPT
     assert Path(emuflow.__file__).resolve().parent == package.resolve()
-    for retired in ("cli", "phase3", "native_compile_adapter", "xilinx_rwroute", "frontend.yosys", "frontend.synthesis", "physical.xilinx_physical_macros", "physical.xilinx_packing", "scheduling.timing_routing", "scheduling.frame_search", "flow.multi_fpga_flow"):
+    for retired in ("cli", "phase3", "native_compile_adapter", "xilinx_rwroute", "frontend.yosys", "frontend.synthesis", "physical.xilinx_physical_macros", "physical.xilinx_packing", "scheduling.timing_routing", "scheduling.frame_search", "flow.multi_fpga_flow", "transport.runtime", "physical.physical_backend", "physical.vivado"):
         assert importlib.util.find_spec("emuflow." + retired) is None, retired
     for retired in ('partition.phase3', 'partition.phase3_native', 'routing.phase4', 'routing.phase4_native', 'scheduling.phase5', 'scheduling.phase5_native', 'transport.phase6', 'transport.phase6_native', 'timing.phase7c', 'flow.multi_fpga_physical_flow',):
         assert importlib.util.find_spec("emuflow." + retired) is None, retired

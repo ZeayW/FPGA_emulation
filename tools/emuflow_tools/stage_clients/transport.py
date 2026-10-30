@@ -18,7 +18,7 @@ from emuflow.common.native_tools import require_native_schema
 from emuflow_tools.transport.position_hints_storage import read_position_hints
 from emuflow_tools.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
 from emuflow_tools.transport.transport_cost import predict_transport_resources, validate_transport_cost_database
-from emuflow.transport.runtime import build_virtual_runtime
+from emuflow_tools.transport.runtime_audit import build_virtual_runtime
 from emuflow.transport.split_netlist_storage import read_compact_emuir_control_metadata, read_split_resource_reservations, validate_split_netlists_sqlite
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow_tools.transport.transport_storage import read_lane_map, read_transport, read_virtual_binding

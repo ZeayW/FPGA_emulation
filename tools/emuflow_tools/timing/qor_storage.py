@@ -19,7 +19,7 @@ from typing import Any, Optional
 from emuflow.common.errors import ValidationError
 from emuflow.storage.store_publication import StoreSource, bind_store_source, publish_sqlite_store, require_store_sources_unchanged, validate_store_destination
 from emuflow.common.json_io import file_sha256, write_json
-from emuflow.transport.runtime import QOR_REPORT_SCHEMA
+from emuflow_tools.transport.runtime_audit import QOR_REPORT_SCHEMA
 
 
 QOR_REPORT_STORAGE_SCHEMA = "emuflow.qor-report-storage/v1"

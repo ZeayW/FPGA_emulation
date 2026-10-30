@@ -262,16 +262,20 @@
       "id": "xilinx-physical-orchestration",
       "stage": "Phase 7 / two Xilinx physical backends",
       "source_paths": [
-        "src/python/emuflow/physical/physical_backend.py",
+        "src/core/physical/flow",
+        "tools/emuflow_tools/physical/backend_audit.py",
         "tools/emuflow_tools/stage_clients/physical.py",
         "schemas/physical-backend-v1.schema.json",
         "schemas/physical-partition-result-v1.schema.json"
       ],
       "build_targets": [
+        "emuflow_core",
+        "emuflow_native",
         "emuflow_python"
       ],
       "runtime_products": [
-        "emuflow"
+        "emuflow",
+        "emuflow-native"
       ],
       "integration": "default-in-tree-build"
     },
@@ -279,13 +283,13 @@
       "id": "optional-vivado-physical-provider",
       "stage": "Phase 7 indexed Xilinx physical backend",
       "source_paths": [
-        "src/python/emuflow/physical/physical_backend.py",
+        "tools/emuflow_tools/physical/backend_audit.py",
         "tools/emuflow_tools/physical/vivado/vivado_netlist.py",
         "schemas/physical-backend-v1.schema.json",
         "schemas/physical-partition-result-v1.schema.json",
         "tools/emuflow_tools/physical/vivado/vivado_physical.py",
         "tools/emuflow_tools/physical/vivado/vivado_indexed_netlist.py",
-        "src/python/emuflow/physical/vivado/vivado_lineage.py",
+        "tools/emuflow_tools/physical/vivado/lineage_contract.py",
         "tools/emuflow_tools/physical/vivado/vivado_physical_timing.py",
         "src/core/physical/vivado/vivado_partition.cpp",
         "tools/emuflow_tools/physical/vivado/vivado_source.py",
@@ -295,13 +299,16 @@
         "scripts/vivado/timing_contract.tcl"
       ],
       "build_targets": [
+        "emuflow_core",
+        "emuflow_native",
         "emuflow_python"
       ],
       "runtime_products": [
         "emuflow",
+        "emuflow-native",
         "externally-installed-vivado"
       ],
-      "integration": "in-tree-python"
+      "integration": "default-in-tree-build"
     },
     {
       "id": "optional-vivado-gty-recipe",

@@ -24,6 +24,10 @@ assert importlib.util.find_spec('emuflow_tools') is None
 import emuflow.flow.cli, emuflow.flow.native_compile, emuflow.transport.phase6_oracle
 assert 'emuflow_tools' not in sys.modules
 assert importlib.util.find_spec('emuflow.common.io') is None
+assert importlib.util.find_spec('emuflow.transport.runtime') is None
+assert importlib.util.find_spec('emuflow.physical.physical_backend') is None
+assert importlib.util.find_spec('emuflow.physical.vivado') is None
+from emuflow.transport.clock_contract import build_virtual_clock_contract
 from emuflow.ir import emuir_compact, emuir_storage
 from emuflow.ir.ir import EmuIR
 assert not hasattr(EmuIR, 'save')

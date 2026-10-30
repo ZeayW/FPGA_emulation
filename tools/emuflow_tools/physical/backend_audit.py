@@ -33,7 +33,7 @@ def validate_source_cell_accounting(accounting: Mapping[str, Any], *, backend: s
         if accounting.get("routed_cells") != source_cells:
             raise ValidationError("physical result source cell accounting disagrees")
         return
-    from emuflow.physical.vivado.vivado_lineage import LINEAGE_POLICY
+    from emuflow_tools.physical.vivado.lineage_contract import LINEAGE_POLICY
 
     if backend != "vivado" or policy != LINEAGE_POLICY:
         raise ValidationError("physical result source accounting policy is invalid")

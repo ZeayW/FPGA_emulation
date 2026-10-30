@@ -9,7 +9,7 @@ from emuflow.common.errors import ValidationError
 from emuflow.common.json_io import file_sha256
 from emuflow.common.native_tools import native_file_generation
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
-from emuflow.physical.vivado.vivado_lineage import LINEAGE_SCHEMA, PLACEMENT_COORDINATE_SYSTEM
+from emuflow_tools.physical.vivado.lineage_contract import LINEAGE_SCHEMA, PLACEMENT_COORDINATE_SYSTEM
 from emuflow_tools.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
 
 class XilinxChimewGeometry:

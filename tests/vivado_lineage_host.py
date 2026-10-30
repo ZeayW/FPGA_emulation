@@ -2,7 +2,7 @@
 from pathlib import Path
 from typing import Any, Mapping
 from emuflow.common.errors import ValidationError
-from emuflow.physical.vivado.vivado_lineage import LINEAGE_SCHEMA, PLACEMENT_COORDINATE_SYSTEM
+from emuflow_tools.physical.vivado.lineage_contract import LINEAGE_SCHEMA, PLACEMENT_COORDINATE_SYSTEM
 
 def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str, Path],
                         output: Path, *, mapped_sha256: str,

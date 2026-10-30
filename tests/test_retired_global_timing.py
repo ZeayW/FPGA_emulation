@@ -26,15 +26,17 @@ def test_python_engine_rejected_before_input_or_frontend(tmp_path, entry):
 
 
 def test_production_has_no_python_timing_or_comparison_entry():
-    from emuflow_tools.timing import global_sta; from emuflow.transport import runtime
+    from emuflow_tools.timing import global_sta; from emuflow.transport import clock_contract
     assert importlib.util.find_spec("emuflow.system_timing") is None
-    assert not hasattr(runtime, "build_system_timing")
+    assert not hasattr(clock_contract, "build_system_timing")
+    assert not hasattr(clock_contract, "aggregate_qor")
+    assert importlib.util.find_spec("emuflow.transport.runtime") is None
     assert not hasattr(global_sta, "compare_system_timing")
     assert not hasattr(global_sta, "adopt_opensta_results")
 
 
 def test_physical_qor_requires_engine_result_without_oracle_fallback():
-    from emuflow.transport.runtime import aggregate_qor, build_virtual_runtime
+    from emuflow_tools.transport.runtime_audit import aggregate_qor, build_virtual_runtime
     from tests.test_phase7c import Phase7CTest
     f = Phase7CTest(); f.setUp()
     runtime = build_virtual_runtime(f.schedule, f.platform)

@@ -2,7 +2,7 @@ import copy
 import unittest
 
 from emuflow.common.errors import ValidationError
-from emuflow.physical.physical_backend import (
+from emuflow_tools.physical.backend_audit import (
     PHYSICAL_PARTITION_RESULT_SCHEMA,
     physical_backend_descriptor,
     physical_summary_item,
@@ -13,7 +13,7 @@ from emuflow.physical.physical_backend import (
 
 class PhysicalBackendContractTest(unittest.TestCase):
     def test_optimized_vivado_separates_source_census_from_physical_components(self):
-        from emuflow.physical.vivado.vivado_lineage import LINEAGE_POLICY
+        from emuflow_tools.physical.vivado.lineage_contract import LINEAGE_POLICY
 
         result = self._result()
         result["identity"]["backend"] = "vivado"

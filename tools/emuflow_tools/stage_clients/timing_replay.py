@@ -17,7 +17,7 @@ from emuflow_tools.stage_clients.schedule import validate_phase5_generation
 from emuflow_tools.timing.qor_storage import write_qor_report
 from emuflow.routing.routing import semantic_contract_for_routes
 from emuflow_tools.routing.system_route_storage import pretty_system_routes_sha256, read_system_routes
-from emuflow.transport.runtime import aggregate_qor, build_virtual_runtime, runtime_controller_testbench, runtime_timing_xdc, validate_virtual_runtime, virtual_runtime_controller_to_systemverilog
+from emuflow_tools.transport.runtime_audit import aggregate_qor, build_virtual_runtime, runtime_controller_testbench, runtime_timing_xdc, validate_virtual_runtime, virtual_runtime_controller_to_systemverilog
 from emuflow.scheduling.tdm_schedule_storage import canonical_tdm_schedule_sha256, read_tdm_schedule
 
 

@@ -32,5 +32,10 @@ Python consumers import the current domain module directly, for example
 `emuflow_tools.stage_clients.partition` or `emuflow_tools.physical.vivado.vivado_physical`.
 Retired flat module paths have no forwarding packages or aliases.
 
+The size-limited behavioral oracle uses `transport/clock_contract.py` for its
+finite root-clock calendar. Independent runtime reconstruction, physical-summary
+audits and characterization fixtures live in `tools/emuflow_tools/transport/runtime_audit.py`;
+the complete compiler generates runtime artifacts in the native core.
+
 The installed commands remain `emuflow` and `emuflow-native`. Directory
 organization does not imply that the remaining Python flow has migrated to C++.

@@ -10,7 +10,7 @@ import pytest
 
 from emuflow_tools.transport.transport_storage import write_transport_storage
 from tests.virtual_anchor_fixture import expected_anchor_xdc
-from emuflow.transport.runtime import build_virtual_runtime,virtual_runtime_controller_to_systemverilog
+from emuflow_tools.transport.runtime_audit import build_virtual_runtime,virtual_runtime_controller_to_systemverilog
 from emuflow_tools.transport.virtual_board import build_virtual_board
 from tests.virtual_binding_fixture import binding_text
 from tests.transport_reference import write_transport_storage as reference,write_transport_systemverilog

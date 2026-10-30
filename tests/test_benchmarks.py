@@ -33,7 +33,9 @@ class RtlCatalogTest(unittest.TestCase):
         self.assertIn("${EMUFLOW_PYTHON_SOURCES}", cmake)
         self.assertTrue(list((ROOT / "src/python/emuflow").glob("*.py")))
         self.assertIn("scripts/install_python_runtime.py", cmake)
-        self.assertTrue((ROOT / "src/python/emuflow/physical/vivado").is_dir())
+        self.assertTrue((ROOT / "src/python/emuflow/physical/openparf").is_dir())
+        self.assertTrue((ROOT / "src/core/physical/vivado/vivado_partition.cpp").is_file())
+        self.assertFalse(list((ROOT / "src/python/emuflow/physical/vivado").glob("*.py")))
         for runtime_source in (
             ROOT / "scripts/benchmarks/fetch.py",
             ROOT / "benchmarks/rtl_catalog.json",
