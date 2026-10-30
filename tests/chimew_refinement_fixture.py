@@ -1,3 +1,5 @@
+# Test-only kernel protocol fixtures and independent reference decisions.
+# These helpers are not installed or called by the production flow.
 """Source-qualified, paper-bounded Chimew position refinement.
 
 The paper specifies sorting equal-encoding signals by source y, swapping only
@@ -19,7 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
-from emuflow.transport.chimew.chimew_grouping import CHIMEW_GROUPING_PROVIDER, CHIMEW_GROUPING_SCHEMA, _domain, _integer, _popcount, _tdm_ratio, _tdm_slot, _string, validate_chimew_crossings
+from tests.chimew_grouping_fixture import CHIMEW_GROUPING_PROVIDER, CHIMEW_GROUPING_SCHEMA, _domain, _integer, _popcount, _tdm_ratio, _tdm_slot, _string, validate_chimew_crossings
 from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.common.native_tools import resolve_native_stage_command
 
@@ -138,7 +140,7 @@ def _validate_initial_groups(
     if set(groups) != set(entries):
         raise ValidationError("Chimew initial groups must cover schedule exactly")
     if crossing_document is not None:
-        from emuflow.transport.chimew.chimew_grouping import _crossing_timing_guard
+        from tests.chimew_grouping_fixture import _crossing_timing_guard
         protected = _crossing_timing_guard(schedule, crossing_document)
         if protected is not None:
             lane_key = lambda entry: (entry["link"],entry["from"],entry["to"],entry["lane"])

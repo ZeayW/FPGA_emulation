@@ -28,7 +28,7 @@ from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
 )
 from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
 from emuflow.flow.cli import main
-from emuflow.transport.chimew.chimew_grouping import (
+from tests.chimew_grouping_fixture import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     build_chimew_initial_groups,
@@ -47,12 +47,12 @@ from emuflow.transport.chimew.chimew_pipeline import (
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
-from emuflow.transport.chimew.chimew_refinement import (
+from tests.chimew_refinement_fixture import (
     CHIMEW_POSITION_PROVIDER,
     CHIMEW_POSITION_SCHEMA,
     refine_chimew_groups,
 )
-from emuflow.transport.chimew.chimew_rudy import (
+from tests.chimew_rudy_fixture import (
     CHIMEW_RUDY_INPUT_PROVIDER,
     CHIMEW_RUDY_INPUT_SCHEMA,
     evaluate_chimew_rudy,

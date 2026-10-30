@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.transport.chimew import chimew_rudy as rudy_module
-from emuflow.transport.chimew.chimew_rudy import (
+from tests import chimew_rudy_fixture as rudy_module
+from tests.chimew_rudy_fixture import (
     CHIMEW_RUDY_INPUT_PROVIDER,
     CHIMEW_RUDY_INPUT_SCHEMA,
     CHIMEW_RUDY_PROVIDER,

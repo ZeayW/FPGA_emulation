@@ -14,7 +14,7 @@ StageResult BuildTransportArtifacts(const std::vector<ArtifactRef>& inputs,
 StageResult PreparePhysicalIo(const ArtifactRef& request,const std::string& output,
                               const volatile std::sig_atomic_t* cancelled=nullptr);
 StageResult AuditTransportArtifacts(const ArtifactRef& artifact,const std::string& summary);
-// One baseline Phase 6 generation: source-bound split, transport, independent
+// One complete baseline or verified Chimew Phase 6 generation: source-bound split, transport, independent
 // certificates, engine inputs, manifest and report. No intermediate is exposed.
 StageResult RunPhase6(const std::vector<ArtifactRef>& inputs,
                      const std::string& output_directory,

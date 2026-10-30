@@ -4,6 +4,7 @@
 #include "common/json_record_stream.hpp"
 #include "scheduling/schedule_validation.hpp"
 #include "storage/store.hpp"
+#include "transport/chimew/kernels.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -383,6 +384,325 @@ struct Chain {
     cert["qualification_sha256"] = JsonQuote(Digest(D::Encode(cert)));
     certificate = D::Encode(cert);
   }
+  // The production producer shares input framing and identity checks with the
+  // independent chain auditor, but never uses its grouping or bin decisions.
+  void ReadKernelInputs(const ArtifactRef &request) {
+    Check(request.schema() == "chimew-kernel-reports-input-v1",
+          "kernel request artifact role differs");
+    sources = {request};
+    D input(D::Read(request));
+    input.Keys({"schema", "sources"});
+    Check(input.Text("schema") == "emuflow.chimew-kernel-reports-input/v1",
+          "kernel report request schema differs");
+    const std::set<std::string> required{"schedule", "crossings", "positions",
+                                         "rudy_input"};
+    for (const auto &role : Fields(input.Token("sources"))) {
+      Check(required.count(role.first), "unknown kernel input");
+      D source(role.second);
+      source.Keys({"path", "schema"});
+      Check(source.Text("schema") == "physical-input-document-v1",
+            "kernel input schema differs");
+      roles.emplace(role.first,
+                    Bind(source.Text("path"), source.Text("schema")));
+      auto doc = std::make_unique<Document>(db, I(docs.size()), cancelled);
+      doc->Read(roles.at(role.first), role.first == "crossings");
+      docs.emplace(role.first, std::move(doc));
+    }
+    Check(roles.size() == required.size(), "kernel inputs are incomplete");
+    Check(docs.at("schedule")->Header().Text("schema") ==
+              "emuflow.tdm-schedule-storage/v4",
+          "kernel reports require the current ScheduleStore");
+    ReadSchedule();
+    Check(signals.size() <= std::size_t(INT32_MAX),
+          "signal count exceeds kernel identity bounds");
+    Crossings();
+    Positions();
+  }
+  Document &NewReport(const std::string &role, O header,
+                      const std::string &array) {
+    auto doc = std::make_unique<Document>(db, I(docs.size()), cancelled);
+    doc->header = std::move(header);
+    doc->header.emplace(array, "[]");
+    doc->arrays.insert(array);
+    auto &result = *doc;
+    Check(docs.emplace(role, std::move(doc)).second, "duplicate report role");
+    return result;
+  }
+  O ReportIdentity(const char *schema, const char *provider) {
+    return {{"schema", JsonQuote(schema)},
+            {"provider", JsonQuote(provider)},
+            {"design", JsonQuote(design)},
+            {"platform", JsonQuote(platform)},
+            {"status", JsonQuote("standalone_paper_kernel")},
+            {"integration_status", JsonQuote("not-a-phase6-pin-plan")}};
+  }
+  void GenerateGroups() {
+    using namespace emuflow::native;
+    std::map<Domain, int> domains;
+    for (const auto &p : signals)
+      domains.emplace(p.second.domain, 0);
+    int rank = 0;
+    for (auto &p : domains)
+      p.second = rank++;
+    const auto guarded_lane = [&](const Signal &s) {
+      return protected_lanes.count({std::get<0>(s.domain),
+                                    std::get<1>(s.domain),
+                                    std::get<2>(s.domain), s.lane}) != 0;
+    };
+    std::vector<ChimewGroupingSignal> input;
+    I protected_count = 0;
+    for (const auto &p : signals) {
+      const auto &s = p.second;
+      Check(s.ratio <= INT32_MAX && s.lane <= INT32_MAX && s.slot <= INT32_MAX,
+            "schedule field exceeds kernel integer bounds");
+      protected_count += guarded_lane(s);
+      input.push_back({domains.at(s.domain), guarded_lane(s) ? int(s.lane) : -1,
+                       int(s.ratio), s.explicit_slot ? int(s.slot) : -1,
+                       s.encoding});
+    }
+    const auto initial = GroupChimewSignalRecords(std::move(input));
+    Check(initial.assignment.size() == signals.size(),
+          "initial result coverage differs");
+    auto header = ReportIdentity("emuflow.chimew-signal-groups/v1",
+                                 "chimew-algorithm1-encoding-grouping-v1");
+    header["paper_scope"] = JsonQuote("FPGA-2026-Algorithm-1-initial-grouping");
+    header["tie_break"] =
+        JsonQuote("stable-encoding-count-then-schedule-entry-order");
+    header["integration_constraints"] =
+        JsonQuote("frozen-phase5-slot-unique-within-group");
+    header["timing_guard"] = D::Encode(
+        {{"scope", JsonQuote("EmuFlow extension, not a Chimew paper claim")},
+         {"protected_entries", std::to_string(protected_count)},
+         {"protected_lane_groups", std::to_string(protected_lanes.size())}});
+    header["metrics"] = D::Encode({{"signals", std::to_string(signals.size())},
+                                   {"groups", std::to_string(initial.groups)},
+                                   {"group_physical_sll_crossings",
+                                    std::to_string(initial.crossing_bits)},
+                                   {"oracle_disagreements", "0"}});
+    auto &report = NewReport("initial_grouping", std::move(header), "entries");
+    using RefinementDomain = std::tuple<Domain, bool, I, bool, I>;
+    std::map<RefinementDomain, int> ranks;
+    const auto domain = [&](const Signal &s) {
+      return RefinementDomain{s.domain, guarded_lane(s),
+                              guarded_lane(s) ? s.lane : -1, s.explicit_slot,
+                              s.explicit_slot ? s.slot : -1};
+    };
+    I seq = 0;
+    for (auto &p : signals) {
+      auto &s = p.second;
+      s.initial = initial.assignment.at(std::size_t(seq));
+      O row{{"schedule_entry", JsonQuote(p.first)},
+            {"group", std::to_string(s.initial)},
+            {"encoding", std::to_string(s.encoding)}};
+      if (guarded_lane(s))
+        row["timing_guard_lane"] =
+            JsonRecord(std::vector<JsonRecord>{std::get<0>(s.domain),
+                                               std::get<1>(s.domain),
+                                               std::get<2>(s.domain), s.lane})
+                .Encode();
+      report.Add("entries", seq++, D::Encode(row));
+      ranks.emplace(domain(s), 0);
+    }
+    rank = 0;
+    for (auto &p : ranks)
+      p.second = rank++;
+    std::vector<ChimewRefinementSignal> refinable;
+    for (const auto &p : signals) {
+      const auto &s = p.second;
+      refinable.push_back({int(refinable.size()), ranks.at(domain(s)),
+                           int(s.ratio), s.encoding, int(s.initial), s.y});
+    }
+    const auto refined = RefineChimewSignalRecords(std::move(refinable));
+    Check(refined.entries.size() == signals.size(),
+          "refined result coverage differs");
+    header = ReportIdentity("emuflow.chimew-refined-signal-groups/v1",
+                            "chimew-section3.3.2-bounded-inference-v1");
+    header["status"] = JsonQuote("standalone_paper_bounded_inference");
+    header["paper_scope"] =
+        JsonQuote("FPGA-2026-Section-3.3.2-position-refinement");
+    header["claim_boundary"] =
+        JsonQuote("paper specifies equal-encoding source-y sorting/swaps and "
+                  "SLL non-increase; group-anchor ordering and pairwise-y "
+                  "acceptance are deterministic first-party inference");
+    header["placement_provenance"] =
+        docs.at("positions")->Header().Token("provenance");
+    header["metrics"] =
+        D::Encode({{"signals", std::to_string(signals.size())},
+                   {"groups", std::to_string(initial.groups)},
+                   {"accepted_encoding_buckets",
+                    std::to_string(refined.accepted_buckets)},
+                   {"moved_signals", std::to_string(refined.moved_signals)},
+                   {"pairwise_source_y_before", Number(refined.before)},
+                   {"pairwise_source_y_after", Number(refined.after)},
+                   {"group_physical_sll_crossings",
+                    std::to_string(initial.crossing_bits)},
+                   {"oracle_disagreements", "0"}});
+    auto &after = NewReport("refined_grouping", std::move(header), "entries");
+    seq = 0;
+    for (const auto &p : signals) {
+      const auto &s = p.second;
+      Check(refined.entries.at(std::size_t(seq)).index == seq,
+            "refinement changed entry order");
+      after.Add(
+          "entries", seq,
+          D::Encode({{"schedule_entry", JsonQuote(p.first)},
+                     {"group", std::to_string(
+                                   refined.entries.at(std::size_t(seq)).group)},
+                     {"encoding", std::to_string(s.encoding)},
+                     {"source_y", Number(s.y)}}));
+      ++seq;
+    }
+    // The independent auditor reconstructs membership, SLL masks, slot legality
+    // and the pairwise objective from final records, not the kernel's proof.
+    Grouping(false);
+    Grouping(true);
+  }
+  void GenerateRudy() {
+    using namespace emuflow::native;
+    auto &input = *docs.at("rudy_input");
+    auto h = input.Header();
+    Identity(h, "emuflow.chimew-rudy-input/v1",
+             "source-qualified-lookahead-placement-rudy-v1");
+    Check(h.Text("coordinate_system") == "physical-site-xy" &&
+              h.Text("degenerate_bbox_policy") == "reject",
+          "invalid RUDY physical policy");
+    D p(h.Token("provenance")), grid(h.Token("grid"));
+    O provenance{{"producer", p.Token("producer")},
+                 {"producer_version", p.Token("producer_version")}};
+    Nonempty(p.Text("producer"));
+    Nonempty(p.Text("producer_version"));
+    for (auto key :
+         {"placement_sha256", "netlist_sha256", "architecture_sha256"})
+      provenance[key] = JsonQuote(Sha(p.Text(key)));
+    ChimewRudyInput model;
+    model.origin_x = grid.Number("origin_x");
+    model.origin_y = grid.Number("origin_y");
+    model.bin_width = grid.Number("bin_width");
+    model.bin_height = grid.Number("bin_height");
+    const auto columns = grid.Integer("columns"), rows = grid.Integer("rows");
+    Check(columns > 0 && rows > 0 && columns <= INT32_MAX / rows,
+          "invalid RUDY grid shape");
+    model.columns = int(columns);
+    model.rows = int(rows);
+    model.wire_pitch_per_layer = h.Number("wire_pitch_per_layer");
+    model.max_utilization = h.Number("max_utilization");
+    VisitJsonArrayTokens(grid.Token("capacities"), [&](const auto &v) {
+      model.capacities.push_back(ParseFiniteDecimal(v, "capacity"));
+    });
+    input.arrays.insert("producer_normalized_nets");
+    std::set<std::string> seen;
+    input.Each("nets", [&](I seq, const auto &token) {
+      Stop(cancelled);
+      Check(seq < INT32_MAX, "RUDY net count exceeds kernel bounds");
+      D net(token);
+      auto id = net.Text("id");
+      Nonempty(id);
+      Check(seen.insert(id).second, "duplicate RUDY net");
+      ChimewRudyNet row;
+      row.index = int(seq);
+      std::vector<JsonRecord> points;
+      VisitJsonArrayTokens(net.Token("pins"), [&](const auto &value) {
+        D point(value);
+        const double x = point.Number("x"), y = point.Number("y");
+        row.pins.push_back({x, y});
+        points.emplace_back(std::vector<JsonRecord>{x, y});
+      });
+      input.Add("producer_normalized_nets", seq,
+                D::Encode({{"id", JsonQuote(id)},
+                           {"pins", JsonRecord(points).Encode()}}));
+      model.nets.push_back(std::move(row));
+    });
+    const auto value = EvaluateChimewRudyRecords(model);
+    std::vector<JsonRecord> capacities;
+    for (auto c : model.capacities)
+      capacities.emplace_back(c);
+    const O normalized{
+        {"origin",
+         JsonRecord(std::vector<JsonRecord>{model.origin_x, model.origin_y})
+             .Encode()},
+        {"bin",
+         JsonRecord(std::vector<JsonRecord>{model.bin_width, model.bin_height})
+             .Encode()},
+        {"shape", JsonRecord(std::vector<JsonRecord>{model.columns, model.rows})
+                      .Encode()},
+        {"wire_pitch", Number(model.wire_pitch_per_layer)},
+        {"max_utilization", Number(model.max_utilization)},
+        {"provenance", D::Encode(provenance)},
+        {"capacities", JsonRecord(capacities).Encode()},
+        {"nets", "[]"}};
+    Sha256 hash;
+    Hash(hash, "{");
+    bool comma = false;
+    for (const auto &field : normalized) {
+      if (comma)
+        Hash(hash, ",");
+      comma = true;
+      Hash(hash, JsonQuote(field.first) + ":");
+      if (field.first == "nets")
+        input.HashArray(hash, "producer_normalized_nets");
+      else
+        Hash(hash, field.second);
+    }
+    Hash(hash, "}");
+    auto header = ReportIdentity("emuflow.chimew-rudy-report/v1",
+                                 "chimew-section2.3-rudy-gate-v1");
+    header["gate_status"] =
+        JsonQuote(value.overloaded_bins ? "rejected" : "pass");
+    header["paper_scope"] = JsonQuote("FPGA-2026-Section-2.3-RUDY");
+    header["threshold_scope"] =
+        JsonQuote("explicit-qualification-policy-not-paper-constant");
+    header["degenerate_bbox_policy"] =
+        JsonQuote("reject-unpublished-substitution");
+    header["provenance"] = D::Encode(provenance);
+    header["input_sha256"] = JsonQuote(Hex(hash));
+    header["max_utilization"] = Number(model.max_utilization);
+    header["metrics"] =
+        D::Encode({{"nets", std::to_string(model.nets.size())},
+                   {"pins", std::to_string(value.pins)},
+                   {"overloaded_bins", std::to_string(value.overloaded_bins)},
+                   {"total_wire_area", Number(value.wire_area)},
+                   {"total_bin_load", Number(value.total_bin_load)},
+                   {"peak_load", Number(value.peak_load)},
+                   {"peak_utilization", Number(value.peak_utilization)},
+                   {"oracle_disagreements", "0"}});
+    auto &report = NewReport("rudy_report", std::move(header), "bins");
+    for (std::size_t index = 0; index < value.loads.size(); ++index)
+      report.Add(
+          "bins", I(index),
+          D::Encode(
+              {{"column", std::to_string(index % std::size_t(model.columns))},
+               {"row", std::to_string(index / std::size_t(model.columns))},
+               {"capacity", Number(model.capacities.at(index))},
+               {"load", Number(value.loads.at(index))},
+               {"utilization", Number(value.utilizations.at(index))}}));
+    // Separate bin integration and input normalization recompute the
+    // commitment.
+    Rudy();
+  }
+  void WriteReport(const fs::path &target, const std::string &role) {
+    const auto &doc = *docs.at(role);
+    PublishTextArtifact(target.string(), sources, [&](std::ostream &out) {
+      out << '{';
+      bool comma = false;
+      for (const auto &field : doc.header) {
+        if (comma)
+          out << ',';
+        comma = true;
+        out << JsonQuote(field.first) << ':';
+        if (doc.arrays.count(field.first)) {
+          out << '[';
+          doc.Each(field.first, [&](I seq, const auto &token) {
+            if (seq)
+              out << ',';
+            out << token;
+          });
+          out << ']';
+        } else
+          out << field.second;
+      }
+      out << "}\n";
+    });
+  }
   void Identity(D &doc, const char *schema, const char *provider = nullptr) {
     Check(doc.Text("schema") == schema &&
               (!provider || doc.Text("provider") == provider),
@@ -630,6 +950,15 @@ struct Chain {
       for (const auto *s : p.second) {
         Check(s->domain == first.domain && s->ratio == first.ratio,
               "group crosses a grouping domain");
+        const auto lane_of = [](const Signal &signal) {
+          return Lane{std::get<0>(signal.domain), std::get<1>(signal.domain),
+                      std::get<2>(signal.domain), signal.lane};
+        };
+        const bool first_guarded = protected_lanes.count(lane_of(first));
+        const bool signal_guarded = protected_lanes.count(lane_of(*s));
+        Check(first_guarded == signal_guarded &&
+                  (!first_guarded || s->lane == first.lane),
+              "group crosses a protected timing lane");
         if (s->explicit_slot) {
           ++explicit_slots;
           slots.insert(s->slot);
@@ -637,7 +966,7 @@ struct Chain {
       }
       Check(p.second.size() <= std::size_t(first.ratio),
             "group exceeds its TDM ratio");
-      if (!after && explicit_slots)
+      if (explicit_slots)
         Check(explicit_slots == I(p.second.size()) &&
                   slots.size() == p.second.size(),
               "group reuses a frozen Phase 5 slot");
@@ -842,6 +1171,69 @@ struct Chain {
   }
 };
 } // namespace
+StageResult
+BuildChimewKernelReports(const ArtifactRef &request, const std::string &output,
+                         const volatile std::sig_atomic_t *cancelled) {
+  std::optional<Workspace> workspace, publication;
+  std::unique_ptr<Chain> chain;
+  const std::vector<std::string> roles{"initial_grouping", "refined_grouping",
+                                       "rudy_report"};
+  return RunStage(
+      "phase6.build-chimew-kernel-reports",
+      [&] {
+        auto parent = fs::path(output).parent_path();
+        if (parent.empty())
+          parent = ".";
+        fs::create_directories(parent);
+        workspace.emplace(parent);
+        publication.emplace(parent);
+        chain = std::make_unique<Chain>(workspace->root, cancelled);
+        chain->ReadKernelInputs(request);
+        return chain->sources;
+      },
+      [&](const auto &refs) {
+        chain->GenerateGroups();
+        chain->GenerateRudy();
+        Stop(cancelled);
+        const auto payload = publication->root;
+        for (const auto &role : roles)
+          chain->WriteReport(payload / (role + ".json"), role);
+        auto crossing = chain->docs.at("crossings")->Header();
+        auto positions = chain->docs.at("positions")->Header();
+        auto rudy = chain->docs.at("rudy_input")->Header();
+        const auto summary = D::Encode(
+            {{"schema", JsonQuote("emuflow.chimew-kernel-reports/v1")},
+             {"status", JsonQuote("pass")},
+             {"design", JsonQuote(chain->design)},
+             {"platform", JsonQuote(chain->platform)},
+             {"refined_grouping_sha256",
+              JsonQuote(chain->docs.at("refined_grouping")->Commitment())},
+             {"source_digests",
+              D::Encode(
+                  {{"routing",
+                    D(crossing.Token("provenance")).Token("routing_sha256")},
+                   {"placement",
+                    D(positions.Token("provenance")).Token("placement_sha256")},
+                   {"netlist",
+                    D(rudy.Token("provenance")).Token("netlist_sha256")},
+                   {"architecture", D(rudy.Token("provenance"))
+                                        .Token("architecture_sha256")}})}});
+        PublishTextArtifact((payload / "kernel_reports.json").string(), refs,
+                            [&](std::ostream &out) { out << summary << '\n'; });
+        PublishNewDirectory(payload.string(), output, refs);
+      },
+      [&] {
+        std::vector<ArtifactRef> outputs;
+        for (const auto &role : roles)
+          outputs.push_back(
+              ArtifactRef::Bind((fs::path(output) / (role + ".json")).string(),
+                                "physical-input-document-v1"));
+        outputs.push_back(ArtifactRef::Bind(
+            (fs::path(output) / "kernel_reports.json").string(),
+            "physical-input-document-v1"));
+        return outputs;
+      });
+}
 StageResult QualifyChimewChain(const ArtifactRef &request,
                                const std::string &output,
                                const volatile std::sig_atomic_t *cancelled) {

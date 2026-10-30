@@ -980,17 +980,94 @@ class Phase6Test(unittest.TestCase):
                 )
             self.assertFalse((invalid_output / "pin_plan.json").exists())
             self.assertFalse(list(invalid_output.glob("pin_plan.*.sqlite")))
-            chimew_report = run_phase6(
-                paths["ir"],
-                paths["assignment"],
-                paths["schedule"],
-                PLATFORM_PATH,
-                chimew_output,
-                equivalence_cycles=4,
-                pin_plan_path=chimew_plan_path,
-                position_hints_path=paths["positions"],
-                electrical_binding_path=binding_path,
-            )
+            from emuflow.transport import phase6 as stage_host
+            from emuflow.transport import phase6_native as native_host
+            from emuflow.scheduling.tdm_schedule_storage import TypedScheduleEntrySequence
+            from emuflow.transport.pin_plan_storage import PinPlanEntrySequence
+            from emuflow.transport.position_hints_storage import PositionHintEntrySequence
+            from emuflow.transport.chimew.chimew_binding_storage import ChimewBindingEntrySequence
+            from emuflow.common.native_tools import native_file_generation
+            captured = {}
+            original_process = native_host.NativeToolProcess
+
+            def capture_native_request(executable, argv, **options):
+                captured["argv"] = list(argv)
+                captured["request"] = read_json(Path(argv[-2]))
+                return original_process(executable, argv, **options)
+
+            # Exercise the unbounded production path; the first run above has
+            # already checked actual small-design behavioral equivalence.
+            metadata = stage_host.read_compact_emuir_control_metadata(paths["ir"])
+            metadata["record_counts"]["cell_records"] = 10001
+            with mock.patch.object(stage_host, "read_compact_emuir_control_metadata", return_value=metadata), \
+                 mock.patch.object(native_host, "NativeToolProcess", side_effect=capture_native_request), \
+                 mock.patch.object(TypedScheduleEntrySequence, "__iter__", side_effect=AssertionError("Python schedule walk")), \
+                 mock.patch.object(PinPlanEntrySequence, "__iter__", side_effect=AssertionError("Python pin walk")), \
+                 mock.patch.object(PositionHintEntrySequence, "__iter__", side_effect=AssertionError("Python position walk")), \
+                 mock.patch.object(ChimewBindingEntrySequence, "__iter__", side_effect=AssertionError("Python binding walk")):
+                chimew_report = run_phase6(
+                    paths["ir"],
+                    paths["assignment"],
+                    paths["schedule"],
+                    PLATFORM_PATH,
+                    chimew_output,
+                    equivalence_cycles=4,
+                    pin_plan_path=chimew_plan_path,
+                    position_hints_path=paths["positions"],
+                    electrical_binding_path=binding_path,
+                )
+            self.assertEqual(chimew_report["stage_implementation_id"], "native-chimew-phase6-v1")
+            self.assertEqual(captured["request"]["schema"], "emuflow.phase6-stage/v2")
+            committed = (chimew_output / "phase6_report.json").read_bytes()
+            for mutation in ("generation", "board-owner", "schedule-owner"):
+                changed = copy.deepcopy(captured["request"])
+                pins = changed["pin_artifacts"]
+                if mutation == "generation":
+                    pins["plan"]["generation"][2] += 1
+                elif mutation == "board-owner":
+                    duplicate = root / "another-board.json"
+                    shutil.copyfile(pins["board"]["path"], duplicate)
+                    pins["board"].update(path=str(duplicate), generation=list(native_file_generation(duplicate)))
+                else:
+                    original_selector = Path(pins["schedule"]["path"])
+                    duplicate_root = root / "another-schedule-owner"
+                    duplicate_root.mkdir()
+                    duplicate = duplicate_root / original_selector.name
+                    selector = json.loads(original_selector.read_text())
+                    shutil.copyfile(original_selector, duplicate)
+                    shutil.copyfile(original_selector.with_name(selector["artifact"]), duplicate_root / selector["artifact"])
+                    pins["schedule"].update(path=str(duplicate), generation=list(native_file_generation(duplicate)))
+                request = root / (mutation + "-request.json")
+                request.write_text(json.dumps(changed))
+                receipt = root / (mutation + "-result.json")
+                rejected_output = root / (mutation + "-output")
+                argv = list(captured["argv"])
+                argv[2], argv[-2], argv[-1] = str(receipt), str(request), str(rejected_output)
+                result = subprocess.run(argv, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("generation changed" if mutation == "generation" else "namespace disagrees", receipt.read_text())
+                self.assertFalse(rejected_output.exists())
+                self.assertEqual((chimew_output / "phase6_report.json").read_bytes(), committed)
+                if mutation == "generation":
+                    targets = [Path(value) for value in argv[5:9]]
+                    for row in pins.values():
+                        path = Path(row["path"])
+                        if root not in path.parents:
+                            continue
+                        targets.append(path)
+                        if path.suffix == ".json":
+                            value = json.loads(path.read_text())
+                            if "artifact" in value:
+                                targets.append(path.with_name(value["artifact"]))
+                    for target in targets:
+                        before = target.read_bytes()
+                        alias_argv = list(argv)
+                        alias_argv[2] = str(target)
+                        rejected = subprocess.run(alias_argv,capture_output=True,text=True)
+                        self.assertNotEqual(rejected.returncode,0)
+                        self.assertIn("aliases",rejected.stderr)
+                        self.assertEqual(target.read_bytes(),before)
+                        self.assertFalse(rejected_output.exists())
             self.assertEqual(
                 chimew_report["electrical_binding_validation"]["status"], "pass"
             )

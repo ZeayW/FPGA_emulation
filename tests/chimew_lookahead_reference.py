@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 from emuflow.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_INPUT_PROVIDER, CHIMEW_BANK_CHANNEL_INPUT_SCHEMA
 from emuflow.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
-from emuflow.transport.chimew.chimew_grouping import CHIMEW_ACADEMIC_CROSSING_PROVIDER, CHIMEW_CROSSING_SCHEMA, CHIMEW_TIMING_GUARD_PROVIDER, build_chimew_initial_groups
+from tests.chimew_grouping_fixture import CHIMEW_ACADEMIC_CROSSING_PROVIDER, CHIMEW_CROSSING_SCHEMA, CHIMEW_TIMING_GUARD_PROVIDER, build_chimew_initial_groups
 from emuflow.transport.chimew.chimew_qualification import canonical_sha256
-from emuflow.transport.chimew.chimew_refinement import CHIMEW_POSITION_PROVIDER, CHIMEW_POSITION_SCHEMA, refine_chimew_groups
-from emuflow.transport.chimew.chimew_rudy import CHIMEW_RUDY_INPUT_PROVIDER, CHIMEW_RUDY_INPUT_SCHEMA
+from tests.chimew_refinement_fixture import CHIMEW_POSITION_PROVIDER, CHIMEW_POSITION_SCHEMA, refine_chimew_groups
+from tests.chimew_rudy_fixture import CHIMEW_RUDY_INPUT_PROVIDER, CHIMEW_RUDY_INPUT_SCHEMA
 from tests.chimew_fixed_wiring_reference import build_fixed_wiring_chimew_electrical_map
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json, write_json

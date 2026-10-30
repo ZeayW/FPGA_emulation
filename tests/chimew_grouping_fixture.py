@@ -1,3 +1,5 @@
+# Test-only kernel protocol fixtures and independent reference decisions.
+# These helpers are not installed or called by the production flow.
 """Standalone, source-qualified reproduction of Chimew Algorithm 1.
 
 This module deliberately stops at the paper's encoding-based initial grouping.

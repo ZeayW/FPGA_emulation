@@ -108,6 +108,7 @@ constexpr const char* kUsage =
     "  phase6 assign-bank-store SELECTOR REPORT\n"
     "  phase6 copy-bank-report SELECTOR REPORT\n"
     "  phase6 audit-bank-assignment INPUT_SELECTOR REPORT_SELECTOR SUMMARY\n"
+    "  phase6 build-chimew-kernel-reports REQUEST OUTPUT_DIR\n"
     "  phase6 qualify-chimew-chain REQUEST CERTIFICATE\n"
     "  phase6 build-pin-artifacts REQUEST OUTPUT_DIR\n"
     "  phase6 validate-pin-artifacts REQUEST SUMMARY\n"
@@ -257,6 +258,46 @@ void CheckPinReceipt(const std::string& report,const std::string& source,const s
       throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a pin payload");
   }
 }
+std::map<std::string,std::string> ReceiptFields(const std::string& token) {
+  std::map<std::string,std::string> fields;
+  emuflow::core::VisitJsonObjectTokens(token,[&](const auto& key,const auto& value){
+    if(fields.size()>=64 || !fields.emplace(key,value).second)
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"invalid receipt source envelope");
+  });
+  return fields;
+}
+void CheckPhase6Receipt(const std::string& report,const std::map<std::string,std::string>& request,
+                        const std::vector<std::pair<std::string,std::string>>& positional) {
+  if(report.empty())return;
+  using D=emuflow::core::BoundedJson;
+  auto paths=positional;
+  const auto add=[&](const std::string& row){D source(row);paths.emplace_back(source.Text("path"),source.Text("schema"));};
+  const auto configuration=request.find("configuration_sources");
+  if(configuration!=request.end())for(const auto& row:D::Array(configuration->second,16))add(row);
+  const auto transport=request.find("transport");
+  if(transport!=request.end()){
+    const auto fields=ReceiptFields(transport->second);const auto found=fields.find("sources");
+    if(found!=fields.end())for(const auto& row:D::Array(found->second,16))add(row);
+  }
+  const auto pins=request.find("pin_artifacts");
+  if(pins!=request.end())for(const auto& pair:ReceiptFields(pins->second))add(pair.second);
+  for(const auto& pair:paths){
+    if(SamePath(report,pair.first))
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a Phase 6 input or output");
+    if(pair.second.find("store-")!=std::string::npos || pair.second.find("index-")!=std::string::npos ||
+       pair.second=="emuir-compact-v2" || pair.second=="fixed-wiring-csv-v1" || pair.second=="directory")continue;
+    auto source=emuflow::core::ArtifactRef::Bind(pair.first,pair.second);
+    if(source.generation().bytes>8*1024*1024)continue;
+    auto value=D::Read(source);const auto start=value.find_first_not_of(" \r\n\t");
+    if(start==std::string::npos || value[start]!='{')continue;
+    const auto fields=ReceiptFields(value);const auto member=fields.find("artifact");
+    if(member==fields.end())continue;
+    const auto name=emuflow::core::DecodeJsonString(member->second);
+    if(!name.empty() && std::filesystem::path(name).filename()==name &&
+       SamePath(report,(std::filesystem::path(source.path()).parent_path()/name).string()))
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a Phase 6 selector payload");
+  }
+}
 int RunTool(const std::string& input, const std::string& output) {
   // Reject aliases before launching an engine, not after it has had side effects.
   emuflow::core::BinaryReader header(input);
@@ -403,6 +444,16 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     const auto input=emuflow::core::ArtifactRef::Bind(argv[3],schema);
     return Finish(command=="build-pin-artifacts"?emuflow::core::BuildChimewPinArtifacts(input,argv[4],&tool_cancelled):command=="validate-pin-artifacts"?emuflow::core::ValidateChimewPinArtifacts(input,argv[4],&tool_cancelled):emuflow::core::AuditChimewElectricalMap(input,argv[4],&tool_cancelled),report);
   }
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="build-chimew-kernel-reports") {
+    ToolSignals signals;
+    CheckPinReceipt(report,argv[3],argv[4],true);
+    if(!report.empty()) {
+      const auto relative=std::filesystem::weakly_canonical(report).lexically_relative(std::filesystem::weakly_canonical(argv[4]));
+      if(!relative.empty()&&*relative.begin()!="..")
+        throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report overlaps the kernel output namespace");
+    }
+    return Finish(emuflow::core::BuildChimewKernelReports(emuflow::core::ArtifactRef::Bind(argv[3],"chimew-kernel-reports-input-v1"),argv[4],&tool_cancelled),report);
+  }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="qualify-chimew-chain") {
     ToolSignals signals;
     if(!report.empty() && (SamePath(report,argv[3]) || SamePath(report,argv[4])))
@@ -437,10 +488,19 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(argc==8 && std::string(argv[1])=="phase6" && std::string(argv[2])=="run") {
     ToolSignals signals;
+    const auto input=emuflow::core::ArtifactRef::Bind(argv[6],"physical-input-document-v1");
+    const auto request=ReceiptFields(emuflow::core::BoundedJson::Read(input));
+    const auto kind=request.find("schema");
+    if(kind==request.end())throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"missing Phase 6 request schema");
+    const auto schema=emuflow::core::DecodeJsonString(kind->second);
+    if(schema!="emuflow.phase6-stage/v1" && schema!="emuflow.phase6-stage/v2")
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"unknown Phase 6 stage request");
+    CheckPhase6Receipt(report,request,{{argv[3],"emuir-compact-v2"},{argv[4],"assignment-index-v4"},
+      {argv[5],"tdm-schedule-store-v4"},{argv[6],"physical-input-document-v1"},{argv[7],"directory"}});
     return Finish(emuflow::core::RunPhase6({emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
       emuflow::core::ArtifactRef::Bind(argv[4],"assignment-index-v4"),
       emuflow::core::ArtifactRef::Bind(argv[5],"tdm-schedule-store-v4"),
-      emuflow::core::ArtifactRef::Bind(argv[6],"phase6-stage-request-v1")},argv[7],{},&tool_cancelled),report);
+      emuflow::core::ArtifactRef::Bind(argv[6],schema=="emuflow.phase6-stage/v2"?"phase6-stage-request-v2":"phase6-stage-request-v1")},argv[7],{},&tool_cancelled),report);
   }
   if(argc==8 && std::string(argv[1])=="phase7" && std::string(argv[2])=="lower") {
     ToolSignals signals;

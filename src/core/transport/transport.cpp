@@ -1,4 +1,5 @@
 #include "transport/transport.hpp"
+#include "transport/chimew/pin_artifacts.hpp"
 #include "common/artifact_io.hpp"
 #include "common/hash.hpp"
 #include "common/json_record.hpp"
@@ -599,11 +600,16 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
                       const std::vector<ArtifactRef>& enclosing_sources,
                       const volatile std::sig_atomic_t* cancelled){
   std::vector<ArtifactRef> sources=original;
+  std::optional<Workspace> pin_workspace;
+  std::map<std::string,ArtifactRef> pin_sources;
+  std::optional<ArtifactRef> pin_store;
+  Raw pin_validation;
+  const bool pinned=original.size()==4 && original[3].schema()=="phase6-stage-request-v2";
   return RunStage("phase6.run",[&]{
     Check(original.size()==4 && original[0].schema()=="emuir-compact-v2" &&
           original[1].schema()=="assignment-index-v4" &&
           original[2].schema()=="tdm-schedule-store-v4" &&
-          original[3].schema()=="phase6-stage-request-v1","stage input roles disagree");
+          (original[3].schema()=="phase6-stage-request-v1" || pinned),"stage input roles disagree");
     const auto request=Fields(Canonical(Read(original[3].path())));
     const auto configuration_sources=Values(Get(request,"configuration_sources"));
     Check(configuration_sources.size()==1 || configuration_sources.size()==2,"stage configuration source coverage disagrees");
@@ -618,6 +624,47 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
       if(i==1)Check(Canonical(Read(ref.path()))==Get(request,"transport_cost"),"transport cost source disagrees");
       sources.push_back(std::move(ref));
     }
+    if(pinned){
+      Check(request.size()==7 && Text(request,"schema")=="emuflow.phase6-stage/v2" &&
+            request.count("pin_artifacts"),"pinned stage request fields disagree");
+      const std::map<std::string,std::string> allowed{{"board","boarddb-v1"},
+        {"inventory","hp-package-pin-inventory-v1"},{"wiring","fixed-wiring-csv-v1"},
+        {"schedule","physical-input-document-v1"},{"plan","pin-plan-selector-v1"},
+        {"positions","position-hints-selector-v1"},{"binding","chimew-binding-selector-v1"}};
+      Raw validation_sources;
+      for(const auto& pair:Fields(Get(request,"pin_artifacts"))){
+        Check(allowed.count(pair.first),"unknown pin source role");
+        const auto row=Fields(pair.second);
+        Check(row.size()==3 && Text(row,"schema")==allowed.at(pair.first),"pin source role disagrees");
+        auto ref=ArtifactRef::Bind(Text(row,"path"),Text(row,"schema"));
+        const auto values=Values(Get(row,"generation"));Check(values.size()==7,"pin source generation coverage differs");
+        const FileGeneration expected{UInt(values[0]),UInt(values[1]),UInt(values[2]),Int(values[3]),Int(values[4]),Int(values[5]),Int(values[6])};
+        if(!(ref.generation()==expected))throw StageError(ErrorCode::kMixedGeneration,"Phase 6 pin source generation changed");
+        validation_sources[pair.first]=Object({{"path",JsonQuote(ref.path())},{"schema",JsonQuote(ref.schema())}});
+        pin_sources.emplace(pair.first,ref);sources.push_back(ref);
+      }
+      for(const auto* role:{"board","schedule","plan","positions","binding"})
+        Check(pin_sources.count(role),"missing pin source role");
+      Check(pin_sources.at("board").path()==sources.at(4).path() &&
+            pin_sources.at("board").generation()==sources.at(4).generation(),"pin board namespace disagrees");
+      pin_workspace.emplace(fs::temp_directory_path());
+      const auto configuration=pin_workspace->root/"pin-validation-request.json";
+      const auto summary=pin_workspace->root/"pin-validation.json";
+      PublishText(configuration,Object({{"schema",JsonQuote("emuflow.chimew-pin-validation-input/v1")},
+        {"sources",Object(validation_sources)}})+'\n',sources);
+      const auto proof=ValidateChimewPinArtifacts(ArtifactRef::Bind(configuration.string(),"chimew-pin-validation-input-v1"),summary.string(),cancelled);
+      if(!proof.ok())throw StageError(proof.error,proof.message);
+      pin_validation=Fields(Canonical(Read(summary)));
+      bool schedule_matches=false;
+      for(const auto& ref:proof.inputs){
+        if(ref.path()==configuration.string())continue;
+        sources.push_back(ref);
+        if(ref.schema()=="pin-plan-store-v1")pin_store=ref;
+        if(ref.schema()=="tdm-schedule-store-v4")
+          schedule_matches=ref.path()==original[2].path() && ref.generation()==original[2].generation();
+      }
+      Check(schedule_matches && bool(pin_store),"pin schedule namespace disagrees");
+    }else Check(!request.count("pin_artifacts"),"baseline request contains a pin contract");
     // Retain the original exact owner until the entire generation is visible,
     // rather than only until the nested split producer returns.
     SqliteStore assignment(original[1]);
@@ -649,7 +696,7 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
     auto duplicate=json.Prepare("SELECT 1 FROM json_tree(?1) WHERE parent IS NOT NULL GROUP BY parent,key HAVING count(*)>1 LIMIT 1");
     duplicate.BindText(1,document);Check(!duplicate.Step(),"duplicate stage request member");
     const auto request=Fields(Canonical(document));
-    Check(request.size()==6 && Text(request,"schema")=="emuflow.phase6-stage/v1" &&
+    Check(request.size()==(pinned?7:6) && Text(request,"schema")== (pinned?"emuflow.phase6-stage/v2":"emuflow.phase6-stage/v1") &&
           request.count("transport") && request.count("small_design_equivalence") &&
           request.count("transport_cost") && request.count("managed_storage") &&
           request.count("configuration_sources"),"stage request fields disagree");
@@ -683,8 +730,10 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
     // request is bounded configuration and is retired with the private stage.
     const auto configuration=workspace.root/"transport-request.json";
     PublishText(configuration,Object(transport)+'\n',bound);
-    const auto result=BuildTransportArtifacts({original[1],original[2],
-        ArtifactRef::Bind(configuration.string(),"transport-stage-request-v1")},root.string());
+    auto transport_inputs=std::vector<ArtifactRef>{original[1],original[2],
+        ArtifactRef::Bind(configuration.string(),"transport-stage-request-v1")};
+    if(pin_store)transport_inputs.push_back(*pin_store);
+    const auto result=BuildTransportArtifacts(transport_inputs,root.string());
     if(!result.ok())throw StageError(result.error,result.stage+": "+result.message);
     std::string split_validation;
     const auto split=BuildSplitOverlay({original[0],original[1],original[2]},
@@ -736,6 +785,19 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
       {"transport_storage",JsonQuote("transport.sqlite")},{"fpgas",Array(fpgas)},
       {"lane_map",JsonQuote("lane_map.json")},{"runtime_controller_rtl",JsonQuote("virtual_runtime_controller.sv")},
       {"clock_periods",Object(periods)}};
+    if(pinned){
+      manifest["provider"]=JsonQuote("chimew-electrical-pin-split-v1");
+      for(const auto& row:std::vector<std::tuple<std::string,std::string,std::string>>{
+          {"plan","pin-plan-store-v1","pin_plan.json"},
+          {"positions","position-hints-store-v1","position_hints.json"},
+          {"binding","chimew-binding-store-v1","electrical_binding.json"}}){
+        const auto copied=CopyPinArtifact(pin_sources.at(std::get<0>(row)),std::get<1>(row),(root/std::get<2>(row)).string(),cancelled);
+        if(!copied.ok())throw StageError(copied.error,copied.message);
+      }
+      manifest["pin_plan"]=JsonQuote("pin_plan.json");
+      manifest["position_hints"]=JsonQuote("position_hints.json");
+      manifest["electrical_binding"]=JsonQuote("electrical_binding.json");
+    }
     const auto constraints=Fields(Meta(assignment.database(),"constraints"));
     const auto reservations=constraints.find("resource_reservations_by_fpga");
     if(reservations!=constraints.end() && reservations->second!="{}")manifest[reservations->first]=reservations->second;
@@ -765,6 +827,15 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
     Raw artifacts{{"manifest",JsonQuote("manifest.json")},{"lane_map",JsonQuote("lane_map.json")},
       {"split_netlists",JsonQuote("split-netlists.sqlite")},{"transport_store",JsonQuote("transport.sqlite")},
       {"runtime_controller_rtl",JsonQuote("virtual_runtime_controller.sv")},{"report",JsonQuote("phase6_report.json")}};
+    if(pinned){
+      for(const auto& row:std::vector<std::pair<std::string,std::string>>{
+          {"pin_plan","pin_plan.json"},{"position_hints","position_hints.json"},
+          {"electrical_binding","electrical_binding.json"}}){
+        const auto selected=Fields(Canonical(Read(root/row.second)));
+        artifacts[row.first]=JsonQuote(row.second);
+        artifacts[row.first+"_store"]=Get(selected,"artifact");
+      }
+    }
     if(Get(request,"transport_cost")!="null"){
       const auto cost=Fields(Get(request,"transport_cost"));
       Check(Text(cost,"platform")==platform,"transport cost platform disagrees");
@@ -839,7 +910,7 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
     Raw report{{"schema",JsonQuote("emuflow.phase6-report/v1")},{"phase","6"},
       {"increment",JsonQuote("board-independent-netlist-and-lane-planning")},{"status",JsonQuote("pass")},
       {"design",JsonQuote(design_name)},{"platform",JsonQuote(platform)},
-      {"provider",Get(manifest,"provider")},{"stage_implementation_id",JsonQuote("native-baseline-phase6-v1")},
+      {"provider",Get(manifest,"provider")},{"stage_implementation_id",JsonQuote(pinned?"native-chimew-phase6-v1":"native-baseline-phase6-v1")},
       {"schedule_input",Object({{"dataflow",JsonQuote("indexed-lazy-sqlite-v1")},
         {"logical_sha256",Meta(schedule.database(),"logical_sha256")},
         {"store_bytes",std::to_string(fs::file_size(original[2].path()))}})},
@@ -847,6 +918,10 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
       {"virtual_dut_clocks",Array(clock_names)},{"clock_contract_ref",JsonQuote("manifest.json#/clock_periods")},
       {"validation",Object(validation)},{"equivalence",Object(equivalence)},
       {"board_binding",Object(board_binding)},{"artifacts",Object(artifacts)}};
+    if(pinned){
+      report["pin_plan_validation"]=Get(pin_validation,"pin_validation");
+      report["electrical_binding_validation"]=Get(pin_validation,"binding_validation");
+    }
     if(!board_validation.empty())report["virtual_board_binding"]=board_validation;
     auto manifest_text=Object(manifest);
     if(Get(request,"managed_storage")=="true"){

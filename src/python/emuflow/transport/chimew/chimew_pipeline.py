@@ -15,11 +15,9 @@ from emuflow.transport.chimew.chimew_bank_channel import evaluate_chimew_bank_ch
 from emuflow.transport.chimew.chimew_bank_channel_storage import chimew_bank_channel_store_path, copy_chimew_bank_channel_storage, read_chimew_bank_channel_input
 from emuflow.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView, chimew_bank_channel_report_store_path, copy_chimew_bank_channel_report_storage, read_chimew_bank_channel_report
 from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
-from emuflow.transport.chimew.chimew_grouping import build_chimew_initial_groups
 from emuflow.transport.chimew.chimew_phase6 import CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA, CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V1, CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V2, CHIMEW_PHASE6_BINDING_PROVIDER, chimew_adapter_report_generation_path, validate_chimew_adapter_generation, run_chimew_phase6_adapter, validate_chimew_phase6_binding
 from emuflow.transport.chimew.chimew_qualification import qualify_chimew_artifact_chain, canonical_sha256, validate_chimew_phase6_qualification
-from emuflow.transport.chimew.chimew_refinement import refine_chimew_groups
-from emuflow.transport.chimew.chimew_rudy import evaluate_chimew_rudy
+from emuflow.transport.chimew.kernel_reports_native import build_chimew_kernel_reports
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json, write_json
 from emuflow.transport.pin_plan_storage import read_pin_plan
@@ -90,39 +88,6 @@ def _pipeline_lock(output_dir: Path, *, exclusive: bool) -> Iterator[None]:
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
-
-
-def _source_digests(
-    crossings: Mapping[str, Any],
-    positions: Mapping[str, Any],
-    rudy_input: Mapping[str, Any],
-    electrical_map: Mapping[str, Any],
-    timing_paths_sha256: Optional[str] = None,
-) -> Dict[str, Any]:
-    crossing_provenance = crossings.get("provenance")
-    position_provenance = positions.get("provenance")
-    rudy_provenance = rudy_input.get("provenance")
-    electrical_provenance = electrical_map.get("provenance")
-    if not isinstance(crossing_provenance, Mapping):
-        crossing_provenance = {}
-    if not isinstance(position_provenance, Mapping):
-        position_provenance = {}
-    if not isinstance(rudy_provenance, Mapping):
-        rudy_provenance = {}
-    if not isinstance(electrical_provenance, Mapping):
-        electrical_provenance = {}
-    result = {
-        "routing": crossing_provenance.get("routing_sha256"),
-        "placement": position_provenance.get("placement_sha256"),
-        "netlist": rudy_provenance.get("netlist_sha256"),
-        "architecture": rudy_provenance.get("architecture_sha256"),
-        "package_pins": electrical_provenance.get(
-            "package_pin_inventory_sha256"
-        ),
-    }
-    if timing_paths_sha256 is not None:
-        result["timing_paths"] = timing_paths_sha256
-    return result
 
 
 def _artifact_path(output_dir: Path, label: str, record: Any) -> Path:
@@ -464,25 +429,10 @@ def _validate_pipeline_artifact_semantics_records(
     audit_electrical_map(bank_input.manifest_path, paths["electrical_map"], platform)
     source_binding = None
     if source_bound:
-        crossings = read_json(paths["crossings"])
-        positions = read_json(paths["positions"])
-        rudy_input = read_json(paths["rudy_input"])
-        expected_digests = _source_digests(
-            crossings,
-            positions,
-            rudy_input,
-            electrical_map,
-            (
-                _sha256(paths["source_timing_paths"])
-                if "source_timing_paths" in paths
-                else None
-            ),
-        )
-        for label in sorted(expected_digests):
-            if _sha256(paths[f"source_{label}"]) != expected_digests[label]:
-                raise ValidationError(
-                    f"Chimew {label} source provenance does not agree"
-                )
+        expected_digests = {label: _sha256(paths[f"source_{label}"]) for label in (*_SOURCE_LABELS, *_OPTIONAL_SOURCE_LABELS)
+                            if f"source_{label}" in paths}
+        if expected_digests["package_pins"] != electrical_provenance.get("package_pin_inventory_sha256"):
+            raise ValidationError("Chimew package_pins source provenance does not agree")
         source_binding = {
             "scope": "byte-bound-source-artifacts",
             "digests": expected_digests,
@@ -648,51 +598,26 @@ def _run_chimew_phase6_pipeline_with_bank_input(
     rudy: Optional[str] = None,
     assigner: Optional[str] = None,
     region_count: int = 31,
+    resources: ExitStack,
 ) -> Dict[str, Any]:
     """Run, certify, and electrically bind every Chimew Phase 6 kernel."""
 
     output_dir = Path(output_dir)
     schedule = read_tdm_schedule(schedule_path)
-    crossings = read_json(crossings_path)
-    positions = read_json(positions_path)
-    rudy_input = read_json(rudy_input_path)
     electrical_map = read_json(electrical_map_path)
-
-    initial = build_chimew_initial_groups(
-        schedule, crossings, executable=grouper
-    )
-    refined = refine_chimew_groups(
-        schedule,
-        crossings,
-        initial,
-        positions,
-        executable=refiner,
-    )
-    provenance = bank_input.get("provenance")
-    if (
-        not isinstance(provenance, dict)
-        or provenance.get("grouping_sha256") != canonical_sha256(refined)
-    ):
-        raise ValidationError(
-            "Chimew bank/channel input does not bind the refined grouping"
-        )
-    rudy_report = evaluate_chimew_rudy(rudy_input, executable=rudy)
-    if rudy_report.get("gate_status") != "pass":
-        raise ValidationError("Chimew RUDY qualification gate did not pass")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     bank_report_temporary = tempfile.TemporaryDirectory(
-        prefix=f".{output_dir.name}.bank-report-",
-        suffix=".tmp",
-        dir=output_dir.parent,
-    )
-    bank_report_temporary_path = (
-        Path(bank_report_temporary.name) / "bank_channel_report.json"
-    )
-    bank_report = evaluate_chimew_bank_channel_assignment(
-        bank_input,
-        executable=assigner,
-        output_path=bank_report_temporary_path,
-    )
+        prefix=f".{output_dir.name}.kernels-", suffix=".tmp", dir=output_dir.parent)
+    resources.callback(bank_report_temporary.cleanup)
+    kernel_root = Path(bank_report_temporary.name) / "kernels"
+    kernel_summary = build_chimew_kernel_reports(schedule_path, crossings_path, positions_path, rudy_input_path,
+        kernel_root, executables=(grouper, refiner, rudy))
+    provenance = bank_input.get("provenance")
+    if not isinstance(provenance, dict) or provenance.get("grouping_sha256") != kernel_summary["refined_grouping_sha256"]:
+        raise ValidationError("Chimew bank/channel input does not bind the refined grouping")
+    bank_report_temporary_path = Path(bank_report_temporary.name) / "bank_channel_report.json"
+    bank_report = evaluate_chimew_bank_channel_assignment(bank_input, executable=assigner, output_path=bank_report_temporary_path)
+    resources.callback(bank_report.close)
     source_binding = None
     if source_paths is not None:
         required_labels = set(_SOURCE_LABELS)
@@ -703,17 +628,10 @@ def _run_chimew_phase6_pipeline_with_bank_input(
                 "Chimew source bundle must provide routing, placement, netlist, "
                 "architecture, package pins, and only recognized optional sources"
             )
-        expected_digests = _source_digests(
-            crossings,
-            positions,
-            rudy_input,
-            electrical_map,
-            (
-                _sha256(Path(source_paths["timing_paths"]))
-                if "timing_paths" in source_paths
-                else None
-            ),
-        )
+        expected_digests = dict(kernel_summary["source_digests"])
+        expected_digests["package_pins"] = electrical_map.get("provenance", {}).get("package_pin_inventory_sha256")
+        if "timing_paths" in source_paths:
+            expected_digests["timing_paths"] = _sha256(Path(source_paths["timing_paths"]))
         for label in sorted(source_paths):
             source = Path(source_paths[label])
             if not source.is_file() or _sha256(source) != expected_digests[label]:
@@ -790,14 +708,9 @@ def _run_chimew_phase6_pipeline_with_bank_input(
                 destination = sources_dir / f"{label}.source"
                 shutil.copy2(source, destination)
                 artifact_paths[f"source_{label}"] = destination
-        kernel_documents = {
-            "initial_grouping": initial,
-            "refined_grouping": refined,
-            "rudy_report": rudy_report,
-        }
-        for label, document in kernel_documents.items():
+        for label in ("initial_grouping", "refined_grouping", "rudy_report"):
             path = kernels_dir / f"{label}.json"
-            write_json(path, document)
+            shutil.copy2(kernel_root / path.name, path)
             artifact_paths[label] = path
         bank_report_path = kernels_dir / "bank_channel_report.json"
         copy_chimew_bank_channel_report_storage(
@@ -943,7 +856,7 @@ def _run_chimew_phase6_pipeline_locked(
     bank_input = read_chimew_bank_channel_input(bank_channel_input_path)
     if not hasattr(bank_input, "__enter__"):
         raise ValidationError("Chimew pipeline requires indexed bank storage")
-    with bank_input:
+    with bank_input, ExitStack() as resources:
         return _run_chimew_phase6_pipeline_with_bank_input(
             schedule_path,
             platform_path,
@@ -960,6 +873,7 @@ def _run_chimew_phase6_pipeline_locked(
             rudy=rudy,
             assigner=assigner,
             region_count=region_count,
+            resources=resources,
         )
 
 

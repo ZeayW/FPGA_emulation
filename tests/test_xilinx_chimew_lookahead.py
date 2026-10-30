@@ -205,8 +205,8 @@ def test_wrong_mapped_generation_seal_is_rejected(case):
 
 
 def test_timing_guard_has_one_owner_without_cloning_the_hop_store(case, tmp_path):
-    from emuflow.transport.chimew.chimew_grouping import build_chimew_initial_groups
-    from emuflow.transport.chimew.chimew_refinement import refine_chimew_groups
+    from tests.chimew_grouping_fixture import build_chimew_initial_groups
+    from tests.chimew_refinement_fixture import refine_chimew_groups
     from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
     platform, source, architecture, report, schedule, routes = case
     original = file_sha256(schedule)
@@ -610,9 +610,9 @@ def test_complete_native_lookahead_matches_retired_python_records(case, tmp_path
                 timing_paths_path=timing, timing_weight_scale=scale, region_count=31,
                 output_dir=tmp_path / 'reference')
         # The production producer must call the shared C++ models directly.
-        with patch('emuflow.transport.chimew.chimew_grouping.build_chimew_initial_groups',
+        with patch('tests.chimew_grouping_fixture.build_chimew_initial_groups',
                    side_effect=AssertionError('Python grouping producer was called')), patch(
-                   'emuflow.transport.chimew.chimew_refinement.refine_chimew_groups',
+                   'tests.chimew_refinement_fixture.refine_chimew_groups',
                    side_effect=AssertionError('Python refinement producer was called')):
             actual = prepare_chimew_lookahead(signals, tmp_path / 'native')
     assert actual['implementation_id'] == 'native-chimew-lookahead-preparation-v1'

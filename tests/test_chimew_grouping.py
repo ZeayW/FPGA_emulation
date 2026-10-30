@@ -13,8 +13,8 @@ import zlib
 from pathlib import Path
 from unittest import mock
 
-from emuflow.transport.chimew import chimew_grouping as grouping_module
-from emuflow.transport.chimew.chimew_grouping import (
+from tests import chimew_grouping_fixture as grouping_module
+from tests.chimew_grouping_fixture import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     CHIMEW_GROUPING_PROVIDER,

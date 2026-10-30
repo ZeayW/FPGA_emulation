@@ -298,7 +298,7 @@ adapter.
 | System router | EmuFlow implementation drawing on DAC 2025 delay-demand balancing and ASP-DAC 2026 timing-aware routing, with additional candidate trees | [tlr_router.cpp](../src/core/routing/global_router.cpp) |
 | Static Exact TDM scheduler | EmuFlow deterministic dependency ordering, earliest legal TX events, and independent readiness validation | [tdm_exact_scheduler.cpp](../src/core/scheduling/exact_scheduler.cpp) |
 | Chimew initial grouping | Paper Algorithm 1 crossing-encoding grouping | [chimew_signal_grouper.cpp](../src/core/transport/chimew/signal_grouper.cpp) |
-| Chimew position refinement | Paper Section 3.3.2 with explicitly documented implementation choices | [chimew_refinement.py](../src/python/emuflow/transport/chimew/chimew_refinement.py) |
+| Chimew position refinement | Paper Section 3.3.2 with explicitly documented implementation choices | [position_refiner.cpp](../src/core/transport/chimew/position_refiner.cpp) |
 | Chimew bank/channel assignment | Paper Section 3.4 two-stage min-cost-flow kernel | [chimew_bank_channel_assigner.cpp](../src/core/transport/chimew/bank_channel_assigner.cpp) |
 | Chimew integration | EmuFlow electrical and slot binding around the paper-derived output | [chimew_phase6.py](../src/python/emuflow/transport/chimew/chimew_phase6.py) |
 | Split netlists and transport | EmuFlow runtime implementation and validation | [phase6.py](../src/python/emuflow/transport/phase6.py) |

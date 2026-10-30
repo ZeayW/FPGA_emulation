@@ -1,3 +1,5 @@
+# Test-only kernel protocol fixtures and independent reference decisions.
+# These helpers are not installed or called by the production flow.
 """Source-qualified RUDY congestion gate for Chimew lookahead placement.
 
 The native kernel implements the paper's HPWL wire-area density and exact bin

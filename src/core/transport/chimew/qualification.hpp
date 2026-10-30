@@ -25,6 +25,9 @@ StageResult AuditChimewBankAssignment(
     const std::string &summary,
     const volatile std::sig_atomic_t *cancelled = nullptr);
 StageResult
+BuildChimewKernelReports(const ArtifactRef &request, const std::string &output,
+                         const volatile std::sig_atomic_t *cancelled = nullptr);
+StageResult
 QualifyChimewChain(const ArtifactRef &request, const std::string &output,
                    const volatile std::sig_atomic_t *cancelled = nullptr);
 } // namespace emuflow::core

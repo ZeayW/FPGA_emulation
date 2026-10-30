@@ -1,4 +1,4 @@
-"""Bounded API for the native baseline Phase 6 directory owner."""
+"""Bounded API for the complete native Phase 6 directory owner."""
 import json
 import os
 from pathlib import Path
@@ -54,19 +54,35 @@ def prepare_compile_policy(directory, source, platform_path, **options):
 def run_native_phase6(source, assignment, schedule, platform, platform_path, output,
                       *, design, clocks, virtual_board, runtime, equivalence=None,
                       managed_storage=False, transport_cost=None, transport_cost_path=None,
-                      _capture_operation=None):
-    require_native_schema('phase6-stage-request-v1')
+                      _capture_operation=None, pin_plan=None, position_hints=None, electrical_binding=None):
+    pinned = pin_plan is not None
+    require_native_schema('phase6-stage-request-v2' if pinned else 'phase6-stage-request-v1')
     configuration, owners = transport_request(assignment, schedule, platform,
-        design=design, clocks=clocks, virtual_board=virtual_board, runtime=runtime, emit_rtl=True)
+        design=design, clocks=clocks, pin_plan=pin_plan, virtual_board=virtual_board, runtime=runtime, emit_rtl=True)
     extra=[bind_store_source(platform_path, 'boarddb-v1')]
     if transport_cost_path is not None:
         extra.append(bind_store_source(transport_cost_path, 'transport-cost-input-v1'))
     sources=(bind_store_source(source, 'emuir-compact-v2'),)+owners+tuple(extra)
-    request={'schema':'emuflow.phase6-stage/v1', 'transport':configuration,
+    request={'schema':'emuflow.phase6-stage/v2' if pinned else 'emuflow.phase6-stage/v1', 'transport':configuration,
              'configuration_sources':[{'path':str(ref.path), 'schema':ref.schema,
                  'generation':list(ref.generation)} for ref in extra],
              'small_design_equivalence':equivalence, 'managed_storage':managed_storage,
              'transport_cost':transport_cost}
+    if pinned:
+        from emuflow.transport.pin_artifacts_native import _board_sources, _row
+        rows = _board_sources(platform, Path(output).absolute().parent, platform_path)
+        for role, value, schema in (("schedule",schedule,"physical-input-document-v1"),
+                ("plan",pin_plan,"pin-plan-selector-v1"),
+                ("positions",position_hints,"position-hints-selector-v1"),
+                ("binding",electrical_binding,"chimew-binding-selector-v1")):
+            path = getattr(value,"manifest_path",None)
+            if path is None:
+                raise ValidationError("native Phase 6 requires current typed pin artifacts")
+            rows[role] = _row(path,schema)
+        pin_sources = [bind_store_source(row["path"],row["schema"]) for row in rows.values()]
+        request["pin_artifacts"] = {role:{**row,"generation":list(ref.generation)}
+            for (role,row),ref in zip(rows.items(),pin_sources)}
+        sources += tuple(pin_sources)
     encoded=json.dumps(request, ensure_ascii=True, sort_keys=True,
                        separators=(',', ':'), allow_nan=False)
     if len(encoded.encode())>8*1024*1024:
@@ -103,7 +119,7 @@ def run_native_phase6(source, assignment, schedule, platform, platform_path, out
             raise ValidationError('native Phase 6 report exceeds bound')
         report=json.loads((output/'phase6_report.json').read_text())
         if (report.get('schema')!='emuflow.phase6-report/v1' or report.get('status')!='pass'
-                or report.get('stage_implementation_id')!='native-baseline-phase6-v1'):
+                or report.get('stage_implementation_id')!=('native-chimew-phase6-v1' if pinned else 'native-baseline-phase6-v1')):
             raise ValidationError('native Phase 6 report identity disagrees')
         if _capture_operation is not None:
             _capture_operation(proof)
