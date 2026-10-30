@@ -333,9 +333,9 @@ struct Admission {
   void Validate() {
     Check(D::IntegerToken(options.at("patron_algorithm_version")) == 14,
           "only PATRON v14 is supported");
-    Check(Text("partition_provider") == "patron" ||
-              Text("partition_provider") == "tritonpart",
-          "unsupported Phase 3 provider");
+    Check(Text("partition_provider") == "patron",
+          "unsupported Phase 3 provider: complete compilation requires "
+          "TritonPart initialization followed by PATRON v14");
     Check(!Has("source_checksums") ||
               (!Has("yosys_json") && !Has("prepared_frontend") &&
                !Has("prepared_timing")),

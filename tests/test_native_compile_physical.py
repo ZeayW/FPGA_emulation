@@ -37,7 +37,7 @@ def test_baseline_compile_owns_physical_without_a_python_phase_adapter(tmp_path,
     # The test intentionally stops at the real Phase 7C boundary: this controlled
     # input extractor supplies no terminal global timing engine evidence.
     options=dict(tritonpart_solution=solution,platform_path=platform,output_dir=output,yosys_json=source,
-        top='static_exact_chain',clocks=['clk'],partition_provider='tritonpart',balance_tolerance=1.,
+        top='static_exact_chain',clocks=['clk'],partition_provider='patron', patron_max_moves=0,balance_tolerance=1.,
         timing_driven=False,clock_periods={'clk':10.},opensta=str(extractor),
         router=str(tlr_router()),frame_slots=32,equivalence_cycles=2,cut_mode='static-exact-combinational',
         max_cross_fpga_dependency_depth=2,mapping_profile='xilinx-ultrascaleplus-open-v1',

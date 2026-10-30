@@ -207,7 +207,7 @@ else:print('EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16')
     from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
     options=dict(output_dir=tmp_path/'out',platform_path=native_root/'platform.normalized.json',
         prepared_frontend=front,prepared_timing=timing if prepared_timing else None,
-        clock_periods=clocks,opensta=str(engine),partition_provider='tritonpart',
+        clock_periods=clocks,opensta=str(engine),partition_provider='patron', patron_max_moves=0,
         partition_constraints=constraint_path,tritonpart_solution=solution,
         max_cross_fpga_dependency_depth=depth,frame_slots=16,route_max_iterations=3,timing_driven=False,
         architecture_timing_db=write_mock_xilinx_timing_contract(native_root/'architecture-timing.json'))
@@ -390,7 +390,7 @@ def test_native_controller_completes_existing_nonphysical_contract_fixture(tmp_p
         tritonpart_solution=solution,
         platform_path=root / "platforms/virtual/static_exact_acceptance_2fpga.json",
         output_dir=output, yosys_json=root / "examples/yosys/static_exact_chain.json",
-        top="static_exact_chain", clocks=["clk"], partition_provider="tritonpart", balance_tolerance=1.0,
+        top="static_exact_chain", clocks=["clk"], partition_provider="patron", patron_max_moves=0, balance_tolerance=1.0,
         timing_driven=False, clock_periods={"clk": 10.0},
         opensta=str(root / "tests/fixtures/fake_opensta_paths.py"), router=str(tlr_router()),
         frame_slots=32, equivalence_cycles=2, cut_mode="static-exact-combinational",
@@ -628,7 +628,7 @@ raise AssertionError('timing extraction must not begin after cancellation')
         'yosys_json':repository/'examples/yosys/static_exact_chain.json',
         'top':'static_exact_chain','clocks':['clk'],'clock_periods':{'clk':10.0},
         'platform_path':repository/'platforms/virtual/static_exact_acceptance_2fpga.json',
-        'partition_provider':'tritonpart','tritonpart_solution':solution,
+        'partition_provider':'patron','patron_max_moves':0,'tritonpart_solution':solution,
         'mapping_profile':'xilinx-ultrascaleplus-open-v1',
         'architecture_timing_db':write_mock_xilinx_timing_contract(tmp_path/'architecture.json'),
         'opensta':str(engine)})

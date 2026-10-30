@@ -183,14 +183,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Explicit native Xilinx mapper A/B selection; defaults to hierarchical ABC9",
     )
 
-    multi_fpga_compile.add_argument(
-        "--partition-provider",
-        choices=(
-            "tritonpart",
-            "patron",
-        ),
-        default="patron",
-    )
+    multi_fpga_compile.set_defaults(partition_provider="patron")
 
     multi_fpga_compile.add_argument("--seed", type=int, default=0)
 

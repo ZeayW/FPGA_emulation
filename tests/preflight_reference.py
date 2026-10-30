@@ -57,7 +57,7 @@ def _resolve_partition_openroad(
 
     if solution_input is not None:
         return executable
-    if partition_provider in {"tritonpart", "patron"}:
+    if partition_provider == "patron":
         return resolve_native_executable("openroad", executable)
     return executable
 
@@ -69,7 +69,7 @@ def _compile_preflight(ctx: _CompileContext):
         or ctx.patron_algorithm_version != 14
     ):
         raise EmuFlowError("only PATRON v14 is supported")
-    if ctx.partition_provider not in {"patron", "tritonpart"}:
+    if ctx.partition_provider != "patron":
         raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
     if getattr(ctx, "source_checksums", None) is not None and (ctx.yosys_json is not None or ctx.prepared_frontend is not None or ctx.prepared_timing is not None):
         raise EmuFlowError("source checksums apply only to original RTL compilation")

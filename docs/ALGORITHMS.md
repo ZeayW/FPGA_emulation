@@ -59,6 +59,8 @@ There is no external balance legalizer. EmuFlow checks
 and repairs configured hop constraints before handing the initial assignment
 to PATRON. See the [TritonPart project and publication](https://github.com/ABKGroup/TritonPart).
 
+The complete-flow CLI fixes TritonPart initialization followed by PATRON v14.
+Standalone Phase 3 initialization remains available for component qualification.
 Only PATRON v14 is supported in production. The older native global-best and
 critical-flow variants, v10 hop-guard scoring, v11 measured-residual feedback,
 legacy trace/provider dispatch and full reference-search runner are retired.

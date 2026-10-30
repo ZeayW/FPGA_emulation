@@ -645,7 +645,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
           const auto payload=[&](const char* state,const char* role,const char* schema,const char* payload_role,const char* payload_schema,const char* member){
             auto selector=ArtifactRef::Bind(prior.StatePath(state),schema);ControlJson manifest(selector.path());const auto relative=manifest.String(std::string("$.payloads.")+member+".path");Require(fs::path(relative).filename()==relative,"native partition payload escapes selector");runtime.emplace(role,selector);runtime.emplace(payload_role,ArtifactRef::Bind((fs::path(selector.path()).parent_path()/relative).string(),payload_schema));
           };
-          if(prior.String("$.state[1].partition_provider")=="patron")payload("path_database_path","timing_selector","sta-path-selector-v1","timing","timing-path-store-v1","paths");
+          payload("path_database_path","timing_selector","sta-path-selector-v1","timing","timing-path-store-v1","paths");
           if(prior.Boolean("$.state[1].timing_driven"))payload("net_weights_path","weight_selector","net-weight-selector-v2","weights","net-weight-store-v1","weights");
           std::vector<ArtifactRef> refs{predecessor,*settings};for(const auto& item:runtime)refs.push_back(item.second);return refs;
         },[&](const auto& sources){

@@ -77,6 +77,7 @@ def test_all_static_configurations_and_effective_state_match_independent_preflig
 
 @pytest.mark.parametrize('name,bad',[
     ('patron_algorithm_version',True),('patron_algorithm_version',13),('partition_provider','retired'),
+    ('partition_provider','tritonpart'),
     ('optimize_frame_slots',True),('global_timing_engine','python'),('global_sta_executable','/missing'),
     ('mapping_profile','retired'),('xilinx_mapping_strategy','retired'),('tdm_provider','retired'),
     ('cut_mode','sequential-only'),('route_provider','retired'),('phase6_provider','retired'),

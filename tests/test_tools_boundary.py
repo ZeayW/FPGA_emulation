@@ -52,6 +52,8 @@ def test_core_has_no_tool_package_imports():
     ["multi-fpga", "board-timing", "--help"], ["phy-provider", "--help"],
     ["runtime-sync", "--help"], ["phase6b", "--help"], ["phase6c", "--help"],
     ["package-pin", "--help"],
+    ["multi-fpga", "compile", "--out", "unused", "--partition-provider", "tritonpart"],
+    ["multi-fpga", "compile", "--out", "unused", "--partition-provider", "patron"],
     ["multi-fpga", "compile", "--out", "unused", "--serial-bsp-phy-provider", "retired.json"],
 ])
 def test_retired_core_tool_or_bsp_entry_is_rejected(command):

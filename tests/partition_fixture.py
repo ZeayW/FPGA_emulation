@@ -53,7 +53,8 @@ def run_multi_fpga_flow_fixture(*args, **kwargs):
     from tests.yosys_reference import import_yosys_json
     from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
     from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
-    assert not args and kwargs["partition_provider"] == "tritonpart"
+    assert not args and kwargs["partition_provider"] == "patron"
+    assert kwargs["patron_max_moves"] == 0
     assert kwargs.get("yosys_json") is not None
     with tempfile.TemporaryDirectory(prefix="native-compile-fixture-") as directory:
         root = Path(directory)
