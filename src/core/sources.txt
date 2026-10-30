@@ -30,6 +30,7 @@ routing/route_view.cpp
 scheduling/schedule_ingress.cpp
 common/tool_runtime.cpp
 flow/compile.cpp
+flow/chimew.cpp
 flow/route_policy.cpp
 flow/finalize.cpp
 flow/signoff.cpp
@@ -131,3 +132,5 @@ physical/flow/compile_request.cpp
 transport/chimew/qualification.cpp
 scheduling/schedule_view.cpp
 transport/chimew/pin_artifacts.cpp
+
+transport/chimew/pipeline.cpp

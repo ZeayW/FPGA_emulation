@@ -53,7 +53,7 @@ from emuflow.platform.fpga_interchange import check_ir_architecture_capacity, ru
 from emuflow.common.io import read_json, write_json
 from emuflow.ir.ir import EmuIR
 from emuflow.physical.lowering import run_placement_ir_lowering_from_split
-from emuflow.flow.multi_fpga_flow import finalize_multi_fpga_physical_checkpoint, run_multi_fpga_flow, validate_multi_fpga_flow_bundle
+from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow, validate_multi_fpga_flow_bundle
 from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
 from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, parse_clock_definitions, run_opensta_path_database
 from emuflow.partition.phase3 import run_phase3, validate_phase3_indexed
@@ -285,18 +285,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_validate.add_argument(
         "--require-physical", action="store_true"
-    )
-    multi_fpga_finalize = multi_fpga_subparsers.add_parser(
-        "finalize-physical",
-        help=(
-            "finish Phase 7C and seal a complete flow from a checked "
-            "independently resumed physical checkpoint"
-        ),
-    )
-    multi_fpga_finalize.add_argument("--flow", type=Path, required=True)
-    multi_fpga_finalize.add_argument("--physical", type=Path, required=True)
-    multi_fpga_finalize.add_argument(
-        "--runtime-directory", default="runtime-final"
     )
     multi_fpga_compile.add_argument("sources", nargs="*", type=Path)
     multi_fpga_compile.add_argument(
@@ -1696,15 +1684,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                     require_physical=args.require_physical,
                 )
             )
-            return 0
-
-        if args.multi_fpga_command == "finalize-physical":
-            report = finalize_multi_fpga_physical_checkpoint(
-                args.flow,
-                args.physical,
-                runtime_directory=args.runtime_directory,
-            )
-            _print_json(report["summary"])
             return 0
 
         if args.multi_fpga_command == "physical":

@@ -1016,6 +1016,25 @@ class Phase6Test(unittest.TestCase):
                     position_hints_path=paths["positions"],
                     electrical_binding_path=binding_path,
                 )
+            # The complete compiler constructs the same pinned stage directly
+            # from typed owners, without the Python stage request producer.
+            from tests.native_build import native_pipeline_api_test
+            from emuflow.transport.phase6_native import prepare_compile_policy
+            periods = {clock["id"]: 1.0 for clock in self.ir.value["clocks"]}
+            policy = prepare_compile_policy(root / "compile-policy", paths["ir"],
+                PLATFORM_PATH, clock_periods=periods, equivalence_cycles=4)
+            compiled_output = root / "compiled-pinned"
+            result = subprocess.run([str(native_pipeline_api_test()), "compile-pinned",
+                str(paths["ir"]), str(paths["assignment"].with_suffix(".sqlite")),
+                str(paths["schedule"]), str(PLATFORM_PATH), str(policy), str(compiled_output),
+                str(chimew_plan_path), str(paths["positions"]), str(binding_path)],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            compiled = read_json(compiled_output / "phase6_report.json")
+            self.assertEqual(compiled["stage_implementation_id"], "native-chimew-phase6-v1")
+            self.assertEqual(compiled["equivalence"]["mismatches"], 0)
+            self.assertEqual(compiled["pin_plan_validation"], chimew_report["pin_plan_validation"])
+            self.assertEqual(compiled["electrical_binding_validation"], chimew_report["electrical_binding_validation"])
             self.assertEqual(chimew_report["stage_implementation_id"], "native-chimew-phase6-v1")
             self.assertEqual(captured["request"]["schema"], "emuflow.phase6-stage/v2")
             committed = (chimew_output / "phase6_report.json").read_bytes()

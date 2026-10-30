@@ -300,7 +300,7 @@ adapter.
 | Chimew initial grouping | Paper Algorithm 1 crossing-encoding grouping | [chimew_signal_grouper.cpp](../src/core/transport/chimew/signal_grouper.cpp) |
 | Chimew position refinement | Paper Section 3.3.2 with explicitly documented implementation choices | [position_refiner.cpp](../src/core/transport/chimew/position_refiner.cpp) |
 | Chimew bank/channel assignment | Paper Section 3.4 two-stage min-cost-flow kernel | [chimew_bank_channel_assigner.cpp](../src/core/transport/chimew/bank_channel_assigner.cpp) |
-| Chimew integration | EmuFlow electrical and slot binding around the paper-derived output | [chimew_phase6.py](../src/python/emuflow/transport/chimew/chimew_phase6.py) |
+| Chimew integration | Native baseline physical/timing comparison, placed lookahead, pipeline publication and independent electrical/slot qualification | [chimew.cpp](../src/core/flow/chimew.cpp), [pipeline.cpp](../src/core/transport/chimew/pipeline.cpp) |
 | Split netlists and transport | EmuFlow runtime implementation and validation | [phase6.py](../src/python/emuflow/transport/phase6.py) |
 | OpenPARF/RWRoute / Vivado | Physical-tool integrations selected by backend and device contract | [physical_backend.py](../src/python/emuflow/physical/physical_backend.py) |
 | RapidWright / RWRoute | Device-resource, site/BEL, and native routing integration | [rapidwright_provider.py](../src/python/emuflow/physical/rapidwright/rapidwright_provider.py) |

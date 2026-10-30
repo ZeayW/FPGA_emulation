@@ -280,8 +280,7 @@ void PublishNewDirectory(const std::string& temporary,const std::string& target,
                          const DirectoryReferences& references) {
   namespace fs=std::filesystem;
   const fs::path source=temporary,destination=target;
-  if(fs::is_symlink(source) || !fs::is_directory(source) || fs::exists(destination) || fs::is_symlink(destination) ||
-      fs::weakly_canonical(source.parent_path())!=fs::weakly_canonical(destination.parent_path()))
+  if(fs::is_symlink(source) || !fs::is_directory(source) || fs::exists(destination) || fs::is_symlink(destination) || !fs::is_directory(destination.parent_path()))
     throw StageError(ErrorCode::kPublicationFailed,"invalid new stage directory publication");
   for(const auto& input:inputs)input.RequireUnchanged();
   std::map<fs::path, ArtifactRef> allowed;
@@ -317,10 +316,11 @@ void PublishNewDirectory(const std::string& temporary,const std::string& target,
   if(seen.size()!=allowed.size())throw StageError(ErrorCode::kPublicationFailed,"directory input reference is missing");
   for(auto directory=directories.rbegin();directory!=directories.rend();++directory)SyncDirectory(*directory);
   for(const auto& input:inputs)input.RequireUnchanged();
-  fs::rename(source,destination);
-  try {SyncDirectory(destination.parent_path());for(const auto& input:inputs)input.RequireUnchanged();}
+  std::error_code rename_error; fs::rename(source,destination,rename_error);
+  if(rename_error)throw StageError(ErrorCode::kPublicationFailed,"cannot atomically publish native directory: "+rename_error.message());
+  try {SyncDirectory(source.parent_path());SyncDirectory(destination.parent_path());for(const auto& input:inputs)input.RequireUnchanged();}
   catch(...) {
-    try{fs::rename(destination,source);SyncDirectory(source.parent_path());}
+    try{fs::rename(destination,source);SyncDirectory(source.parent_path());SyncDirectory(destination.parent_path());}
     catch(...){throw StageError(ErrorCode::kPublicationFailed,"stage directory rollback failed; published generation retained at "+target);}
     throw;
   }

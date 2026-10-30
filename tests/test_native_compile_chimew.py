@@ -1,21 +1,15 @@
 """Native-control Chimew contract tests; no physical/NVDLA qualification."""
 
-import copy
-import inspect
 import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import write_json
-from emuflow.flow.native_compile_adapter import (
-    _control_snapshot,
+from emuflow.common.errors import ValidationError
+from tests.native_compile_state_fixture import (
     _pack,
-    _restore_control_state,
     _unpack,
-    execute,
 )
 from emuflow.common.native_tools import native_file_generation
 from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
@@ -68,224 +62,109 @@ def test_device_control_rejects_changed_source_and_invalid_device_facts(case, mu
         XilinxPackageGeometry.from_control_snapshot(state)
 
 
+@pytest.mark.parametrize("fixed_case",[2,4],indirect=True)
 def test_native_preflight_reaches_the_same_chimew_checks_for_both_backends(case,tmp_path,request):
     from tests.chimew_admission_fixture import admitted
     from emuflow.flow import multi_fpga_flow as flow
     backend=request.node.callspec.params['case']
     _source,state=admitted(case,tmp_path/'admission',backend)
     value=json.loads(state.read_text())
-    restored=_restore_control_state(_unpack(value['state']))
-    assert restored['chimew_package_geometry'].part==case[0].fpgas[0].part
+    restored=_unpack(value['state'])
+    config=json.loads(restored['native_chimew_configuration'].read_text())
+    assert config['package_geometry']['part']==case[0].fpgas[0].part
+    assert len(json.loads(restored['platform_path'].read_text())['fpgas'])==len(case[0].fpgas)
+    assert restored['native_phase6_configuration'].is_file()
+    assert restored['native_physical_policy'].is_file()
     assert restored['physical_backend']==backend
     assert restored['phase6_provider']=='chimew'
     assert restored['native_phase3_configuration'].is_file()
     assert not (tmp_path/'admission/native/frontend/phase1').exists()
 
 
-def test_baseline_reports_have_one_control_owner_and_restore_aliases(tmp_path):
-    import emuflow.flow.multi_fpga_flow as flow
 
-    physical, runtime = {"schema": "physical", "status": "pass"}, {"status": "pass"}
-    comparison = {"baseline": {"physical": physical, "runtime": runtime}}
-    ctx = flow._CompileContext(
-        {
-            "baseline_physical_report": physical,
-            "baseline_runtime_report": runtime,
-            "phase6_comparison": comparison,
-        }
-    )
-    state = _control_snapshot(ctx, "split", flow)
-    assert (
-        "baseline_physical_report" not in state
-        and "baseline_runtime_report" not in state
-    )
-    restored = _restore_control_state(_roundtrip(state))
-    assert (
-        restored["baseline_physical_report"]
-        is restored["phase6_comparison"]["baseline"]["physical"]
-    )
-    assert (
-        restored["baseline_runtime_report"]
-        is restored["phase6_comparison"]["baseline"]["runtime"]
-    )
-    with pytest.raises(EmuFlowError, match="duplicate"):
-        _restore_control_state(
-            {**_roundtrip(state), "baseline_physical_report": physical}
-        )
-    ctx.baseline_runtime_report = {"status": "different"}
-    with pytest.raises(EmuFlowError, match="owners disagree"):
-        _control_snapshot(ctx, "split", flow)
-
-
-def test_real_chimew_kernels_survive_split_and_physical_control_boundaries(
-    case, tmp_path
-):
-    """Real lookahead/typed Chimew pipeline; physical/STA engines are test doubles."""
-    import emuflow.flow.multi_fpga_flow as flow
-    from emuflow.platform.default_platform import research_platform_path
-
-    platform, source, architecture, placed, schedule, routes = case
-    backend = (
-        "vivado"
-        if "vivado_implementation" in placed["fpgas"][0]["stages"]
-        else "rapidwright"
-    )
-    root = tmp_path / "flow"
-    root.mkdir()
-    defaults = {
-        k: p.default
-        for k, p in inspect.signature(flow.run_multi_fpga_flow).parameters.items()
-    }
-    ctx = flow._CompileContext(defaults)
-    ctx.output_dir = root
-    ctx.platform_path = research_platform_path(2)
-    ctx.phase6_provider = "chimew"
-    ctx.physical = True
-    ctx.physical_backend = backend
-    ctx.physical_architecture = architecture
-    ctx.chimew_package_geometry = XilinxPackageGeometry.open(
-        architecture, platform.fpgas[0].part
-    )
-    ctx.ir_path = source
-    ctx.assignment_path = root / "assignment.json"
-    ctx.assignment_path.write_text("{}")
-    ctx.phase4_root = routes.parent
-    ctx.phase5_root = schedule.parent
-    ctx.phase3_root = root / "partition"
-    ctx.projected_timing_paths = None
-    ctx.timing_driven = False
-    ctx.copied_link_timing_path = None
-    ctx.global_sta_launcher_reference = None
-    ctx.path_database_path = root / "paths.json"
-    ctx.path_database_path.write_text("{}")
-    split_calls, physical_calls, timing_calls = [], [], []
-
-    def split_engine(*args, **kwargs):
-        out = args[4]
-        out.mkdir(parents=True, exist_ok=True)
-        report = {
-            "schema": "emuflow.phase6-report/v1",
-            "status": "pass",
-            "provider": "contract-double",
-        }
-        write_json(out / "phase6_report.json", report)
-        split_calls.append((args, kwargs))
-        return report
-
-    def physical_engine(*args, **kwargs):
-        result = copy.deepcopy(placed)
-        result.update(
-            schema="emuflow.multi-fpga-physical-flow/v1",
-            status="pass",
-            backend={"id": backend},
-            architecture={"source": str(architecture)},
-            execution={"seed": 1},
-            physical_summary_ref="physical-summary.json",
-            summary={"status": "pass"},
-        )
-        for record in result["fpgas"]:
-            record.update(
-                critical_path_ns=1,
-                physical_result={
-                    "timing": {
-                        "wns_ns": 0.1,
-                        "tns_ns": 0,
-                        "failing_endpoints": 0,
-                        "failing_endpoint_constraints": 0,
-                    },
-                    "closure": {"unrouted_nets": 0, "drc_violations": 0},
-                },
-            )
-        physical_calls.append((args, kwargs))
-        return result
-
-    def timing_engine(*args, **kwargs):
-        timing_calls.append((args, kwargs))
-        timing = {
-            "worst_slack_bound_ns": 0.1,
-            "total_negative_slack_bound_ns": 0,
-            "negative_slack_paths": 0,
-        }
-        return {
-            "status": "pass",
-            "system_timing_summary": {
-                "status": "pass",
-                "target_clock": dict(timing),
-                "runtime_clock": dict(timing),
-            },
-        }
-
-    request = tmp_path / "request.json"
-    request.write_text('{"options":{}}')
-    generation = [str(v) for v in native_file_generation(request)]
-    previous = tmp_path / "tdm-state.json"
-    write_json(
-        previous,
-        {
-            "schema": "emuflow.native-compile-state/v1",
-            "run_id": "chimew",
-            "stage": "tdm",
-            "status": "pass",
-            "request_generation": generation,
-            "state": _pack(_control_snapshot(ctx, "tdm", flow)),
-        },
-    )
-    with (
-        patch.object(flow, "run_phase6", side_effect=split_engine),
-        patch.object(flow, "run_multi_fpga_physical_flow", side_effect=physical_engine),
-        patch.object(flow, "run_native_physical_signoff", side_effect=timing_engine),
-        patch.object(
-            flow, "validate_multi_fpga_physical_report"
-        ) as physical_validation,
-    ):
-        for stage in ("split", "physical"):
-            output = tmp_path / (stage + "-state.json")
-            execute(stage, request, previous, output, "chimew")
-            assert output.stat().st_size < 262144
-            state = _unpack(json.loads(output.read_text())["state"])
-            assert (
-                "baseline_physical_report" not in state
-                and "baseline_runtime_report" not in state
-            )
-            previous = output
-        physical_validation.assert_not_called()
-    comparison = state["phase6_comparison"]
-    assert comparison["status"] == "pending-physical-comparison"
-    assert len(split_calls) == len(physical_calls) == 2
-    assert len(timing_calls) == 1  # Only the baseline prepass has run.
-    input_path=state["native_phase6_comparison_input"]
-    assert tuple(state["native_phase6_comparison_generation"]) == tuple(str(v) for v in native_file_generation(input_path))
-    draft=json.loads(input_path.read_text())
-    assert draft["baseline"] == comparison["baseline"]
-    assert draft["pin_plan_metrics"]["signals"] > 0
-    # This fixture's engine doubles are not terminal physical evidence. The
-    # native signoff/comparison integration is tested against actual typed
-    # evidence in test_native_physical_signoff/test_native_phase6_comparison.
-    with pytest.raises(EmuFlowError,match=r"owned by the C\+\+ Phase 7C stage"):
-        execute("signoff",request,previous,tmp_path/"retired-state.json","chimew")
-    assert physical_calls[0][1] == physical_calls[1][1]
-    assert physical_calls[1][1]["backend"] == backend
-    assert {
-        "pin_plan_path",
-        "position_hints_path",
-        "electrical_binding_path",
-    } <= split_calls[1][1].keys()
-    for key in ("pin_plan_path", "position_hints_path", "electrical_binding_path"):
-        assert split_calls[1][1][key].is_file()
-    assert comparison["baseline"]["runtime"]["status"] == "pass"
-    assert not (root / "phase6-comparison/comparison-report.json").exists()
-
-
-
-@pytest.mark.parametrize('boundary',['split','physical'])
-def test_native_admission_device_owner_is_checked_at_each_remaining_adapter_boundary(case,tmp_path,request,boundary):
+@pytest.mark.parametrize("damage",["configuration-generation","source-generation","unknown-source","escaped-owner","board-namespace","architecture-generation"])
+def test_native_chimew_controller_rejects_changed_admission_before_any_arm(case,tmp_path,request,damage):
     from tests.chimew_admission_fixture import admitted
+    from tests.native_build import emuflow_native
+    import subprocess
     backend=request.node.callspec.params['case']
-    source,state=admitted(case,tmp_path/'admission',backend)
-    value=json.loads(state.read_text())
-    value['stage']='tdm' if boundary=='split' else 'split'
-    state.write_text(json.dumps(value))
-    architecture=case[2];architecture.write_text(architecture.read_text()+'\n')
-    with pytest.raises(ValidationError,match='geometry generation changed'):
-        execute(boundary,source,state,tmp_path/'must-not-publish','test')
-    assert not (tmp_path/'must-not-publish').exists()
+    _source,previous=admitted(case,tmp_path/'admission',backend)
+    value=json.loads(previous.read_text());state=_unpack(value['state']);root=state['output_dir']
+    state.update(phase3_root=root/'partition',phase4_root=root/'system-route',phase5_root=root/'tdm',ir_path=root/'frontend/phase1/design.emuir.sqlite')
+    policy=root/'.native-phase6-request/phase6-policy.json';policy.parent.mkdir();policy.write_text('{}')
+    state.update(native_phase6_policy=policy,native_phase6_generation=tuple(map(str,native_file_generation(policy))))
+    config=state['native_chimew_configuration'];original=config.read_bytes();data=json.loads(original)
+    if damage=='configuration-generation':config.write_bytes(original+b' ')
+    elif damage=='architecture-generation':case[2].write_bytes(case[2].read_bytes()+b' ')
+    elif damage=='escaped-owner':
+        changed=tmp_path/'escaped.json';changed.write_bytes(original);state['native_chimew_configuration']=changed
+        state['native_chimew_configuration_generation']=tuple(map(str,native_file_generation(changed)))
+    else:
+        if damage=='source-generation':data['sources'][0]['generation'][2]+=1
+        elif damage=='unknown-source':data['sources'][0]['role']='unowned'
+        else:
+            row=next(r for r in data['sources'] if r['role']=='board');other=tmp_path/'other-board.json';other.write_bytes(Path(row['path']).read_bytes())
+            row.update(path=str(other),generation=list(native_file_generation(other)))
+        config.write_text(json.dumps(data));state['native_chimew_configuration_generation']=tuple(map(str,native_file_generation(config)))
+    value.update(stage='tdm',state=_pack(state));previous.write_text(json.dumps(value))
+    receipt=tmp_path/'receipt.json'
+    result=subprocess.run([str(emuflow_native()),'--report',str(receipt),'phase6','compile-chimew',str(previous),str(root)],capture_output=True,text=True)
+    assert result.returncode, result.stdout
+    operation=json.loads(receipt.read_text());assert operation['stage']=='phase6.compile-chimew' and operation['status']=='fail'
+    assert not (root/'split').exists() and not (root/'phase6-comparison').exists()
+    assert not list(root.glob('.chimew-compile-*'))
+    # Error receipts may never replace original sources even when admission
+    # itself is rejected. Include symlink aliases of the source as well.
+    if damage=='configuration-generation':
+        targets=[previous,config,case[2]]+[Path(row['path']) for row in data['sources']]
+        for target in targets:
+            before=target.read_bytes()
+            for receipt_target in (target,tmp_path/'receipt-alias'):
+                if receipt_target!=target:
+                    receipt_target.unlink(missing_ok=True);receipt_target.symlink_to(target)
+                rejected=subprocess.run([str(emuflow_native()),'--report',str(receipt_target),'phase6','compile-chimew',str(previous),str(root)],capture_output=True,text=True)
+                assert rejected.returncode and 'aliases' in rejected.stderr
+                assert target.read_bytes()==before
+        assert not (root/'phase6-comparison').exists()
+
+
+
+def test_retired_stage_adapter_and_python_chimew_bodies_are_absent():
+    from importlib.util import find_spec
+    from emuflow.flow import multi_fpga_flow as flow
+    assert find_spec('emuflow.flow.native_compile_adapter') is None
+    for name in ('_CompileContext','_compile_chimew_admission','_compile_split','_compile_physical','_run_selected_physical'):
+        assert not hasattr(flow,name)
+
+
+@pytest.mark.parametrize("fixed_case",[2,4],indirect=True)
+def test_native_chimew_rejects_empty_schedule_before_building_either_arm(case,tmp_path,request):
+    from tests.chimew_admission_fixture import admitted
+    from tests.native_build import emuflow_native
+    from tests.schedule_store_fixture import write_tdm_schedule_storage
+    import shutil,subprocess
+    _source,previous=admitted(case,tmp_path/'admission',request.node.callspec.params['case'])
+    value=json.loads(previous.read_text());state=_unpack(value['state']);root=state['output_dir']
+    state.update(phase3_root=root/'partition',phase4_root=root/'system-route',phase5_root=root/'tdm',ir_path=root/'frontend/phase1/design.emuir.sqlite',path_database_path=root/'timing/path-database.json')
+    for key in ('phase3_root','phase4_root','phase5_root'):
+        state[key].mkdir(parents=True,exist_ok=True)
+    state['ir_path'].parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(case[1],state['ir_path'])
+    # A current empty assignment/schedule pair is rejected before any split or
+    # physical engine. Timing/policy bodies remain unconsumed at this boundary.
+    from tests.phase3_store_fixture import write_assignment_index_fixture
+    from emuflow.ir.ir import EmuIR
+    ir=EmuIR.load(state['ir_path'])
+    write_assignment_index_fixture(root/'partition/assignment.sqlite',ir,{
+        'design':ir.value['design']['name'],'platform':case[0].name,'constraints':{},
+        'instance_assignment':{row['id']:'fpga0' for row in ir.value['instances']},
+        'cut_nets':[],'partitions':[{'fpga':fpga.id} for fpga in case[0].fpgas]})
+    (root/'system-route/routes.json').write_bytes(case[5].read_bytes())
+    state['path_database_path'].parent.mkdir(parents=True,exist_ok=True);state['path_database_path'].write_text('unconsumed timing')
+    policy=root/'.native-phase6-request/phase6-policy.json';policy.parent.mkdir();policy.write_text('unconsumed policy')
+    state.update(native_phase6_policy=policy,native_phase6_generation=tuple(map(str,native_file_generation(policy))))
+    write_tdm_schedule_storage(root/'tdm/schedule.json',{'schema':'emuflow.tdm-schedule/v1','design':'empty','platform':case[0].name,'metrics':{'frame_slots':8},'routes':[],'entries':[],'domain_schedules':[],'demand_completions':[],'bank_allocations':[]})
+    value.update(stage='tdm',state=_pack(state));previous.write_text(json.dumps(value))
+    result=subprocess.run([str(emuflow_native()),'phase6','compile-chimew',str(previous),str(root)],capture_output=True,text=True)
+    assert result.returncode and 'at least one scheduled inter-FPGA signal' in result.stderr
+    assert not (root/'split').exists() and not (root/'phase6-comparison').exists()
+    assert not list(root.glob('.chimew-compile-*'))

@@ -86,18 +86,15 @@ SQLite TEMP relation. It is neither a new handoff owner nor a checkpoint. Signed
 zero and double precision survive sorting. No report claims global physical timing
 from these pre-placement statistics.
 
-Phase 6 exposes baseline transport and optional Chimew. The Chimew adapter
-shares the typed pin-plan, electrical-binding and transport contracts; shared
-validators and fixed wiring constraints remain authoritative. Retired
-placement-aware planner providers cannot enter either split producer. The
-baseline/Chimew comparison preserves complete physical/global timing gates.
-Native control supports that same comparison sequence. Its private handoff carries the bounded, immutable package
-pin catalog with its original architectural source generation and SHA; no
-circuit locations are encoded in that catalog. It restores baseline report
-aliases from the single comparison owner and rejects duplicate owners.
-Its prepass and candidate share the selected Xilinx backend, tools, seed and
-workers. Physical endpoint facts are queried from the existing typed owners;
-the old VTR/virtual-package lookahead and implicit `auto` dispatch are retired.
+Phase 6 exposes baseline transport and optional Chimew. Both consume the same
+source-qualified schedule, fixed wiring and electrical contracts. The native
+Chimew controller executes the full baseline split, physical implementation and
+Global STA pass, then prepares placed lookahead, independently qualifies grouping
+and bank/channel assignment, publishes the typed pin pipeline and builds the
+candidate split. The common native physical controller implements the candidate
+with the same backend policy, tools, seed and workers. Native signoff compares
+both complete arms against the frozen upstream identities. No Python stage
+adapter carries state or selects execution order.
 
 One owner supplies each large population; reports summarize it rather than
 embedding duplicate netlists, maps, or timing-path trees.
@@ -127,32 +124,26 @@ one complete directory. It never calls the Python path extraction coordinator.
 Explicit prepared boundaries reuse their sealed indexed inputs; a missing native
 policy for new timing extraction is an error.
 
-Chimew and physical implementation still have explicit stage adapters. The
-nonphysical baseline Phase 7C owner is native: it builds the runtime contract
-from ScheduleStore, publishes bounded QoR and controller artifacts, and hands a
-generation-bound report to native finalization. Baseline physical Phase 7C also
-executes coverage auditing, Global OpenSTA and typed QoR publication in the core.
-Both Chimew comparison arms use this same native signoff transaction. The core
-reconstructs the comparison from both published arms, validates physical evidence
-and frozen-input identities, and publishes physical/system timing deltas. The
-Python signoff stage and comparison assembly are retired. Final report assembly is native and no
-longer has a Python stage adapter. A baseline run that does not request physical
-implementation also advances the physical boundary in process; it no longer
-starts a no-op Python adapter.
-Configuration preparation and detailed stage ownership are distinct: bounded
-Python configuration is not a circuit data plane, and isolated execution alone
-does not complete migration. The compiler continues to report
-`native_data_plane_complete=false` until those remaining owners and terminal
-qualification are complete. See [native compile control](USER_GUIDE.md#native-compile-control)
-and the [migration contract](PHASE3_NATIVE_MIGRATION.md).
+The core owns both maintained physical backends, including multi-FPGA execution,
+complete physical coverage, Global OpenSTA, typed QoR, Chimew comparison and final
+report publication. Configuration and explicit prepared-input admission are also
+native. The Python compiler stage adapter and its Chimew stage bodies are
+retired. The optional Python entry encodes bounded options and reads final
+summaries. OpenPARF retains its required Python/PyTorch solver host; bounded
+small-design behavioral oracles remain independent qualification checks.
 
-The remaining production boundaries are defined by execution responsibility,
-not language line counts or the presence of typed storage:
+Implementation and terminal qualification remain separate. The compiler retains
+`native_data_plane_complete=false` while whole-controller acceptance and current
+NVDLA physical/global timing qualification remain incomplete. Component tests or
+NVDLA admission/package checks do not establish full terminal qualification.
+
+Production ownership is defined by execution responsibility, not language line
+counts or the presence of typed storage:
 
 | Boundary | Native responsibility | Remaining Python responsibility |
 | --- | --- | --- |
-| Phase 1–6 baseline | Complete frontend, pre-placement timing, partition, route, schedule and split stage owners | Bounded configuration, tool discovery, reports and explicit prepared-input control |
-| Phase 6 Chimew | Grouping/refinement/RUDY kernels and indexed baseline split | Lookahead and pin-planning orchestration, independent grouping/bank qualification and adapter generation |
+| Phase 1–6 baseline | Configuration/prepared-input admission and complete frontend, timing, partition, route, schedule and split stage owners | Optional bounded request and summary API |
+| Phase 6 Chimew | Full baseline/candidate orchestration, geometry/signals/lookahead, kernel reports, independent qualification, typed pin publication and pinned split | Optional bounded request hosts and typed readers |
 | Transport synthesis | Generic Yosys process supervision, flat streamed import, writer-owned fanout trees, independent electrical audits and whole-stage publication | Bounded tool and artifact locators |
 | Fixed differential I/O handoff | Original schedule/pin-plan joins, complete hop and wire coverage, lane/binding selector seals, P/N and logical-bus validation, exact XDC/adapter checks and atomic whole-board contract publication | Board inventory configuration and bounded file locators |
 | Mapped physical inputs | Mapped indexes and signatures, atomic/macro facts, geometry, Bookshelf inputs, full-device capacity admission, placement lowering and Vivado runtime/fixed-I/O input generation | Bounded tool discovery |
@@ -166,11 +157,11 @@ Indexed atoms and ordinal safe names already avoid complete in-memory lists or
 name dictionaries. Local-path evidence already has a typed owner. These are not
 outstanding format migrations. Both physical timing query producers now publish
 through shared native stage owners; their replaced Python production loops are
-retired. Physical signoff control and comparison publication are native; the
-multi-FPGA implementation controller and Chimew split/lookahead orchestration still
-require closure and retirement of their production adapters, alongside the
-remaining configuration/prepared-input adapters. Chimew remains a maintained optional path with its own
-ownership and qualification requirement.
+retired. Physical implementation, signoff, comparison and configuration/prepared-input
+control have native owners. Their replaced Python production stage bodies and
+entrypoints are retired. Chimew remains a maintained optional path whose complete
+controller and NVDLA terminal qualification must be verified independently of
+component acceptance.
 
 ## Native route publication
 
@@ -310,17 +301,17 @@ The host retains bounded identity checks and the separate exact-binary gate.
 
 | Artifact family | Producer owner | Maintained consumers |
 | --- | --- | --- |
-| Compact EmuIR v2; explicit indexed v1 reads | Yosys/EmuIR import and private-generation finalizers | Native EmuIR view, partitioning, timing, splitting and physical lowering |
+| Compact EmuIR v2 | Native Yosys/EmuIR import and private-generation publication | Native EmuIR view, partitioning, timing, splitting and physical lowering |
 | Primary cluster columns v2, candidate IDs and final cluster catalog | Shared native cluster/candidate/catalog operations | PATRON, assignment and semantic publication |
-| Assignment v4; explicit v3 reads | Native assignment producer and indexed publisher | Routing, scheduling, split and transport |
-| Timing paths and net weights | OpenSTA import/weight adapters | Partitioning, routing and global timing |
+| Assignment v4 | Native assignment producer and indexed publisher | Routing, scheduling, split and transport |
+| Timing paths and net weights | Native OpenSTA import and weight owners | Partitioning, routing and global timing |
 | RouteStore v3 and ScheduleStore v4 | Native route/seal and exact scheduling operations | Schedule generation, split, transport and global event binding |
-| Split v2 and transport v1 | Phase 6 split/transport adapters | Physical lowering and boundary/event identity |
-| Pin plans, position hints, electrical binding, Chimew bank input/report | Retained Phase 6 adapters and their shared selector commit | Transport/runtime generation and independent electrical/Chimew validators |
-| Placement EmuIR and mapped index | Lowering and Xilinx mapping adapters | OpenPARF, Vivado, physical ownership checks and timing export |
-| Atomic source, name map, site geometry, certificate and physical handoff | OpenPARF adapters/bridge and shared ownership helpers | OpenPARF host, native RWRoute export and Java implementation |
+| Split v3 and transport v2 | Complete native Phase 6 producer | Physical lowering and boundary/event identity |
+| Pin plans, position hints, electrical binding, Chimew bank input/report | Native lookahead/pipeline, independent auditors and shared publication | Transport/runtime generation and independent electrical/Chimew validators |
+| Placement EmuIR and mapped index | Native lowering and Xilinx mapping owners | OpenPARF, Vivado, physical ownership checks and timing export |
+| Atomic source, name map, site geometry, certificate and physical handoff | Native OpenPARF input/bridge and shared ownership producers | OpenPARF host, native RWRoute export and Java implementation |
 | Vivado source functions and lineage | Indexed exporter and shared lineage import | Vivado implementation, physical timing and source coverage validation |
-| Boundary identity/timing, logic-segment identity/timing, local-path timing | Physical measurement/query adapters | Global STA and terminal physical/timing checks |
+| Boundary identity/timing, logic-segment identity/timing, local-path timing | Native physical measurement/query owners | Global STA and terminal physical/timing checks |
 | QoR report | Typed report writer | Report consumers and terminal evidence validation |
 
 Private router results, atom indexes and Vivado local-query indexes are scoped

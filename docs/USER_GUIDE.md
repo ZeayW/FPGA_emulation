@@ -99,9 +99,9 @@ emuflow run examples/rtl/counter.v --top counter --clock clk=10 \
   --out runs/counter-chimew
 ```
 
-Chimew requires a platform and physical architecture with package-pin geometry.
-The same physical backend, platform, clocks, and upstream inputs must be used
-when comparing it with the baseline provider.
+Chimew requires inter-FPGA traffic and a physical architecture with package-pin
+geometry. Its run includes a baseline physical/timing pass followed by the
+candidate, using the same backend, platform, clocks and upstream inputs.
 
 ## Continue from completed indexed inputs
 

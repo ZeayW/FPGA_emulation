@@ -1,38 +1,12 @@
-"""Transitional phase adapters for the native one-shot compiler.
-
-The C++ controller selects and executes the phase order. This module executes
-one shared phase body, never the Python compiler, and transports only bounded
-configuration/report state. Circuit populations remain in phase-owned stores.
-"""
-from __future__ import annotations
-
-import argparse
-import json
-import math
+"""Test-only bounded state oracle and readers for native controller fixtures."""
 from pathlib import Path
-import signal
-import sys
-
+import json, math
 from emuflow.common.errors import EmuFlowError
-from emuflow.common.io import write_json
 from emuflow.common.native_tools import native_file_generation
-
-
-STAGES = ("preflight", "frontend", "timing-policy", "timing", "partition-policy", "partition", "route-policy", "route",
-          "tdm", "split", "physical", "signoff", "finalize")
-_LIMIT = 8 * 1024 * 1024
-
-
-class _Cancelled(BaseException):
-    pass
-
-
-def _cancel(signum, _frame):
-    # Unwind stream-consumer/tool contexts before exiting. The native parent
-    # gives this cleanup time before escalation; nested supervisors then reap
-    # their separately grouped Yosys/OpenSTA children as well.
-    raise _Cancelled(f"native compile adapter cancelled by signal {signum}")
-
+_LIMIT=8*1024*1024
+STAGES=("preflight","frontend","timing-policy","timing","partition-policy","partition","route-policy","route","tdm","split","physical","signoff","finalize")
+class CompileContext:
+ def __init__(self,values):self.__dict__.update(values)
 
 def _pack(value, depth=0):
     if depth > 64:
@@ -52,6 +26,7 @@ def _pack(value, depth=0):
     if type(value) is float and math.isfinite(value):
         return value
     raise EmuFlowError(f"unsupported object in native compiler control state: {type(value).__name__}")
+
 
 
 def _unpack(value, depth=0):
@@ -179,20 +154,8 @@ def _unpack(value, depth=0):
     raise EmuFlowError("invalid native compiler control scalar")
 
 
-def _read(path):
-    if path.stat().st_size > _LIMIT:
-        raise EmuFlowError("native compiler control file exceeds bound")
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _plain(value):
-    if isinstance(value, Path):
-        return str(value)
-    if type(value) is dict:
-        return {key: _plain(item) for key, item in value.items()}
-    if type(value) in {tuple, list}:
-        return [_plain(item) for item in value]
-    return value
 
 
 def _control_snapshot(ctx, stage, flow):
@@ -224,101 +187,3 @@ def _control_snapshot(ctx, stage, flow):
     if state.get("physical_report") is not None:
         state["physical_report"] = flow._physical_report_summary(state["physical_report"])
     return state
-
-
-def _restore_control_state(state):
-    if type(state) is not dict:
-        raise EmuFlowError("invalid native compiler context")
-    catalog = state.get("chimew_package_geometry")
-    if catalog is not None:
-        from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
-
-        state["chimew_package_geometry"] = XilinxPackageGeometry.from_control_snapshot(
-            catalog
-        )
-    comparison = state.get("phase6_comparison")
-    if comparison is not None:
-        if (
-            type(comparison) is not dict
-            or type(comparison.get("baseline")) is not dict
-            or not all(
-                type(comparison["baseline"].get(key)) is dict
-                for key in ("physical", "runtime")
-            )
-        ):
-            raise EmuFlowError("invalid native Chimew baseline reports")
-        for field, key in (
-            ("baseline_physical_report", "physical"),
-            ("baseline_runtime_report", "runtime"),
-        ):
-            if field in state:
-                raise EmuFlowError("duplicate native Chimew baseline report owner")
-            state[field] = comparison["baseline"][key]
-    return state
-
-
-def execute(stage, request_path, previous_path, output_path, run_id):
-    if stage in {"preflight", "frontend", "timing-policy", "timing", "partition-policy", "route-policy"}:
-        raise EmuFlowError("native compiler frontend, timing, partition and routing preparation/execution are owned by C++ stages")
-    if stage == "signoff":
-        raise EmuFlowError("native compiler signoff is owned by the C++ Phase 7C stage")
-    if stage == "finalize":
-        raise EmuFlowError("native compiler finalize is owned by the C++ controller")
-    if stage == "route":
-        raise EmuFlowError("native compiler route is owned by the C++ Phase 4 stage")
-    if stage == "tdm":
-        raise EmuFlowError("native compiler TDM is owned by the C++ Phase 5 stage")
-    if stage == "partition":
-        raise EmuFlowError("native compiler partition is owned by the C++ Phase 3 stage")
-    from emuflow.flow import multi_fpga_flow as flow
-
-    index = STAGES.index(stage) if stage != "chimew-admission" else 1
-    request = _read(request_path)
-    generation = [str(value) for value in native_file_generation(request_path)]
-    previous = _read(previous_path)
-    if (previous.get("schema") != "emuflow.native-compile-state/v1" or
-            previous.get("run_id") != run_id or previous.get("status") != "pass" or
-            previous.get("stage") != STAGES[index - 1] or
-            previous.get("request_generation") != generation):
-        raise EmuFlowError("mixed or out-of-order native compiler state")
-    ctx = flow._CompileContext(
-        _restore_control_state(_unpack(previous["state"]))
-    )
-    function = getattr(flow, "_compile_" + {"tdm": "schedule"}.get(stage, stage.replace("-", "_")))
-    if stage=="split" and ctx.phase6_provider=="baseline":
-        raise EmuFlowError('native compiler baseline Phase 6 is owned by the C++ stage')
-    if stage=="physical" and ctx.phase6_provider=="baseline":
-        raise EmuFlowError('native compiler physical boundary is owned by the C++ controller')
-    function(ctx)
-    value = {"schema": "emuflow.native-compile-state/v1", "run_id": run_id,
-             "stage": "preflight" if stage == "chimew-admission" else stage, "status": "pass", "request_generation": generation,
-             "state": _pack(_control_snapshot(ctx, stage, flow))}
-    if stage == "chimew-admission":
-        value["effective_options"] = previous["effective_options"]
-    if len(json.dumps(value, separators=(",", ":"), allow_nan=False).encode()) > _LIMIT:
-        raise EmuFlowError("native compiler control state exceeds bound")
-    write_json(output_path, value, compact=True)
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=["chimew-admission", "split", "physical"], required=True)
-    parser.add_argument("--request", type=Path, required=True)
-    parser.add_argument("--previous", type=Path)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--run-id", required=True)
-    args = parser.parse_args(argv)
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(sig, _cancel)
-    try:
-        execute(args.stage, args.request, args.previous, args.output, args.run_id)
-    except BaseException as error:
-        # No partially populated state is reusable. The parent retains a
-        # bounded failure message and does not advance or retry a phase.
-        print(f"native compile {args.stage}: {type(error).__name__}: {str(error)[:16384]}", file=sys.stderr)
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

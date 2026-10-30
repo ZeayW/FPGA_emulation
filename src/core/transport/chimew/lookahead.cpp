@@ -137,6 +137,7 @@ public:
   std::map<std::pair<std::string, std::string>, std::array<I, 2>> pins;
   std::map<std::string, int> fpga_order;
   std::vector<std::string> fpga_ids, links;
+  std::set<std::string> electrical_fpgas;
   std::map<std::string, std::array<std::string, 2>> endpoints;
   std::map<std::string, std::pair<int, int>> bank_width;
   std::map<std::pair<std::string, int>, std::string> wires;
@@ -649,6 +650,8 @@ public:
                {g.second},
                {g.first}});
         for (const auto &partition : partitions) {
+          electrical_fpgas.insert(a);
+          electrical_fpgas.insert(b);
           domains.push_back(D::Encode({{"id", JsonQuote(partition.id)},
                                        {"fpga_a", JsonQuote(a)},
                                        {"fpga_b", JsonQuote(b)}}));
@@ -1160,6 +1163,8 @@ public:
     D vb(virtual_board), wiring_source(vb.Token("source"));
     std::vector<std::string> boxes;
     for (const auto &fpga : fpga_ids) {
+      if (!electrical_fpgas.count(fpga))
+        continue;
       auto box = bounds.at(fpga);
       boxes.push_back(
           D::Encode({{"fpga", JsonQuote(fpga)},

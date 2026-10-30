@@ -118,10 +118,8 @@ def test_existing_generation_is_never_overwritten(tmp_path):
 
 
 def test_native_route_adapter_is_not_a_second_production_entry(tmp_path):
-    from emuflow.common.errors import EmuFlowError
-    from emuflow.flow.native_compile_adapter import execute
-    with pytest.raises(EmuFlowError, match='C[+][+] Phase 4'):
-        execute('route', tmp_path/'missing', None, tmp_path/'output', 'run')
+    from importlib.util import find_spec
+    assert find_spec("emuflow.flow.native_compile_adapter") is None
 
 
 @pytest.mark.parametrize('payload', [None, {}, {'schema': 'emuflow.partition-assignment/v1'}])

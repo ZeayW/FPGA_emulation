@@ -194,13 +194,15 @@ def test_detached_stdout_writer_is_rejected_without_hanging_the_owner(native,tmp
 
 
 def test_raw_rtl_control_rejects_a_missing_native_request_instead_of_starting_python(native,tmp_path):
-    from tests.chimew_admission_fixture import install
+    from tests.native_controller_fault_fixture import install
     compile_request=raw_compile_request(tmp_path)
-    install(compile_request,"del ctx.native_frontend_request\ndel ctx.native_frontend_generation")
-    result=subprocess.run([native,'compile',str(compile_request)],capture_output=True,text=True,timeout=30)
-    assert result.returncode!=0 and 'native frontend request is missing; Python fallback is forbidden' in result.stderr,result.stderr
+    command=install(compile_request,"ctx.native_frontend_request.unlink()")
+    result=subprocess.run(command,capture_output=True,text=True,timeout=30)
+    assert result.returncode!=0 and 'native compile frontend' in result.stderr,result.stderr
+    assert 'missing-artifact' in result.stderr and 'cannot open native input' in result.stderr,result.stderr
+    assert 'native-frontend-request.bin' in result.stderr,result.stderr
     report=json.loads((tmp_path/'native/native-compile-result.json').read_text())
-    assert [row['stage'] for row in report['stages']]==['preflight']
+    assert [row['stage'] for row in report['stages']]==['preflight','frontend']
     assert not (tmp_path/'native/frontend/phase1').exists()
     assert not list(tmp_path.glob('.emuflow-compile-*'))
 

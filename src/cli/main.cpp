@@ -16,8 +16,10 @@
 #include "transport/chimew/bank_store.hpp"
 #include "transport/chimew/qualification.hpp"
 #include "transport/chimew/pin_artifacts.hpp"
+#include "transport/chimew/pipeline.hpp"
 #include "board/wiring.hpp"
 #include "flow/preflight.hpp"
+#include "flow/chimew.hpp"
 #include "physical/placement_lowering.hpp"
 #include <iostream>
 #include <string>
@@ -108,6 +110,8 @@ constexpr const char* kUsage =
     "  phase6 assign-bank-store SELECTOR REPORT\n"
     "  phase6 copy-bank-report SELECTOR REPORT\n"
     "  phase6 audit-bank-assignment INPUT_SELECTOR REPORT_SELECTOR SUMMARY\n"
+    "  phase6 run-chimew-pipeline REQUEST OUTPUT_DIR\n"
+    "  phase6 audit-chimew-pipeline REQUEST DIRECTORY SUMMARY\n"
     "  phase6 build-chimew-kernel-reports REQUEST OUTPUT_DIR\n"
     "  phase6 qualify-chimew-chain REQUEST CERTIFICATE\n"
     "  phase6 build-pin-artifacts REQUEST OUTPUT_DIR\n"
@@ -118,6 +122,7 @@ constexpr const char* kUsage =
     "  phase6 prepare-chimew-signals REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-geometry REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-package ARCHITECTURE PART OUTPUT\n"
+    "  phase6 compile-chimew STATE FLOW_DIRECTORY\n"
     "  phase6 compile EMUIR ASSIGNMENT SCHEDULE_SELECTOR BOARD POLICY OUTPUT_DIR\n"
     "  phase6 build-transport ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR [PIN_PLAN]\n"
     "  phase6 audit-transport STORE SUMMARY\n"
@@ -233,6 +238,29 @@ bool SamePath(const std::string& a, const std::string& b) {
   return std::filesystem::equivalent(a,b,error) ||
       std::filesystem::weakly_canonical(a) == std::filesystem::weakly_canonical(b);
 }
+void CheckCompileStateReceipt(const std::string& report,const std::string& state,const std::string& output) {
+  if(report.empty())return;
+  using namespace emuflow::core;namespace fs=std::filesystem;
+  const auto relative=fs::weakly_canonical(report).lexically_relative(fs::weakly_canonical(output));
+  if(SamePath(report,state) || relative.empty() || (!relative.empty() && *relative.begin()!=".."))
+    throw StageError(ErrorCode::kInvalidRequest,"native report aliases a Chimew compile owner");
+  const auto scan=[&](const std::string& path){
+    const auto ref=ArtifactRef::Bind(path,"physical-input-document-v1");
+    BoundedJson doc(BoundedJson::Read(ref));SqliteDatabase db(":memory:",SqliteDatabase::Mode::kReadOnly);
+    auto fields=db.Prepare("SELECT atom FROM json_tree(?) WHERE type='text'");fields.BindText(1,doc.text());
+    while(fields.Step())if(fs::path(fields.Text(0)).is_absolute() && SamePath(report,fields.Text(0)))
+      throw StageError(ErrorCode::kInvalidRequest,"native report aliases a Chimew compile source");
+    return doc.text();
+  };
+  const auto text=scan(state);SqliteDatabase db(":memory:",SqliteDatabase::Mode::kReadOnly);
+  for(const auto* name:{"native_chimew_configuration","native_physical_policy","native_phase6_policy"}){
+    auto path=db.Prepare("SELECT json_extract(?1,?2)");path.BindText(1,text);path.BindText(2,std::string("$.state[1].")+name+"[1]");
+    if(path.Step()&&!path.IsNull(0)){
+      if(SamePath(report,path.Text(0)))throw StageError(ErrorCode::kInvalidRequest,"native report aliases a Chimew configuration");
+      scan(path.TypedText(0));
+    }
+  }
+}
 void CheckPinReceipt(const std::string& report,const std::string& source,const std::string& output,bool request) {
   if(report.empty())return;
   if(SamePath(report,source)||SamePath(report,output))
@@ -240,20 +268,24 @@ void CheckPinReceipt(const std::string& report,const std::string& source,const s
   using D=emuflow::core::BoundedJson;
   auto input=emuflow::core::ArtifactRef::Bind(source,"physical-input-document-v1");
   D doc(D::Read(input));
-  std::vector<std::pair<std::string,std::string>> paths;
+  struct ReceiptSource {std::string path,schema;bool opaque;};
+  std::vector<ReceiptSource> paths;
   if(request) {
     for(const auto& pair:D(doc.Token("sources")).Fields()) {
-      D row(pair.second);paths.emplace_back(row.Text("path"),row.Text("schema"));
+      D row(pair.second);paths.push_back({row.Text("path"),row.Text("schema"),pair.first.rfind("source_",0)==0});
     }
-  } else paths.emplace_back(source,"physical-input-document-v1");
+  } else paths.push_back({source,"physical-input-document-v1",false});
   for(const auto& item:paths) {
-    const auto& path=item.first;
+    const auto& path=item.path;
     if(SamePath(report,path))
       throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a pin input");
+    if(item.opaque)continue;
     auto ref=emuflow::core::ArtifactRef::Bind(path,"physical-input-document-v1");
-    if(item.second=="fixed-wiring-csv-v1"||ref.generation().bytes>8*1024*1024)continue;
+    if(item.schema=="fixed-wiring-csv-v1"||ref.generation().bytes>8*1024*1024)continue;
     std::string member;
-    emuflow::core::VisitJsonObjectTokens(D::Read(ref),[&](const auto& key,const auto& token){if(key=="artifact")member=emuflow::core::DecodeJsonString(token);});
+    const auto text=D::Read(ref);const auto first=text.find_first_not_of(" \t\r\n");
+    if(first==std::string::npos||text[first]!='{')continue;
+    emuflow::core::VisitJsonObjectTokens(text,[&](const auto& key,const auto& token){if(key=="artifact")member=emuflow::core::DecodeJsonString(token);});
     if(!member.empty()&&std::filesystem::path(member).filename()==member&&SamePath(report,(std::filesystem::path(path).parent_path()/member).string()))
       throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a pin payload");
   }
@@ -444,6 +476,21 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     const auto input=emuflow::core::ArtifactRef::Bind(argv[3],schema);
     return Finish(command=="build-pin-artifacts"?emuflow::core::BuildChimewPinArtifacts(input,argv[4],&tool_cancelled):command=="validate-pin-artifacts"?emuflow::core::ValidateChimewPinArtifacts(input,argv[4],&tool_cancelled):emuflow::core::AuditChimewElectricalMap(input,argv[4],&tool_cancelled),report);
   }
+  if((argc==5 || argc==6) && std::string(argv[1])=="phase6" && (std::string(argv[2])=="run-chimew-pipeline" || std::string(argv[2])=="audit-chimew-pipeline")) {
+    ToolSignals signals;const bool build=std::string(argv[2])=="run-chimew-pipeline";
+    if(argc!=(build?5:6))throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"invalid Chimew pipeline arguments");
+    if(!build&&!report.empty()&&SamePath(report,argv[5]))throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"pipeline receipt aliases its audit summary");
+    CheckPinReceipt(report,argv[3],argv[4],true);
+    for(const auto& path:std::vector<std::string>{report,build?std::string():std::string(argv[5])})if(!path.empty()){
+      const auto root=std::filesystem::path(argv[4]);
+      if(SamePath(path,(root.parent_path()/("."+root.filename().string()+".pipeline.lock")).string()))throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"pipeline receipt aliases the publication lock");
+      const auto relative=std::filesystem::weakly_canonical(path).lexically_relative(std::filesystem::weakly_canonical(argv[4]));
+      if(!relative.empty()&&*relative.begin()!="..")throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"pipeline receipt overlaps the committed output namespace");
+      CheckPinReceipt(path,argv[3],argv[4],true);
+    }
+    const auto request=emuflow::core::ArtifactRef::Bind(argv[3],build?"chimew-pipeline-input-v1":"chimew-pipeline-validation-input-v1");
+    return Finish(build?emuflow::core::RunChimewPipeline(request,argv[4],&tool_cancelled):emuflow::core::AuditChimewPipeline(request,argv[4],argv[5],&tool_cancelled),report);
+  }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="build-chimew-kernel-reports") {
     ToolSignals signals;
     CheckPinReceipt(report,argv[3],argv[4],true);
@@ -477,6 +524,11 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(argc==6 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-chimew-package") {
     ToolSignals signals;return Finish(emuflow::core::PrepareChimewPackageGeometry(emuflow::core::ArtifactRef::Bind(argv[3],"physical-input-document-v1"),argv[4],argv[5],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="compile-chimew") {
+    ToolSignals signals;
+    CheckCompileStateReceipt(report,argv[3],argv[4]);
+    return Finish(emuflow::core::CompileChimewPhase6(emuflow::core::ArtifactRef::Bind(argv[3],"native-compile-state-v1"),argv[4],&tool_cancelled),report);
   }
   if(argc==9 && std::string(argv[1])=="phase6" && std::string(argv[2])=="compile") {
     ToolSignals signals;

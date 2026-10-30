@@ -227,36 +227,38 @@ def test_timing_guard_has_one_owner_without_cloning_the_hop_store(case, tmp_path
             refine_chimew_groups(schedule_view,crossing,initial,positions)
 
 
-def test_prepass_and_final_share_the_selected_backend_options(tmp_path):
-    import inspect
-    from types import SimpleNamespace
-    import emuflow.flow.multi_fpga_flow as flow
-    defaults={k:p.default for k,p in inspect.signature(flow.run_multi_fpga_flow).parameters.items()
-              if p.default is not inspect.Parameter.empty}
-    for backend in ('vivado','rapidwright'):
-        ctx=SimpleNamespace(**defaults)
-        ctx.physical_backend=backend
-        ctx.effective_physical_architecture=tmp_path/'architecture.json'
-        ctx.ir_path=tmp_path/'source.sqlite';ctx.assignment_path=tmp_path/'assignment.json'
-        ctx.routes_path=tmp_path/'routes.json';ctx.path_database_path=tmp_path/'paths.json'
-        ctx.physical_seed=1;ctx.physical_workers=4
-        ctx.measured=lambda stage,fn,*args,**kwargs:fn(*args,**kwargs)
-        with patch.object(flow,'run_multi_fpga_physical_flow') as run:
-            flow._run_selected_physical(ctx,tmp_path/'baseline',tmp_path/'schedule',tmp_path/'physical0')
-            flow._run_selected_physical(ctx,tmp_path/'candidate',tmp_path/'schedule',tmp_path/'physical1')
-        before,after=run.call_args_list
-        assert before.kwargs == after.kwargs
-        assert before.kwargs['backend']==backend
-        assert before.kwargs['seed']==1 and before.kwargs['workers']==4
+@pytest.mark.parametrize('backend',['vivado','rapidwright'])
+def test_prepass_and_final_share_the_selected_backend_options(tmp_path,backend):
+    from tests.test_compile_preflight_native import request_options,run
+    from emuflow.flow.native_compile import _request
+    from tests.native_compile_state_fixture import _unpack
+    from tests.native_build import native_pipeline_api_test
+    import subprocess
+    options=request_options(tmp_path,backend);options.update(physical_seed=1,physical_workers=4)
+    value,_=_request((),options);result,state,operation=run(tmp_path,value)
+    assert result.returncode==0,operation
+    policy=_unpack(json.loads(state.read_text())['state'])['native_physical_policy']
+    before=policy.read_bytes();generated=[]
+    for arm in ('baseline','candidate'):
+        manifest=tmp_path/(arm+'-split.json');manifest.write_text('{}')
+        output=tmp_path/(arm+'-request.json')
+        result=subprocess.run([str(native_pipeline_api_test()),'physical-compile-request',str(policy),str(manifest),str(output)],capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
+        request=json.loads(output.read_text());generated.append(request)
+        assert request['backend']==backend and request['seed']==1 and request['workers']==4
+    for field in ('backend','backend_options','workers','seed'):
+        assert generated[0][field]==generated[1][field]
+    assert [row for row in generated[0]['sources'] if row['role']!='split-manifest']==[row for row in generated[1]['sources'] if row['role']!='split-manifest']
+    assert policy.read_bytes()==before
 
 
 def test_chimew_preflight_accepts_both_xilinx_backends_before_frontend(case,tmp_path,request):
     from tests.chimew_admission_fixture import admitted
-    from emuflow.flow.native_compile_adapter import _unpack
+    from tests.native_compile_state_fixture import _unpack
     backend=request.node.callspec.params['case']
     _request,state=admitted(case,tmp_path/'preflight',backend)
     value=_unpack(json.loads(state.read_text())['state'])
-    assert value['chimew_package_geometry']['part']==case[0].fpgas[0].part
+    assert json.loads(value['native_chimew_configuration'].read_text())['package_geometry']['part']==case[0].fpgas[0].part
     assert value['physical_backend']==backend
     assert not (tmp_path/'preflight/native/frontend/phase1').exists()
 

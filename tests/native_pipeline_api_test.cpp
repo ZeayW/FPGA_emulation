@@ -1,4 +1,8 @@
 #include "flow/native_pipeline.hpp"
+#include "flow/compile.hpp"
+#include "physical/flow/controller.hpp"
+#include "transport/transport.hpp"
+#include <csignal>
 #include "common/artifact_io.hpp"
 #include "ir/emuir_view.hpp"
 #include "common/tool_runtime.hpp"
@@ -16,7 +20,24 @@
 #include <fstream>
 #include <stdexcept>
 
+namespace { volatile std::sig_atomic_t cancelled=0;void Cancel(int){cancelled=1;} }
 int main(int argc,char** argv) {
+  if(argc==5 && std::string(argv[1])=="physical-compile-request") {
+    using namespace emuflow::core;
+    try{PreparePhysicalFlowCompileRequest(ArtifactRef::Bind(argv[2],"physical-flow-policy-v1"),{{"split-manifest",ArtifactRef::Bind(argv[3],"physical-input-document-v1")}},argv[4]);return 0;}
+    catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+  }
+  if(argc==4 && std::string(argv[1])=="compile-with-worker") {
+    using namespace emuflow::core;std::signal(SIGTERM,Cancel);std::signal(SIGINT,Cancel);std::signal(SIGHUP,Cancel);
+    const auto result=Compile(ArtifactRef::Bind(argv[2],"native-compile-request-v1"),ArtifactRef::Bind(argv[3],"external-tool-executable-v1"),&cancelled);
+    PublishCompileResult(result);std::cerr<<StageResultJson(result.operation)<<'\n';return result.operation.ok()?0:1;
+  }
+  if(argc==11 && std::string(argv[1])=="compile-pinned") {
+    using namespace emuflow::core;
+    auto result=CompilePhase6({ArtifactRef::Bind(argv[2],"emuir-compact-v2"),ArtifactRef::Bind(argv[3],"assignment-index-v4"),ArtifactRef::Bind(argv[4],"tdm-schedule-selector-v4"),ArtifactRef::Bind(argv[5],"boarddb-v1"),ArtifactRef::Bind(argv[6],"phase6-compile-policy-v1")},argv[7],nullptr,
+      {{"board",ArtifactRef::Bind(argv[5],"boarddb-v1")},{"schedule",ArtifactRef::Bind(argv[4],"physical-input-document-v1")},{"plan",ArtifactRef::Bind(argv[8],"pin-plan-selector-v1")},{"positions",ArtifactRef::Bind(argv[9],"position-hints-selector-v1")},{"binding",ArtifactRef::Bind(argv[10],"chimew-binding-selector-v1")}});
+    std::cout<<StageResultJson(result)<<'\n';return result.ok()?0:1;
+  }
   if(argc==5 && std::string(argv[1])=="runtime") {
     using namespace emuflow::core;
     try {

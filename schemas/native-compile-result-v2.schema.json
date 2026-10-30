@@ -22,7 +22,7 @@
       "const": "native-orchestration-v1"
     },
     "phase_implementation": {
-      "const": "native-frontend-timing-partition-routing-preparation-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v11"
+      "const": "native-frontend-timing-partition-routing-scheduling-baseline-chimew-physical-signoff-v12"
     },
     "native_data_plane_complete": {
       "const": false
@@ -86,9 +86,7 @@
           },
           "implementation_id": {
             "enum": [
-              "isolated-python-adapter-v1",
               "native-preflight-v1",
-              "native-preflight-with-chimew-admission-v1",
               "native-exact-phase5-v1",
               "native-rtl-frontend-v1",
               "native-frontend-input-v1",
@@ -97,6 +95,7 @@
               "native-phase3-v1",
               "native-phase4-v1",
               "native-baseline-phase6-v1",
+              "native-chimew-phase6-v1",
               "native-phase2-v1",
               "native-phase2-configuration-v1",
                 "native-phase3-configuration-v1",

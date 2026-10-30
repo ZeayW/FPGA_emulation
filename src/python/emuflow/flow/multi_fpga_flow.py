@@ -1,8 +1,7 @@
-"""Public compile request API, bounded stage adapters and flow validation.
+"""Public compile request API and independent published-flow validation.
 
-The sole production stage order and process lifecycle belong to the native
-controller. Functions below execute one adapter responsibility, never a second
-Python controller.
+Stage order, execution, Chimew comparison and publication belong to the native
+controller. This module submits configuration and validates published results.
 """
 
 from __future__ import annotations
@@ -10,23 +9,18 @@ from __future__ import annotations
 import hashlib
 import math
 import tempfile
-import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
-from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
-from emuflow.transport.chimew.chimew_pipeline import read_chimew_phase6_pipeline, run_chimew_phase6_pipeline
-from emuflow.common.errors import EmuFlowError, ValidationError
+from emuflow.common.errors import ValidationError
 from emuflow.scheduling.frame_search import validate_frame_search_report
-from emuflow.common.io import read_json, write_json
-from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow, validate_multi_fpga_physical_report
+from emuflow.common.io import read_json
+from emuflow.flow.multi_fpga_physical_flow import validate_multi_fpga_physical_report
 from emuflow.partition.phase3 import validate_phase3_indexed
 from emuflow.routing.phase4 import validate_phase4
 from emuflow.scheduling.phase5 import validate_phase5
-from emuflow.transport.phase6 import run_phase6, validate_phase6
+from emuflow.transport.phase6 import validate_phase6
 from emuflow.timing.phase7c import run_phase7c
-from emuflow.timing.native_signoff import run_native_physical_signoff
-from emuflow.transport.pin_plan_storage import read_pin_plan
 from emuflow.physical.physical_summary_storage import read_physical_summary
 from emuflow.partition.partition import CUT_MODE_STATIC_EXACT
 from emuflow.platform.platform import Platform
@@ -42,15 +36,6 @@ MULTI_FPGA_FLOW_PROVIDER = (
 PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v3"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
 
-def _schedule_has_entries(schedule_path: Path) -> bool:
-    """Answer the Phase 6 dispatch question without decoding hop records."""
-
-    schedule = read_tdm_schedule(schedule_path)
-    entries = schedule.get("entries", ())
-    try:
-        return len(entries) > 0
-    except TypeError as error:
-        raise ValidationError("TDM schedule entries are not sized") from error
 
 
 
@@ -118,26 +103,6 @@ def _stage_summary(name: str, report: Dict[str, Any]) -> Dict[str, Any]:
     fields = _STAGE_SUMMARY_FIELDS[name]
     return {field: report[field] for field in fields if field in report}
 
-def _timing_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Return timing orchestration metadata without canonical path payloads."""
-
-    return {
-        field: report[field]
-        for field in (
-            "status",
-            "mode",
-            "backend",
-            "sta",
-            "optimization_enabled",
-            "partition_weights",
-            "partition_weights_applied",
-            "partition_provider_weights_applied",
-            "hop_refinement_weights_applied",
-            "partition_weight_consumers",
-            "cut_path_projection",
-        )
-        if field in report
-    }
 
 def _physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     """Return a bounded physical-flow projection for the parent report."""
@@ -201,120 +166,6 @@ def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
         raise ValidationError(f"multi-FPGA checkpoint {label} escapes its flow")
     return resolved
 
-def finalize_multi_fpga_physical_checkpoint(
-    flow_root: Path,
-    physical_root: Path,
-    *,
-    runtime_directory: str = "runtime-final",
-) -> Dict[str, Any]:
-    """Finish Phase 7C and seal a flow after an independently resumed Phase 7.
-
-    Physical backends are intentionally restartable because their external tool
-    environments can fail after Phase 1--6 have completed.  This entry point
-    consumes only checked artifacts already below ``flow_root``; it does not
-    rerun or silently alter any earlier optimization stage.
-    """
-
-    root = flow_root.resolve()
-    if not root.is_dir():
-        raise ValidationError("multi-FPGA checkpoint flow root is missing")
-    if (
-        not runtime_directory
-        or Path(runtime_directory).is_absolute()
-        or len(Path(runtime_directory).parts) != 1
-        or runtime_directory in {".", ".."}
-    ):
-        raise ValidationError("multi-FPGA checkpoint runtime directory is unsafe")
-    physical_root = (
-        physical_root if physical_root.is_absolute() else root / physical_root
-    )
-    physical_report_path = _checked_flow_member(
-        root,
-        physical_root / "multi-fpga-physical-flow-report.json",
-        "physical flow report",
-    )
-    physical_summary_path = _checked_flow_member(
-        root,
-        physical_root / "physical-summary.json",
-        "physical summary",
-    )
-    members = {
-        "frontend": "frontend/phase1/phase1_report.json",
-        "platform": "frontend/phase1/platform.normalized.json",
-        "emuir": "frontend/phase1/design.emuir.sqlite",
-        "partition": "partition/phase3_report.json",
-        "assignment": "partition/assignment.json",
-        "system_route": "system-route/phase4_report.json",
-        "routes": "system-route/routes.json",
-        "tdm": "tdm/phase5_report.json",
-        "schedule": "tdm/schedule.json",
-        "split": "split/phase6_report.json",
-        "split_manifest": "split/manifest.json",
-    }
-    paths = {
-        key: _checked_flow_member(root, Path(value), key)
-        for key, value in members.items()
-    }
-    stages = {
-        name: _stage_summary(name, read_json(paths[name]))
-        for name in ("frontend", "partition", "system_route", "tdm", "split")
-    }
-    physical_report = read_json(physical_report_path)
-    validate_multi_fpga_physical_report(physical_report)
-
-    runtime_root = root / runtime_directory
-    if runtime_root.is_symlink():
-        raise ValidationError("multi-FPGA checkpoint runtime directory is a symlink")
-    runtime_report = run_native_physical_signoff(root, root / "split", physical_root, runtime_root)
-    if runtime_report.get("status") != "pass":
-        raise ValidationError("resumed physical flow did not close Phase 7C timing")
-
-    def artifact(path: Path) -> Dict[str, str]:
-        checked = _checked_flow_member(root, path, path.name)
-        return {
-            "path": checked.relative_to(root).as_posix(),
-            "sha256": _sha256(checked),
-        }
-
-    report: Dict[str, Any] = {
-        "schema": MULTI_FPGA_FLOW_SCHEMA,
-        "status": "pass",
-        "provider": MULTI_FPGA_FLOW_PROVIDER,
-        "architecture_policy": "provider-neutral",
-        "runtime": runtime_report,
-        "physical": _physical_report_summary(physical_report),
-        "stages": stages,
-        "artifacts": {
-            "platform": artifact(paths["platform"]),
-            "emuir": artifact(paths["emuir"]),
-            "partition_constraints": artifact(
-                root / "partition/constraints.normalized.json"
-            ),
-            "route_constraints": artifact(
-                root / "system-route/route_constraints.normalized.json"
-            ),
-            "assignment": artifact(paths["assignment"]),
-            "routes": artifact(paths["routes"]),
-            "schedule": artifact(paths["schedule"]),
-            "split_manifest": artifact(paths["split_manifest"]),
-            "runtime_contract": artifact(runtime_root / "runtime_contract.json"),
-            "qor_report": artifact(runtime_root / "qor_report.json"),
-            "physical_flow_report": artifact(physical_report_path),
-            "physical_summary": artifact(physical_summary_path),
-        },
-    }
-    optional = {
-        "timing_path_database": root / "timing/path-database.json",
-        "partition_net_weights": root / "timing/partition-net-weights.json",
-        "cut_segment_qualification": root / "timing/cut-segment-qualification.json",
-        "cut_timing_paths": root / "timing/cut-timing-paths.json",
-    }
-    for name, path in optional.items():
-        if path.is_file() and not path.is_symlink():
-            report["artifacts"][name] = artifact(path)
-    report["summary"] = validate_multi_fpga_flow_report(report)
-    write_json(root / "multi-fpga-flow-report.json", report)
-    return report
 
 def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
     records = [record for record in value["fpgas"] if record.get("active",True)]
@@ -1046,249 +897,6 @@ def validate_multi_fpga_flow_bundle(
         "physical_required": require_physical,
     }
 
-class _CompileContext:
-    """Execution-scoped configuration and bounded inter-stage state.
-
-    Native orchestration serializes only this state between isolated adapters;
-    design graphs remain in their phase artifacts, not in this controller.
-    """
-
-    def __init__(self, values):
-        self.__dict__.update(values)
-
-    def measured(self, stage, function, *args, **kwargs):
-        from emuflow.common.stage_metrics import measure_stage
-        return measure_stage(self.output_dir, stage, function, *args, **kwargs)
-
-def _compile_chimew_admission(ctx: _CompileContext):
-    """Admit the remaining Chimew device catalog after native common preflight."""
-    if ctx.phase6_provider != "chimew":
-        raise EmuFlowError("Chimew package admission requires the Chimew provider")
-    from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
-    from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels
-    board = FixedWiringChannels(Platform.load(ctx.platform_path))
-    parts = {fpga.part for fpga in Platform.load(ctx.platform_path).fpgas}
-    if len(parts) != 1:
-        raise EmuFlowError("Chimew requires a single Xilinx device model")
-    ctx.chimew_package_geometry = XilinxPackageGeometry.open(ctx.physical_architecture, next(iter(parts)))
-    pins = ctx.chimew_package_geometry.pins
-    for wire in board.board["wires"]:
-        for end in wire["endpoints"]:
-            for polarity in ("p", "n"):
-                pin = end[polarity]
-                if pins.get(pin["package_pin"], (None,))[0] != pin["site"]:
-                    raise ValidationError("Chimew native package geometry does not cover the fixed P/N wiring")
-
-
-def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
-    catalog = getattr(ctx,"chimew_package_geometry",None)
-    if catalog is not None:
-        catalog.require_unchanged()
-    return ctx.measured("phase7", run_multi_fpga_physical_flow,
-        split_root,
-        ctx.platform_path,
-        schedule_path,
-        output_dir,
-        backend=ctx.physical_backend,
-        architecture=ctx.effective_physical_architecture,
-        yosys=ctx.yosys,
-        openparf_install=ctx.physical_openparf_install,
-        openparf_python=ctx.physical_openparf_python,
-        seed=ctx.physical_seed,
-        vivado=ctx.physical_vivado,
-        vivado_place_directive=ctx.physical_vivado_place_directive,
-        vivado_route_directive=ctx.physical_vivado_route_directive,
-        rapidwright_jar=ctx.physical_rapidwright_jar,
-        rapidwright_java=ctx.physical_rapidwright_java,
-        rapidwright_java_source=ctx.physical_rapidwright_java_source,
-        rapidwright_device_data=ctx.physical_rapidwright_device_data,
-        rapidwright_timing_data=ctx.physical_rapidwright_timing_data,
-        rapidwright_opensta=ctx.physical_rapidwright_opensta,
-        rapidwright_native_constraints=(
-            ctx.physical_rapidwright_native_constraints
-        ),
-        rapidwright_provider_manifest=(
-            ctx.physical_rapidwright_provider_manifest
-        ),
-        original_ir_path=ctx.ir_path,
-        assignment_path=ctx.assignment_path,
-        routes_path=ctx.routes_path,
-        path_database_path=ctx.path_database_path,
-        logic_path_database_path=ctx.path_database_path,
-        workers=ctx.physical_workers,
-    )
-
-def _compile_split(ctx: _CompileContext):
-    if ctx.phase6_provider != "chimew":
-        raise EmuFlowError("native compiler baseline Phase 6 is owned by the C++ stage")
-    ctx.routes_path = ctx.phase4_root / "routes.json"
-    ctx.schedule_path = ctx.phase5_root / "schedule.json"
-
-    ctx.phase6_root = ctx.output_dir / "split"
-    has_scheduled_signals = _schedule_has_entries(ctx.schedule_path)
-    if ctx.phase6_provider == "chimew" and not has_scheduled_signals:
-        raise EmuFlowError(
-            "--phase6-provider chimew requires at least one scheduled "
-            "inter-FPGA signal"
-        )
-    ctx.baseline_physical_report = None
-    ctx.baseline_runtime_report = None
-    ctx.phase6_comparison = None
-    ctx.effective_physical_architecture = ctx.physical_architecture
-    if ctx.phase6_provider == "chimew":
-        comparison_root = ctx.output_dir / "phase6-comparison"
-        baseline_root = comparison_root / "baseline"
-        baseline_split = baseline_root / "split"
-        baseline_phase6_started = time.monotonic()
-        baseline_phase6_report = ctx.measured("phase6", run_phase6,
-            ctx.ir_path,
-            ctx.assignment_path,
-            ctx.schedule_path,
-            ctx.platform_path,
-            baseline_split,
-            equivalence_cycles=ctx.equivalence_cycles,
-            equivalence_seed=ctx.equivalence_seed,
-            transport_cost_path=ctx.transport_cost_db,
-            clock_periods=ctx.clock_periods,
-        )
-        baseline_phase6_seconds = time.monotonic() - baseline_phase6_started
-        baseline_physical_started = time.monotonic()
-        ctx.baseline_physical_report = _run_selected_physical(ctx, baseline_split, ctx.schedule_path, baseline_root / "physical")
-        baseline_physical_seconds = time.monotonic() - baseline_physical_started
-        ctx.baseline_runtime_report = ctx.measured("phase7c", run_native_physical_signoff,
-            ctx.output_dir, baseline_split, baseline_root / "physical", baseline_root / "runtime",
-            executable=ctx.global_sta_executable, launcher_reference=ctx.global_sta_launcher_reference,
-        )
-        lookahead_root = comparison_root / "lookahead"
-        lookahead = materialize_xilinx_chimew_inputs(
-            architecture_path=ctx.physical_architecture,
-            package_geometry=ctx.chimew_package_geometry,
-            ir_path=ctx.ir_path,
-            schedule_path=ctx.schedule_path,
-            routes_path=ctx.routes_path,
-            platform_path=ctx.platform_path,
-            physical_report=ctx.baseline_physical_report,
-            output_dir=lookahead_root,
-            timing_paths_path=(
-                ctx.projected_timing_paths if ctx.timing_driven else None
-            ),
-            region_count=ctx.phase6_chimew_region_count,
-            grouper=ctx.phase6_chimew_grouper,
-            refiner=ctx.phase6_chimew_refiner,
-        )
-        inputs = lookahead["artifacts"]
-        chimew_schedule_path = Path(inputs["schedule"]["path"])
-        sources_map = lookahead["sources"]
-        chimew_pipeline_root = comparison_root / "chimew"
-        pipeline = run_chimew_phase6_pipeline(
-            chimew_schedule_path,
-            ctx.platform_path,
-            Path(inputs["crossings"]["path"]),
-            Path(inputs["positions"]["path"]),
-            Path(inputs["rudy_input"]["path"]),
-            Path(inputs["bank_channel_input"]["path"]),
-            Path(inputs["electrical_map"]["path"]),
-            chimew_pipeline_root,
-            source_paths={
-                label: Path(path) for label, path in sources_map.items()
-            },
-            grouper=ctx.phase6_chimew_grouper,
-            refiner=ctx.phase6_chimew_refiner,
-            rudy=ctx.phase6_chimew_rudy,
-            assigner=ctx.phase6_chimew_assigner,
-            region_count=ctx.phase6_chimew_region_count,
-        )
-        with read_chimew_phase6_pipeline(chimew_pipeline_root) as (
-            leased_pipeline,
-            _pipeline_validation,
-        ):
-            pipeline = dict(leased_pipeline)
-            adapter_artifacts = pipeline["artifacts"]
-            chimew_phase6_started = time.monotonic()
-            ctx.phase6_report = ctx.measured("phase6", run_phase6,
-                ctx.ir_path,
-                ctx.assignment_path,
-                chimew_schedule_path,
-                ctx.platform_path,
-                ctx.phase6_root,
-                equivalence_cycles=ctx.equivalence_cycles,
-                equivalence_seed=ctx.equivalence_seed,
-                pin_plan_path=(
-                    chimew_pipeline_root
-                    / adapter_artifacts["adapter_pin_plan"]["path"]
-                ),
-                position_hints_path=(
-                    chimew_pipeline_root
-                    / adapter_artifacts["adapter_position_hints"]["path"]
-                ),
-                electrical_binding_path=(
-                    chimew_pipeline_root
-                    / adapter_artifacts["adapter_electrical_binding"]["path"]
-                ),
-                transport_cost_path=ctx.transport_cost_db,
-                clock_periods=ctx.clock_periods,
-            )
-            ctx.chimew_pin_metrics = read_pin_plan(
-                chimew_pipeline_root
-                / adapter_artifacts["adapter_pin_plan"]["path"]
-            )["metrics"]
-        chimew_phase6_seconds = time.monotonic() - chimew_phase6_started
-        ctx.phase6_comparison = {
-            "schema": PHASE6_AB_COMPARISON_SCHEMA,
-            "status": "pending-physical-comparison",
-            "selected_provider": "chimew",
-            "baseline_provider": "baseline",
-            "qualification": "xilinx-placed-lookahead+fixed-lvds-wiring",
-            "frozen_upstream": {
-                "emuir_sha256": _sha256(ctx.ir_path),
-                "assignment_sha256": _sha256(ctx.assignment_path),
-                "routes_sha256": _sha256(ctx.routes_path),
-                "schedule_sha256": _sha256(ctx.schedule_path),
-                "platform_sha256": _sha256(ctx.platform_path),
-            },
-            "claim_boundary": {
-                "lookahead": (
-                    "normalized virtual regions from the selected Xilinx physical "
-                    "prepass, not final device SLR/SLL closure"
-                ),
-                "electrical": (
-                    "fixed source-qualified LVDS P/N wiring; not board electrical signoff"
-                ),
-            },
-            "baseline": {
-                "phase6": baseline_phase6_report,
-                "physical": ctx.baseline_physical_report,
-                "runtime": ctx.baseline_runtime_report,
-                "phase6_runtime_seconds": baseline_phase6_seconds,
-                "physical_runtime_seconds": baseline_physical_seconds,
-            },
-            "lookahead": lookahead,
-            "chimew_pipeline": pipeline,
-            "chimew_phase6_runtime_seconds": chimew_phase6_seconds,
-        }
-
-def _compile_physical(ctx: _CompileContext):
-    if ctx.phase6_provider == "baseline":
-        raise EmuFlowError("native compiler physical stage is owned by the C++ controller")
-    ctx.physical_report = None
-    ctx.physical_summary_path = None
-    if ctx.physical:
-        physical_started = time.monotonic()
-        ctx.physical_report = _run_selected_physical(ctx, ctx.phase6_root, ctx.schedule_path, ctx.output_dir / "physical")
-        physical_seconds = time.monotonic() - physical_started
-        ctx.physical_summary_path = ctx.output_dir / "physical/physical-summary.json"
-        if ctx.phase6_comparison is not None:
-            from emuflow.common.native_tools import native_file_generation
-            ctx.native_phase6_comparison_input = ctx.output_dir / "phase6-comparison/comparison-input.json"
-            write_json(ctx.native_phase6_comparison_input, {
-                **ctx.phase6_comparison,
-                "pin_plan_metrics": ctx.chimew_pin_metrics,
-                "chimew_physical_runtime_seconds": physical_seconds,
-            })
-            ctx.native_phase6_comparison_generation = tuple(
-                str(value) for value in native_file_generation(ctx.native_phase6_comparison_input)
-            )
-
 from emuflow.flow.compile_options import COMPILE_DEFAULTS
 
 
@@ -1381,8 +989,8 @@ def run_multi_fpga_flow(
 ) -> Dict[str, Any]:
     """Submit a bounded request to the sole native production controller.
 
-    Physical, signoff and Chimew adapters remain explicit transitional owners;
-    selecting this entry does not assert complete native data-plane migration.
+    The native controller owns all stages, Chimew comparison and final report
+    publication. This API only encodes bounded options and reads summaries.
     """
     options = locals()
     from emuflow.flow.native_compile import run_native_multi_fpga_flow

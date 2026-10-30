@@ -337,7 +337,8 @@ def _compile_preflight(ctx: _CompileContext):
 
 
 def _initial_context(request):
-    from emuflow.flow.multi_fpga_flow import _CompileContext, run_multi_fpga_flow
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    from tests.native_compile_state_fixture import CompileContext as _CompileContext
 
     options = request["options"]
     if type(options) is not dict:

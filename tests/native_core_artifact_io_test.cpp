@@ -500,6 +500,22 @@ int main() {
         if(rejected || std::filesystem::exists(staging) || !std::filesystem::is_regular_file(target/"fpga0/nested/data"))throw std::runtime_error("nested stage was not published");
       } else if(!rejected || std::filesystem::exists(target) || !std::filesystem::is_regular_file(staging/"fpga0/nested/data"))throw std::runtime_error("rejected stage tree changed its generation");
     }
+    // A closed generation is prepared outside its consumer's inventory. Move
+    // it across parents with one rename; stale sources still reject the move.
+    for(bool damage:{false,true}) {
+      const auto from=root/(damage?"cross-private-bad":"cross-private");
+      const auto parent=root/(damage?"cross-public-bad":"cross-public");
+      const auto original=root/(damage?"cross-source-bad":"cross-source");
+      std::filesystem::create_directories(from/"payload");std::filesystem::create_directory(parent);
+      {std::ofstream out(original);out<<"source";}{std::ofstream out(from/"payload/data");out<<"closed";}
+      const auto input=ArtifactRef::Bind(original.string(),"physical-input-document-v1");
+      if(damage){std::ofstream out(original,std::ios::app);out<<"changed";}
+      bool rejected=false;
+      try{PublishNewDirectory((from/"payload").string(),(parent/"generation").string(),{input});}
+      catch(const StageError&){rejected=true;}
+      if(rejected!=damage || std::filesystem::exists(parent/"generation")==damage || std::filesystem::exists(from/"payload")!=damage)
+        throw std::runtime_error("cross-parent generation publication broke its source/atomicity contract");
+    }
     // Prepared boundaries may reference only explicitly bound immutable files.
     for(int damage=0;damage<5;++damage) {
       const auto staging=root/("bound-private-"+std::to_string(damage));

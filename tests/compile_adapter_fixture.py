@@ -4,8 +4,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 from emuflow.flow.native_compile import _request
-from emuflow.flow.native_compile_adapter import _unpack
-from emuflow.flow.multi_fpga_flow import _CompileContext, _compile_chimew_admission
+from tests.native_compile_state_fixture import _unpack
+from tests.native_compile_state_fixture import CompileContext as _CompileContext
 from emuflow.common.errors import ValidationError
 from tests.native_build import emuflow_native
 
@@ -23,5 +23,4 @@ def preflight(*args, **kwargs):
             operation=json.loads(proof.read_text()) if proof.exists() else json.loads(result.stderr.split('emuflow-native: ',1)[1])
             raise ValidationError(operation['error']['message'])
         ctx=_CompileContext(_unpack(json.loads(state.read_text())['state']))
-        if ctx.phase6_provider=='chimew':_compile_chimew_admission(ctx)
         return ctx

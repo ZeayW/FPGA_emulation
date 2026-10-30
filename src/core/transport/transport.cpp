@@ -953,7 +953,8 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
     ArtifactRef::Bind((fs::path(directory)/"transport.sqlite").string(),"transport-store-v2")};});
 }
 StageResult CompilePhase6(const std::vector<ArtifactRef>& original,const std::string& directory,
-                         const volatile std::sig_atomic_t* cancelled){
+                         const volatile std::sig_atomic_t* cancelled,
+                         const std::vector<std::pair<std::string,ArtifactRef>>& pin_sources){
   std::vector<ArtifactRef> sources=original;Raw policy;
   const auto reference=[](const ArtifactRef& ref){const auto& g=ref.generation();
     return Object({{"path",JsonQuote(ref.path())},{"schema",JsonQuote(ref.schema())},
@@ -1011,6 +1012,7 @@ StageResult CompilePhase6(const std::vector<ArtifactRef>& original,const std::st
       assignment_json=ArtifactRef::Bind((fs::path(original[1].path()).parent_path()/"assignment.json").string(),"assignment-selector-v4");
       sources.push_back(*python);sources.push_back(*oracle);sources.push_back(*assignment_json);
     }
+    for(const auto& pin:pin_sources)sources.push_back(pin.second);
     return sources;
   },[&](const auto& refs){
     const auto destination=fs::absolute(directory);
@@ -1041,6 +1043,17 @@ StageResult CompilePhase6(const std::vector<ArtifactRef>& original,const std::st
       clocks.push_back(record);
     }
     Check(declared_clocks.size()==periods.size(),"clock periods must exactly cover declared EmuIR clocks");
+    Raw pin_artifacts;
+    for(const auto& item:pin_sources){
+      Check(pin_artifacts.emplace(item.first,reference(item.second)).second,"duplicate compile pin source role");
+      if(item.first=="plan"){
+        const auto plan=Fields(Canonical(Read(item.second.path())));
+        const auto member=Text(plan,"artifact");
+        Check(fs::path(member).filename()==member,"compile pin store escapes selector");
+        auto ref=ArtifactRef::Bind((fs::path(item.second.path()).parent_path()/member).string(),"pin-plan-store-v1");
+        transport["sources"]=Array({reference(original[1]),reference(*schedule_ref),reference(ref)});
+      }
+    }
     transport["runtime"]=BuildVirtualRuntime(*schedule_ref,original[3],Get(policy,"clock_periods"));
     transport["fpgas"]=Array(fpgas);transport["links"]=Array(links);transport["clocks"]=Array(clocks);
     std::string equivalence="null";
@@ -1062,12 +1075,14 @@ StageResult CompilePhase6(const std::vector<ArtifactRef>& original,const std::st
     }
     if(cancelled && *cancelled)throw StageError(ErrorCode::kExecutionFailed,"Phase 6 compilation cancelled");
     const auto request=work.root/"phase6-request.json";
-    PublishText(request,Object({{"schema",JsonQuote("emuflow.phase6-stage/v1")},
+    Raw stage_request{{"schema",JsonQuote(pin_sources.empty()?"emuflow.phase6-stage/v1":"emuflow.phase6-stage/v2")},
       {"transport",Object(transport)},{"configuration_sources",Get(policy,"configuration_sources")},
       {"small_design_equivalence",equivalence},{"managed_storage","false"},
-      {"transport_cost",Get(policy,"transport_cost")}})+'\n',refs);
+      {"transport_cost",Get(policy,"transport_cost")}};
+    if(!pin_sources.empty())stage_request["pin_artifacts"]=Object(pin_artifacts);
+    PublishText(request,Object(stage_request)+'\n',refs);
     const auto result=RunPhase6({original[0],original[1],*schedule_ref,
-        ArtifactRef::Bind(request.string(),"phase6-stage-request-v1")},directory,refs,cancelled);
+        ArtifactRef::Bind(request.string(),pin_sources.empty()?"phase6-stage-request-v1":"phase6-stage-request-v2")},directory,refs,cancelled);
     if(!result.ok())throw StageError(result.error,result.stage+": "+result.message);
     for(const auto& ref:refs)ref.RequireUnchanged();
   },[&]{return std::vector<ArtifactRef>{

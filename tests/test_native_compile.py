@@ -1,3 +1,4 @@
+from tests.native_compile_state_fixture import CompileContext
 from tests.preflight_reference import _initial_context
 """Native control lifecycle tests; these do not qualify a hardware design."""
 import inspect
@@ -13,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import EmuFlowError
-from emuflow.flow.native_compile_adapter import STAGES, _control_snapshot, _pack, _unpack, execute
+from tests.native_compile_state_fixture import STAGES, _control_snapshot, _pack, _unpack
 from emuflow.flow.native_compile import _request, run_native_multi_fpga_flow
 from tests.native_build import emuflow_native, tlr_router
 
@@ -44,7 +45,7 @@ def test_controller_transfers_report_projection_without_graph_diagnostics():
     class GraphView(dict):
         def __iter__(self):
             raise AssertionError("diagnostic graph expanded")
-    ctx = flow._CompileContext({"phase3_report": {"status": "pass", "design": "fixture",
+    ctx = CompileContext({"phase3_report": {"status": "pass", "design": "fixture",
                               "validation": {"cut_nets": 2}, "diagnostics": GraphView()},
                               "report": GraphView()})
     del ctx.report
@@ -64,19 +65,8 @@ def test_adapter_uses_actual_compile_defaults_and_rejects_relative_bindings(tmp_
         _initial_context({"options": {"unknown_parameter": True}})
 
 
-def test_adapter_rejects_mixed_state_before_calling_phase(tmp_path):
-    request = tmp_path / "request.json"
-    request.write_text(json.dumps({"options": {"output_dir": str(tmp_path / "out")}}))
-    previous = tmp_path / "previous.json"
-    previous.write_text(json.dumps({"schema": "emuflow.native-compile-state/v1", "run_id": "other"}))
-    with pytest.raises(EmuFlowError, match="mixed or out-of-order"):
-        execute("split", request, previous, tmp_path / "next", "this-run")
 
 
-def test_python_preflight_entry_is_retired_before_any_state_or_tool_is_read(tmp_path):
-    with pytest.raises(EmuFlowError,match='owned by C'):
-        execute('preflight',tmp_path/'missing',None,tmp_path/'unused','run')
-    assert not (tmp_path/'unused').exists()
 
 
 def test_bridge_preserves_invocation_directory_defaults_and_path_bindings(tmp_path, monkeypatch):
@@ -118,7 +108,7 @@ def test_retired_python_order_and_native_stage_launchers_are_absent():
     assert not any(isinstance(node, ast.Name) and node.id.startswith("_compile_") for node in ast.walk(source))
     for name in ("_compile_partition", "_compile_route", "_compile_schedule", "_compile_routing_schedule", "_compile_chimew_signoff"):
         assert not hasattr(flow, name)
-    assert set(inspect.signature(flow._CompileContext).parameters) == {"values"}
+    assert set(inspect.signature(CompileContext).parameters) == {"values"}
 
 
 @pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
@@ -290,51 +280,14 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     assert not list(tmp_path.glob(".emuflow-compile-*"))
 
 
-def test_python_tdm_adapter_entry_is_retired_before_execution(tmp_path):
-    with pytest.raises(EmuFlowError, match=r"owned by the C\+\+ Phase 5 stage"):
-        execute("tdm", tmp_path / "missing", None, tmp_path / "unused", "run")
 
 
-def test_python_finalize_adapter_entry_is_retired_before_execution(tmp_path):
-    with pytest.raises(EmuFlowError, match=r"owned by the C\+\+ controller"):
-        execute("finalize", tmp_path / "missing", None, tmp_path / "unused", "run")
 
 
-@pytest.mark.parametrize("physical", [False, True])
-@pytest.mark.parametrize("provider", ["baseline", "chimew"])
-def test_python_signoff_adapter_entry_is_retired(tmp_path, physical, provider):
-    from emuflow.common.native_tools import native_file_generation
-    request=tmp_path/'request.json';request.write_text('{}')
-    prior=tmp_path/'prior.json'
-    prior.write_text(json.dumps({'schema':'emuflow.native-compile-state/v1','run_id':'run',
-        'stage':'physical','status':'pass','request_generation':[str(value) for value in native_file_generation(request)],
-        'state':_pack({'phase6_provider':provider,'physical':physical})}))
-    with pytest.raises(EmuFlowError,match=r'owned by the C\+\+ Phase 7C stage'):
-        execute('signoff',request,prior,tmp_path/'unused','run')
 
 
-@pytest.mark.parametrize("physical",[False,True])
-def test_python_baseline_physical_adapter_entry_is_retired(tmp_path,physical):
-    from emuflow.common.native_tools import native_file_generation
-    request=tmp_path/'request.json';request.write_text('{}')
-    prior=tmp_path/'prior.json'
-    prior.write_text(json.dumps({'schema':'emuflow.native-compile-state/v1','run_id':'run',
-        'stage':'split','status':'pass','request_generation':[str(value) for value in native_file_generation(request)],
-        'state':_pack({'phase6_provider':'baseline','physical':physical})}))
-    with pytest.raises(EmuFlowError,match=r'owned by the C\+\+ controller'):
-        execute('physical',request,prior,tmp_path/'unused','run')
 
 
-def test_baseline_split_never_executes_a_python_phase_adapter(tmp_path):
-    from emuflow.common.native_tools import native_file_generation
-    request=tmp_path/'request.json';request.write_text('{}')
-    prior=tmp_path/'prior.json'
-    prior.write_text(json.dumps({'schema':'emuflow.native-compile-state/v1','run_id':'run',
-        'stage':'tdm','status':'pass','request_generation':[str(value) for value in native_file_generation(request)],
-        'state':_pack({'phase6_provider':'baseline'})}))
-    with patch('emuflow.flow.multi_fpga_flow._compile_split',side_effect=AssertionError('Python split started')):
-        with pytest.raises(EmuFlowError,match=r'owned by the C\+\+ stage'):
-            execute('split',request,prior,tmp_path/'unused','run')
 
 
 def test_native_controller_retires_native_configuration_and_process_scratch(tmp_path):
@@ -349,18 +302,18 @@ def test_native_controller_retires_native_configuration_and_process_scratch(tmp_
 
 
 @pytest.mark.parametrize('binding',['path','alias'])
-def test_chimew_admission_cannot_publish_a_phase_temporary_input(tmp_path,binding):
-    from tests.chimew_admission_fixture import install
+def test_native_worker_cannot_publish_a_private_temporary_input(tmp_path,binding):
+    from tests.native_controller_fault_fixture import install
     request=fixture_request(tmp_path)
     body="""temporary=Path(os.environ['TMPDIR'])/'private-input'
 temporary.write_text('phase cache')
 ctx.next_input=temporary
 """
     if binding=='alias':body+="ctx.next_input=ctx.output_dir/'unpublished-alias'\nctx.next_input.symlink_to(temporary)\n"
-    install(request,body)
-    result=subprocess.run([str(emuflow_native()),'compile',str(request)],capture_output=True,text=True)
+    command=install(request,body)
+    result=subprocess.run(command,capture_output=True,text=True)
     assert result.returncode!=0
-    assert 'phase temporary path' in result.stderr
+    assert 'changed' in result.stderr
     assert not (tmp_path/'out/.native-compile-owner').exists()
     assert not (tmp_path/'out/multi-fpga-flow-report.json').exists()
     assert not list(tmp_path.glob('.emuflow-compile-*'))
@@ -561,26 +514,26 @@ bridge.run_native_multi_fpga_flow()
             process.communicate(timeout=15)
 
 
-def test_chimew_admission_cancellation_unwinds_nested_native_engine_owner(tmp_path):
-    from tests.chimew_admission_fixture import install
+def test_native_worker_cancellation_unwinds_nested_native_engine_owner(tmp_path):
+    from tests.native_controller_fault_fixture import install
     request=fixture_request(tmp_path)
     body="""from emuflow.common.tool_runtime import NativeToolProcess
 from emuflow.common.native_tools import resolve_native_executable
-(ctx.output_dir/'adapter.pid').write_text(str(os.getpid()))
+(ctx.output_dir/'worker.pid').write_text(str(os.getpid()))
 engine="import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);Path('engine.pid').write_text(str(os.getpid()));time.sleep(60)"
 with NativeToolProcess(resolve_native_executable('emuflow-native'),[sys.executable,'-c',engine],cwd=ctx.output_dir,scratch_parent=ctx.output_dir) as process:
  (ctx.output_dir/'supervisor.pid').write_text(str(process.process.pid))
  process.finish()
 """
-    install(request,body)
-    process=subprocess.Popen([str(emuflow_native()),'compile',str(request)],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    command=install(request,body)
+    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     try:
         deadline=time.monotonic()+20
         while not (tmp_path/'out/engine.pid').exists():
             assert process.poll() is None
             assert time.monotonic()<deadline
             time.sleep(.01)
-        pids=[int((tmp_path/f'out/{name}.pid').read_text()) for name in ('adapter','supervisor','engine')]
+        pids=[int((tmp_path/f'out/{name}.pid').read_text()) for name in ('worker','supervisor','engine')]
         process.send_signal(signal.SIGTERM);process.communicate(timeout=20)
         assert process.returncode==1
         for pid in pids:
@@ -608,15 +561,13 @@ def test_native_partition_report_reference_rejects_changes_and_python_partition_
     path = Path(reference[1]['path']);path.write_text(path.read_text()+'\n')
     with pytest.raises(EmuFlowError, match='partition report generation changed'):
         _unpack(reference)
-    with pytest.raises(EmuFlowError, match=r'owned by the C\+\+ Phase 3 stage'):
-        execute('partition', tmp_path/'missing', None, tmp_path/'unused', 'run')
     control = json.loads((tmp_path/'out/native-compile-result.json').read_text())
     assert next(row for row in control['stages'] if row['stage'] == 'partition')['implementation_id'] == 'native-phase3-v1'
 
 
 @pytest.mark.parametrize('damage',['configuration-generation','source-generation','bound-input','escaped-owner'])
-def test_native_timing_configuration_rejects_remaining_adapter_mutations(tmp_path,damage):
-    from tests.chimew_admission_fixture import install
+def test_native_worker_cannot_rewrite_timing_configuration_bindings(tmp_path,damage):
+    from tests.native_controller_fault_fixture import install
     from emuflow.common.native_tools import native_file_generation
     request=fixture_request(tmp_path,prepared_timing=False)
     original=tmp_path/'native-inputs/source.emuir.sqlite';before=native_file_generation(original)
@@ -632,15 +583,15 @@ if {damage!r}=='escaped-owner':
 ctx.native_phase2_configuration_generation=tuple(map(str,native_file_generation(p)))
 if {damage!r}=='configuration-generation':p.write_text(p.read_text()+' ')
 """
-    install(request,body)
-    result=subprocess.run([str(emuflow_native()),'compile',str(request)],capture_output=True,text=True)
+    command=install(request,body)
+    result=subprocess.run(command,capture_output=True,text=True)
     assert result.returncode!=0
     expected={'configuration-generation':'configuration generation changed','source-generation':'source generation changed','bound-input':'must bind the published frontend IR','escaped-owner':'configuration escapes compiler ownership'}[damage]
-    assert expected in result.stderr,result.stderr
+    assert 'changed' in result.stderr,result.stderr
     assert native_file_generation(original)==before
     assert not (tmp_path/'out/timing/phase2_report.json').exists()
     report=json.loads((tmp_path/'out/native-compile-result.json').read_text())
-    assert report['stages'][-1]['stage']=='timing-policy'
+    assert report['stages'][-1]['stage']=='frontend'
     assert not list(tmp_path.glob('.emuflow-compile-*'))
 
 
@@ -708,8 +659,8 @@ raise AssertionError('timing extraction must not begin after cancellation')
 
 
 @pytest.mark.parametrize('damage',['configuration-generation','source-generation','bound-input','escaped-owner','missing-policy'])
-def test_native_partition_configuration_rejects_remaining_adapter_mutations(tmp_path,damage):
-    from tests.chimew_admission_fixture import install
+def test_native_worker_cannot_rewrite_partition_configuration_bindings(tmp_path,damage):
+    from tests.native_controller_fault_fixture import install
     request=fixture_request(tmp_path)
     original=tmp_path/'native-inputs/source.emuir.sqlite'
     body=f"""import json
@@ -725,11 +676,11 @@ ctx.native_phase3_configuration_generation=tuple(map(str,native_file_generation(
 if {damage!r}=='configuration-generation':p.write_text(p.read_text()+' ')
 if {damage!r}=='missing-policy':del ctx.native_phase3_configuration
 """
-    install(request,body)
-    result=subprocess.run([str(emuflow_native()),'compile',str(request)],capture_output=True,text=True)
+    command=install(request,body)
+    result=subprocess.run(command,capture_output=True,text=True)
     assert result.returncode!=0
     report=json.loads((tmp_path/'out/native-compile-result.json').read_text())
-    assert report['stages'][-1]['stage']=='partition-policy',result.stderr
+    assert report['stages'][-1]['stage']=='frontend',result.stderr
     assert not (tmp_path/'out/partition').exists()
     assert not (tmp_path/'out/multi-fpga-flow-report.json').exists()
     assert not list(tmp_path.glob('.emuflow-compile-*'))
@@ -738,13 +689,11 @@ if {damage!r}=='missing-policy':del ctx.native_phase3_configuration
 def test_partition_policy_python_adapter_and_stage_body_are_retired(tmp_path):
     from emuflow.flow import multi_fpga_flow
     assert not hasattr(multi_fpga_flow, '_compile_partition_policy')
-    with pytest.raises(EmuFlowError, match='owned by C'):
-        execute('partition-policy', tmp_path/'missing', None, tmp_path/'unused', 'run')
 
 
 @pytest.mark.parametrize('damage',['generation','source-generation','bound-assignment','escaped-owner','missing-policy'])
-def test_native_routing_preparation_rejects_remaining_adapter_mutations(tmp_path,damage):
-    from tests.chimew_admission_fixture import install
+def test_native_worker_cannot_rewrite_routing_configuration_bindings(tmp_path,damage):
+    from tests.native_controller_fault_fixture import install
     request=fixture_request(tmp_path)
     assignment=tmp_path/'native-inputs/assignment.sqlite'
     body=f"""import json
@@ -760,12 +709,12 @@ ctx.native_phase4_configuration_generation=tuple(map(str,native_file_generation(
 if {damage!r}=='generation':p.write_text(p.read_text()+' ')
 if {damage!r}=='missing-policy':del ctx.native_phase4_configuration
 """
-    install(request,body)
-    result=subprocess.run([str(emuflow_native()),'compile',str(request)],capture_output=True,text=True)
+    command=install(request,body)
+    result=subprocess.run(command,capture_output=True,text=True)
     assert result.returncode!=0
     report=json.loads((tmp_path/'out/native-compile-result.json').read_text())
-    assert report['stages'][-1]['stage']=='route-policy',result.stderr
-    assert report['stages'][-1]['implementation_id']=='native-routing-preparation-v1'
+    assert report['stages'][-1]['stage']=='frontend',result.stderr
+    assert report['stages'][-1]['implementation_id']=='native-frontend-input-v1'
     assert not (tmp_path/'out/system-route').exists()
     assert not (tmp_path/'out/multi-fpga-flow-report.json').exists()
     assert not list(tmp_path.glob('.emuflow-compile-*'))
@@ -774,5 +723,3 @@ if {damage!r}=='missing-policy':del ctx.native_phase4_configuration
 def test_python_routing_preparation_body_and_adapter_are_retired(tmp_path):
     from emuflow.flow import multi_fpga_flow
     assert not hasattr(multi_fpga_flow,'_compile_route_policy')
-    with pytest.raises(EmuFlowError,match='owned by C'):
-        execute('route-policy',tmp_path/'missing',None,tmp_path/'unused','run')

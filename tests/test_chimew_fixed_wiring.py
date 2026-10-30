@@ -30,10 +30,10 @@ from tests.native_build import chimew_bank_channel_assigner
 
 
 @pytest.fixture
-def fixed_case():
+def fixed_case(request):
     from tests.test_chimew_phase6 import ChimewPhase6AdapterTest
     f = ChimewPhase6AdapterTest(); f.setUp()
-    platform = Platform.load(research_platform_path(2))
+    platform = Platform.load(research_platform_path(getattr(request,"param",2)))
     link = platform.links[0]
     a, b = link.endpoints
     f.schedule.update(platform=platform.name, metrics={"frame_slots": 8}, bank_allocations=[
@@ -41,6 +41,12 @@ def fixed_case():
          "wires_per_bank": 20, "lane_offset": offset, "lanes": count * 20}
         for source, sink, count, offset in [(a, b, 18, 0), (b, a, 0, 360)]
     ])
+    for idle in platform.links[1:]:
+        x,y=idle.endpoints
+        f.schedule['bank_allocations'].extend(
+            {'link':idle.id,'from':source,'to':sink,'bank_count':count,
+             'wires_per_bank':20,'lane_offset':offset,'lanes':count*20}
+            for source,sink,count,offset in ((x,y,18,0),(y,x,0,360)))
     for i, entry in enumerate(f.schedule["entries"]):
         entry.update(link=link.id, **{"from": a, "to": b}, lane=i, slot=i, tdm_ratio=8)
     problem = f.assignment_input

@@ -673,22 +673,24 @@ class ChimewQualificationTest(unittest.TestCase):
             malformed_staging.replace(malformed_generation)
             with self.assertRaisesRegex(ValidationError, "coverage is not exact"):
                 validate_chimew_phase6_pipeline(output)
-            run_chimew_phase6_pipeline(
-                paths["schedule"],
-                paths["platform"],
-                paths["crossings"],
-                paths["positions"],
-                paths["rudy-input"],
-                paths["assignment-input"],
-                paths["electrical-map"],
-                output,
-                source_paths=source_paths,
-                grouper=self.executables["grouper"],
-                refiner=self.executables["refiner"],
-                rudy=self.executables["rudy"],
-                assigner=self.executables["assigner"],
-                region_count=31,
-            )
+            with self.assertRaisesRegex(ValidationError, "coverage is not exact"):
+                run_chimew_phase6_pipeline(
+                    paths["schedule"],
+                    paths["platform"],
+                    paths["crossings"],
+                    paths["positions"],
+                    paths["rudy-input"],
+                    paths["assignment-input"],
+                    paths["electrical-map"],
+                    output,
+                    source_paths=source_paths,
+                    grouper=self.executables["grouper"],
+                    refiner=self.executables["refiner"],
+                    rudy=self.executables["rudy"],
+                    assigner=self.executables["assigner"],
+                    region_count=31,
+                )
+            self.assertEqual((output / "pipeline_report.json").read_bytes(), committed_before)
             self.assertTrue(malformed_generation.is_dir())
             shutil.rmtree(malformed_generation)
             self.assertEqual(
@@ -715,12 +717,18 @@ class ChimewQualificationTest(unittest.TestCase):
                 identity_generation = output / "generations" / identity_digest
                 identity_staging.replace(identity_generation)
                 with self.subTest(identity_field=identity_field):
-                    with self.assertRaisesRegex(
-                        ValidationError, "generation identity differs"
-                    ):
-                        chimew_pipeline_module._validate_pipeline_generation_directory(
-                            identity_generation
-                        )
+                    identity_root = root / f"identity-commit-{identity_field}"
+                    identity_target = identity_root / "generations" / identity_digest
+                    shutil.copytree(identity_generation, identity_target)
+                    identity_report = copy.deepcopy(committed_report)
+                    for record in identity_report["artifacts"].values():
+                        relative = Path(record["path"])
+                        record["path"] = (Path("generations") / identity_digest / Path(*relative.parts[2:])).as_posix()
+                    identity_report["artifacts"]["generation_manifest"]["sha256"] = identity_digest
+                    identity_report[identity_field] = wrong_value
+                    write_json(identity_root / "pipeline_report.json", identity_report)
+                    with self.assertRaisesRegex(ValidationError, "generation namespace differs"):
+                        validate_chimew_phase6_pipeline(identity_root)
                     with self.assertRaisesRegex(
                         ValidationError, "coverage is not exact"
                     ):
@@ -741,18 +749,11 @@ class ChimewQualificationTest(unittest.TestCase):
             ).hexdigest()
             write_json(paths["electrical-map"], changed_electrical)
 
-            real_pipeline_write_json = chimew_pipeline_module.write_json
-
-            def fail_outer_commit(path, value, **kwargs):
-                if Path(path).name == "pipeline_report.json":
-                    raise OSError("injected outer pipeline commit failure")
-                return real_pipeline_write_json(path, value, **kwargs)
-
-            with mock.patch(
-                "emuflow.transport.chimew.chimew_pipeline.write_json",
-                side_effect=fail_outer_commit,
-            ):
-                with self.assertRaisesRegex(OSError, "outer pipeline commit"):
+            import os
+            previous_mode = output.stat().st_mode & 0o777
+            output.chmod(0o555)
+            try:
+                with self.assertRaisesRegex(ValidationError, "Permission denied|cannot create|cannot stage native artifact"):
                     run_chimew_phase6_pipeline(
                         paths["schedule"],
                         paths["platform"],
@@ -769,6 +770,8 @@ class ChimewQualificationTest(unittest.TestCase):
                         assigner=self.executables["assigner"],
                         region_count=7,
                     )
+            finally:
+                output.chmod(previous_mode)
             self.assertEqual(
                 (output / "pipeline_report.json").read_bytes(), committed_before
             )
@@ -890,72 +893,41 @@ class ChimewQualificationTest(unittest.TestCase):
 
             import emuflow.transport.chimew.chimew_pipeline as chimew_pipeline_module
 
-            real_locked_writer = (
-                chimew_pipeline_module._run_chimew_phase6_pipeline_locked
-            )
-            producer_entered = threading.Event()
-            release_first_writer = threading.Event()
-            producer_guard = threading.Lock()
-            active_producers = 0
-            maximum_active_producers = 0
-            producer_calls = 0
-
-            def observe_locked_writer(*args, **kwargs):
-                nonlocal active_producers, maximum_active_producers, producer_calls
-                with producer_guard:
-                    active_producers += 1
-                    producer_calls += 1
-                    call_number = producer_calls
-                    maximum_active_producers = max(
-                        maximum_active_producers, active_producers
-                    )
-                try:
-                    if call_number == 1:
-                        producer_entered.set()
-                        self.assertTrue(release_first_writer.wait(10.0))
-                    return real_locked_writer(*args, **kwargs)
-                finally:
-                    with producer_guard:
-                        active_producers -= 1
-
+            # Observe real native subprocesses queued on the same publication
+            # lock. No Python producer or mock transaction supplies the result.
+            import fcntl
+            import emuflow.transport.chimew.pipeline_native as native_pipeline
+            real_process = native_pipeline.NativeToolProcess
+            queued = threading.Event()
+            launch_guard = threading.Lock()
+            launched = []
+            def observe_native_launch(*args, **kwargs):
+                process = real_process(*args, **kwargs)
+                with launch_guard:
+                    launched.append(process.process.pid)
+                    if len(launched) == 2:
+                        queued.set()
+                return process
+            lock_path = output.parent / f".{output.name}.pipeline.lock"
             writer_errors.clear()
-            with mock.patch(
-                "emuflow.transport.chimew.chimew_pipeline._run_chimew_phase6_pipeline_locked",
-                side_effect=observe_locked_writer,
-            ):
-                first_writer = threading.Thread(
-                    target=run_locked_writer, args=(9,)
-                )
-                second_writer = threading.Thread(
-                    target=run_locked_writer, args=(10,)
-                )
-                first_writer.start()
-                self.assertTrue(producer_entered.wait(10.0))
-                second_writer.start()
-                second_writer.join(0.2)
-                self.assertTrue(second_writer.is_alive())
-                self.assertEqual(maximum_active_producers, 1)
-                release_first_writer.set()
-                first_writer.join(30.0)
-                second_writer.join(30.0)
-            self.assertFalse(first_writer.is_alive())
-            self.assertFalse(second_writer.is_alive())
+            with lock_path.open("r+b") as writer_gate:
+                fcntl.flock(writer_gate, fcntl.LOCK_EX)
+                before_queue = (output / "pipeline_report.json").read_bytes()
+                with mock.patch.object(native_pipeline, "NativeToolProcess", side_effect=observe_native_launch):
+                    first_writer = threading.Thread(target=run_locked_writer,args=(9,))
+                    second_writer = threading.Thread(target=run_locked_writer,args=(10,))
+                    first_writer.start(); second_writer.start()
+                    self.assertTrue(queued.wait(10.0))
+                    first_writer.join(0.2); second_writer.join(0.2)
+                    self.assertTrue(first_writer.is_alive() and second_writer.is_alive())
+                    self.assertEqual((output / "pipeline_report.json").read_bytes(),before_queue)
+                    fcntl.flock(writer_gate, fcntl.LOCK_UN)
+                    first_writer.join(30.0); second_writer.join(30.0)
+            self.assertFalse(first_writer.is_alive() or second_writer.is_alive())
             self.assertEqual(writer_errors, [])
-            self.assertEqual(maximum_active_producers, 1)
-            self.assertEqual(producer_calls, 2)
-            self.assertEqual(
-                validate_chimew_phase6_pipeline(output)["status"], "pass"
-            )
-            self.assertEqual(
-                len(
-                    [
-                        path
-                        for path in (output / "generations").iterdir()
-                        if path.is_dir()
-                    ]
-                ),
-                1,
-            )
+            self.assertEqual(len(launched),2)
+            self.assertEqual(validate_chimew_phase6_pipeline(output)["status"],"pass")
+            self.assertEqual(len([path for path in (output / "generations").iterdir() if path.is_dir()]),1)
             report = read_json(output / "pipeline_report.json")
             bound_plan = read_pin_plan(
                 output / report["artifacts"]["adapter_pin_plan"]["path"],
@@ -1200,14 +1172,17 @@ class ChimewQualificationTest(unittest.TestCase):
             # Inline historical handoffs no longer have a production reader.
             with self.assertRaises(ValidationError):
                 validate_chimew_phase6_pipeline(legacy_output)
-            (legacy_output / "unexpected.txt").write_text("unexpected\n")
-            with self.assertRaisesRegex(ValidationError, "coverage is not exact"):
-                validate_chimew_phase6_pipeline(legacy_output)
-            (legacy_output / "unexpected.txt").unlink()
-            legacy_report["artifacts"]["schedule"]["path"] = "../schedule.json"
-            write_json(legacy_output / "pipeline_report.json", legacy_report)
-            with self.assertRaisesRegex(ValidationError, "path is unsafe"):
-                validate_chimew_phase6_pipeline(legacy_output)
+            envelope_tamper = root / "envelope-tamper"
+            shutil.copytree(output,envelope_tamper)
+            (envelope_tamper / "unexpected.txt").write_text("unexpected\n")
+            with self.assertRaisesRegex(ValidationError,"coverage is not exact"):
+                validate_chimew_phase6_pipeline(envelope_tamper)
+            (envelope_tamper / "unexpected.txt").unlink()
+            envelope_report=read_json(envelope_tamper / "pipeline_report.json")
+            envelope_report["artifacts"]["platform"]["path"]="../platform.json"
+            write_json(envelope_tamper / "pipeline_report.json",envelope_report)
+            with self.assertRaisesRegex(ValidationError,"path is unsafe"):
+                validate_chimew_phase6_pipeline(envelope_tamper)
 
             adapter_tamper = root / "adapter-tamper"
             shutil.copytree(output, adapter_tamper)

@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from emuflow.flow.native_compile import _request
-from emuflow.flow.native_compile_adapter import _control_snapshot, _unpack
+from tests.native_compile_state_fixture import _control_snapshot, _unpack
 from emuflow.common.native_tools import native_file_generation
 from tests.native_build import emuflow_native
 from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract

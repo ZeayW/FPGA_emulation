@@ -1,5 +1,6 @@
 #include "flow/preflight.hpp"
 #include "board/model.hpp"
+#include "board/wiring.hpp"
 #include "common/artifact_io.hpp"
 #include "common/bounded_json.hpp"
 #include "common/tool_runtime.hpp"
@@ -7,6 +8,7 @@
 #include "partition/phase3.hpp"
 #include "physical/openparf/runtime.hpp"
 #include "timing/phase2.hpp"
+#include "transport/chimew/geometry.hpp"
 #include "transport/transport.hpp"
 #include <algorithm>
 #include <cstdlib>
@@ -395,7 +397,8 @@ struct Admission {
           "complete timing flow");
     Check(!internal || (Has("clock_periods") &&
                         !D(options.at("clock_periods")).Fields().empty()),
-          "multi-FPGA timing analysis requires at least one --clock-period CLOCK=PERIOD_NS");
+          "multi-FPGA timing analysis requires at least one --clock-period "
+          "CLOCK=PERIOD_NS");
     state["exact_cut_mode"] = "true";
     state["internal_timing_database"] = internal ? "true" : "false";
     state["checked_link_timing"] = "null";
@@ -623,10 +626,6 @@ struct Admission {
       for (const auto *name :
            {"vivado-lineage-store-v2", "vivado-export-request-v1"})
         (void)FindSchema(name);
-    // Chimew still owns its baseline/candidate physical configurations until
-    // its whole execution chain is replaced; common admission is shared.
-    if (Text("phase6_provider") != "baseline")
-      return;
     const auto engine =
         Bind(Tool("yosys", "yosys"), "external-tool-executable-v1");
     std::vector<std::string> rows{
@@ -840,7 +839,7 @@ struct Admission {
                    {"sources", Array(p4)}}));
     Store("native_phase4_configuration",
           output / ".native-phase4-configuration/request.json", ref);
-    if (Text("phase6_provider") == "baseline") {
+    {
       std::vector<std::string> p6{Record("board", *board_ref)};
       D platform(D(board).Token("platform"));
       if (platform.Has("virtual_board_model") &&
@@ -880,6 +879,67 @@ struct Admission {
             output / ".native-phase6-configuration/request.json",
             made.outputs.front());
     }
+  }
+  void Chimew(const fs::path &root) {
+    if (Text("phase6_provider") != "chimew")
+      return;
+    for (const auto *option : {"phase6_chimew_grouper", "phase6_chimew_refiner",
+                               "phase6_chimew_rudy", "phase6_chimew_assigner"})
+      if (Has(option))
+        Check(fs::canonical(Tool("emuflow-native", option)) == native.path(),
+              "Chimew kernels must use the unified native executable");
+    const auto directory = root / ".native-chimew-configuration";
+    fs::create_directory(directory);
+    const auto architecture =
+        Bind(Text("physical_architecture"), "physical-input-document-v1");
+    std::set<std::string> parts;
+    for (const auto &item : D::Array(D(board).Token("fpgas"), 4096))
+      parts.insert(D(item).Text("part"));
+    Check(parts.size() == 1, "Chimew requires a single Xilinx device model");
+    const auto made = PrepareChimewPackageGeometry(
+        architecture, *parts.begin(), (directory / "package.json").string(),
+        cancelled);
+    Check(made.ok(), "Chimew package geometry failed: " + made.message);
+    const auto package_ref = made.outputs.at(0);
+    D catalog(D::Read(package_ref));
+    D pins(catalog.Token("pins"));
+    const auto inventory =
+        Bind(Package("data/io/xcvu19p-fsva3824-2-e.hp-pins.json"),
+             "hp-package-pin-inventory-v1");
+    std::optional<ArtifactRef> wiring;
+    D platform(D(board).Token("platform"));
+    if (platform.Has("virtual_board_wiring") &&
+        platform.Token("virtual_board_wiring") != "null")
+      wiring = Bind(Asset(fs::path("platforms/virtual") /
+                          platform.Text("virtual_board_wiring")),
+                    "fixed-wiring-csv-v1");
+    const auto fixed = BuildVirtualBoard(board, inventory, wiring, cancelled);
+    D wired(fixed);
+    for (const auto &wire : D::Array(wired.Token("wires"), 16384))
+      for (const auto &end : D::Array(D(wire).Token("endpoints"), 2))
+        for (const auto *polarity : {"p", "n"}) {
+          D pin(D(end).Token(polarity));
+          const auto name = pin.Text("package_pin");
+          Check(pins.Has(name) &&
+                    DecodeJsonString(D::Array(pins.Token(name), 3).at(0)) ==
+                        pin.Text("site"),
+                "Chimew native package geometry does not cover the fixed P/N "
+                "wiring");
+        }
+    std::vector<std::string> rows{Record("architecture", architecture),
+                                  Record("board", *board_ref),
+                                  Record("inventory", inventory)};
+    if (wiring)
+      rows.push_back(Record("wiring", *wiring));
+    const auto config =
+        Write(directory / "request.json", "chimew-compile-configuration-v1",
+              D::Encode({{"schema",
+                          JsonQuote("emuflow.chimew-compile-configuration/v1")},
+                         {"sources", Array(rows)},
+                         {"package_geometry", catalog.text()}}));
+    Store("native_chimew_configuration",
+          output / ".native-chimew-configuration/request.json", config);
+    fs::remove(directory / "package.json");
   }
   void Frontend(const fs::path &root) {
     const auto mode = Has("prepared_frontend") || Has("prepared_timing")
@@ -956,6 +1016,7 @@ StageResult PrepareCompile(const ArtifactRef &request,
         fs::create_directories(in.output.parent_path());
         work.emplace(in.output.parent_path());
         in.Physical(work->root);
+        in.Chimew(work->root);
         in.StaticPolicies(work->root);
         in.Frontend(work->root);
         return in.sources;
@@ -1004,7 +1065,7 @@ StageResult PrepareCompile(const ArtifactRef &request,
              {"frontend", ".native-frontend-input-request",
               ".native-phase2-configuration", ".native-phase3-configuration",
               ".native-phase4-configuration", ".native-phase6-configuration",
-              ".native-physical-request"}) {
+              ".native-physical-request", ".native-chimew-configuration"}) {
           if (!fs::is_directory(root / name))
             continue;
           staging.push_back(std::make_unique<Work>(in.output));

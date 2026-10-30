@@ -16,8 +16,6 @@ from emuflow.flow.cli import _build_parser, _dispatch
 from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.common.io import read_json, write_json
 from emuflow.flow.multi_fpga_flow import (
-    _schedule_has_entries,
-    finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
     validate_multi_fpga_flow_bundle,
     validate_multi_fpga_flow_report,
@@ -58,21 +56,10 @@ def _catalog_source_fixture():
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
-    def test_phase6_dispatch_does_not_iterate_typed_schedule_entries(self):
-        entries = object.__new__(TypedScheduleEntrySequence)
-        entries._count = 3
-        with (
-            patch(
-                "emuflow.flow.multi_fpga_flow.read_tdm_schedule",
-                return_value={"entries": entries},
-            ),
-            patch.object(
-                TypedScheduleEntrySequence,
-                "__iter__",
-                side_effect=AssertionError("entries were materialized"),
-            ),
-        ):
-            self.assertTrue(_schedule_has_entries(Path("schedule.json")))
+    def test_python_phase6_dispatch_and_its_schedule_probe_are_retired(self):
+        from emuflow.flow import multi_fpga_flow as flow
+        self.assertFalse(hasattr(flow,"_schedule_has_entries"))
+        self.assertFalse(hasattr(flow,"_compile_split"))
 
     def test_native_frontend_contract_is_checked_without_python_schema_adapters(self):
         from tests.test_compile_preflight_native import request_options
@@ -557,74 +544,16 @@ class MultiFpgaFlowTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError,'requires 3.1.0 or newer'):run_preflight(**options)
             self.assertFalse((root/'native').exists())
 
-    def test_finalizes_checked_independent_physical_checkpoint(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory) / "multi"
-            report = run_multi_fpga_flow_fixture(
-                platform_path=PLATFORM,
-                output_dir=root,
-                yosys_json=ROOT / "examples/yosys/counter.json",
-                top="counter",
-                clocks=["clk"],
-                partition_provider="tritonpart",
-                cut_mode="static-exact-combinational",
-                timing_driven=False,
-                clock_periods={"clk": 10.0},
-                opensta=str(FAKE_OPENSTA),
-                router=str(tlr_router()),
-                frame_slots=32,
-                equivalence_cycles=2,
-                mapping_profile="xilinx-ultrascaleplus-open-v1",
-            )
-            physical_root = root / "physical-resumed"
-            physical_root.mkdir()
-            physical_report = {
-                "status": "pass",
-                "design": report["stages"]["frontend"]["design"],
-                "platform": report["stages"]["frontend"]["platform"],
-            }
-            write_json(
-                physical_root / "multi-fpga-physical-flow-report.json",
-                physical_report,
-            )
-            write_json(
-                physical_root / "physical-summary.json",
-                {"status": "pass"},
-            )
-
-            def fake_phase7c(*args, **kwargs):
-                runtime = args[3]
-                runtime.mkdir(parents=True)
-                write_json(runtime / "runtime_contract.json", {})
-                write_json(runtime / "qor_report.json", {})
-                return {"status": "pass"}
-
-            with (
-                patch(
-                    "emuflow.flow.multi_fpga_flow.validate_multi_fpga_physical_report",
-                    return_value={"status": "pass"},
-                ),
-                patch(
-                    "emuflow.flow.multi_fpga_flow.validate_multi_fpga_flow_report",
-                    return_value={"status": "pass"},
-                ),
-                patch(
-                    "emuflow.flow.multi_fpga_flow.run_native_physical_signoff",
-                    side_effect=fake_phase7c,
-                ),
-            ):
-                finalized = finalize_multi_fpga_physical_checkpoint(
-                    root, physical_root
-                )
-            self.assertEqual(finalized["summary"]["status"], "pass")
-            self.assertEqual(
-                finalized["artifacts"]["physical_flow_report"]["path"],
-                "physical-resumed/multi-fpga-physical-flow-report.json",
-            )
-            with self.assertRaisesRegex(ValidationError, "runtime directory"):
-                finalize_multi_fpga_physical_checkpoint(
-                    root, physical_root, runtime_directory="../escape"
-                )
+    def test_python_checkpoint_publication_is_retired(self) -> None:
+        from emuflow.flow import multi_fpga_flow as flow
+        self.assertFalse(hasattr(flow, "finalize_multi_fpga_physical_checkpoint"))
+        self.assertFalse(hasattr(flow, "run_native_physical_signoff"))
+        with self.assertRaises(SystemExit) as rejected:
+            _build_parser().parse_args([
+                "multi-fpga", "finalize-physical", "--flow", "/unused",
+                "--physical", "/unused/physical",
+            ])
+        self.assertEqual(rejected.exception.code, 2)
 
     def test_complete_flow_selects_parallel_global_route_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

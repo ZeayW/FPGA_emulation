@@ -26,5 +26,6 @@ StageResult PreparePhase6Configuration(const ArtifactRef& request,const std::str
     const volatile std::sig_atomic_t* cancelled=nullptr);
 StageResult CompilePhase6(const std::vector<ArtifactRef>& inputs,
                          const std::string& output_directory,
-                         const volatile std::sig_atomic_t* cancelled=nullptr);
+                         const volatile std::sig_atomic_t* cancelled=nullptr,
+                         const std::vector<std::pair<std::string,ArtifactRef>>& pin_sources={});
 }

@@ -15,8 +15,29 @@ import tempfile
 import threading
 
 from emuflow.common.errors import EmuFlowError
-from emuflow.flow.native_compile_adapter import _pack, _plain
+import math
 from emuflow.common.native_tools import resolve_native_executable
+
+
+def _control_options(value, depth=0):
+    """Encode finite public options without accepting circuit-sized views."""
+    if depth > 64:
+        raise EmuFlowError("native compiler control options are too deep")
+    if isinstance(value, Path):
+        return str(value)
+    if type(value) in {dict, list, tuple}:
+        if len(value) > 16384:
+            raise EmuFlowError("graph-sized collection in native compiler options")
+        if type(value) is dict:
+            if not all(type(key) is str for key in value):
+                raise EmuFlowError("invalid native compiler option key")
+            return {key: _control_options(item, depth+1) for key,item in value.items()}
+        return [_control_options(item, depth+1) for item in value]
+    if value is None or type(value) in {str, bool, int}:
+        return value
+    if type(value) is float and math.isfinite(value):
+        return value
+    raise EmuFlowError("unsupported object in native compiler options: "+type(value).__name__)
 
 
 @contextmanager
@@ -63,14 +84,14 @@ def _request(args, kwargs):
         raise EmuFlowError("multi-FPGA compilation requires an output directory")
     # Validate before serializing: mapping subclasses and graph views must never
     # be expanded by this control bridge. The file is configuration, not a graph.
-    _pack(dict(bound.arguments))
+    options = _control_options(dict(bound.arguments))
     value = {
         "schema": "emuflow.native-compile/v1",
         # Preserve the interpreter invocation (including a venv symlink).
         "python_executable": os.path.abspath(sys.executable),
         "python_source": str(PYTHON_ROOT),
         "working_directory": str(Path.cwd()),
-        "options": _plain(dict(bound.arguments)),
+        "options": options,
     }
     from emuflow.partition.structural_policy import _pattern_range_policy
     value["pattern_range_policy"] = _pattern_range_policy()
@@ -84,9 +105,8 @@ def run_native_multi_fpga_flow(*args, **kwargs):
     """Execute the sole production controller; never select another control chain.
 
     The C++ controller owns RTL frontend, pre-placement timing, partitioning,
-    routing, TDM, baseline splitting and physical implementation; Chimew adapters are
-    still explicit. This entry does
-    not assert that their remaining Python data planes have been migrated.
+    routing, TDM, baseline/Chimew splitting, both physical backends and
+    global timing. This host encodes bounded options and reads final summaries.
     """
     from emuflow.common.native_tools import require_native_schema
 
@@ -112,7 +132,7 @@ def run_native_multi_fpga_flow(*args, **kwargs):
                 stop_interrupts()
                 if process.poll() is None:
                     process.send_signal(signal.SIGTERM)
-                # The native owner reaps adapters and their nested tool owners
+                # The native owner reaps workers and their nested tool owners
                 # before request scratch is removed. Do not kill it early.
                 process.wait()
                 raise

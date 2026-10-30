@@ -184,15 +184,13 @@ StageResult PrepareRouting(const ArtifactRef &previous,
   std::optional<ArtifactRef> config, emuir, assignment, transport, selector,
       paths, projected_constraints;
   std::map<std::string, ArtifactRef> static_refs;
-  bool internal = false, cuts = false, baseline = false;
+  bool internal = false, cuts = false;
   return RunStage(
       "route-policy",
       [&] {
         state.Read(previous);
         internal = state.Flag("internal_timing_database");
         cuts = state.Flag("has_inter_fpga_cuts");
-        baseline =
-            DecodeJsonString(state.Value("phase6_provider")) == "baseline";
         Check(state.Has("native_phase4_configuration"),
               "native route configuration is missing; Python fallback is "
               "forbidden");
@@ -286,7 +284,7 @@ StageResult PrepareRouting(const ArtifactRef &previous,
                          fs::canonical(
                              state.File("effective_route_constraints"))),
                 "route constraint source disagrees");
-        if (baseline) {
+        {
           Check(state.Has("native_phase6_configuration"),
                 "native transport configuration is missing; Python fallback is "
                 "forbidden");
@@ -405,7 +403,7 @@ StageResult PrepareRouting(const ArtifactRef &previous,
               "route policy producer coverage disagrees");
         state.SetBinding("native_phase4_policy", "native_phase4_generation",
                          result.outputs[0]);
-        if (baseline) {
+        {
           const auto policy_root = root / ".native-phase6-request";
           Check(!fs::exists(policy_root) && !fs::is_symlink(policy_root),
                 "transport policy directory is not fresh");
