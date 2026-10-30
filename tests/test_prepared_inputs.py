@@ -22,7 +22,7 @@ def adopt(front, timing, root, platform=DEFAULT_PLATFORM_PATH, clocks=None):
     return root / "frontend/phase1"
 
 from emuflow.platform.platform import Platform
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = "xilinx-ultrascaleplus-open-v1"

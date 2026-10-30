@@ -14,7 +14,7 @@ from emuflow.common.io import file_sha256, write_json
 from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
 from emuflow.physical.vivado.vivado_physical import run_indexed_vivado_partition
 from emuflow.physical.vivado.vivado_physical_timing import write_vivado_local_query
-from emuflow.frontend.yosys import import_yosys_json
+from emuflow.frontend.yosys_hierarchy_native import import_hierarchical_emuir
 
 
 def main():
@@ -40,7 +40,7 @@ def main():
     source.write_text(json.dumps({"modules": {"dut": {"attributes": {"top": "1"},
         "ports": ports, "cells": cells, "netnames": {f"n{n}": {"bits": [n]} for n in range(2, 14)}}}}))
     ir = root / "source.emuir.sqlite"
-    import_yosys_json(source).save(ir)
+    import_hierarchical_emuir(source, ir, "dut", ("clk", "clk2", "fabric_clk"))
     mapped = root / "dut.v"
     mapped_report = emit_vivado_mapped_verilog(ir, mapped)
     # Use real P/N identities from the repository's declared virtual board.

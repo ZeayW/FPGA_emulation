@@ -15,7 +15,7 @@ from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, IndexedXil
 from tests.routed_segment_entry import build_xilinx_segment_timing_bundle
 from tests.xilinx_segment_timing_reference import (_TimingGraph,
     build_xilinx_boundary_timing, build_xilinx_logic_segment_timing, build_xilinx_local_path_timing)
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
 from tests.logic_identity_fixture import identity_facts
 from tests.timing_facts import local_timing_facts

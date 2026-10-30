@@ -19,7 +19,7 @@ from tests.xilinx_opensta_reference import build_xilinx_routed_opensta_inputs
 from tests.routed_opensta_reference import build_xilinx_routed_opensta_indexed_inputs, validate_xilinx_routed_opensta_summary
 from emuflow.ir.ir import EmuIR
 from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 def _sha(path: Path) -> str:
@@ -465,7 +465,7 @@ def test_real_opensta_accounts_for_each_inserted_route_delay(tmp_path, inverted)
 
 
 def test_typed_staging_transform_owns_pin_roles_bits_and_constants(tmp_path):
-    from emuflow.frontend.yosys import import_yosys_json_indexed
+    from tests.yosys_reference import import_yosys_json_indexed
     mapped, _timing = _indexed_routed_fixture(tmp_path)
     output = tmp_path / "transformed.emuir.sqlite"
     def transform(connection, *_):

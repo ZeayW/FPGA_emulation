@@ -16,7 +16,7 @@ from emuflow.common.io import file_sha256
 from tests.vivado_input_host import prepare_vivado_inputs
 from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
 from tests.vivado_measurement_host import write_vivado_local_query, import_vivado_local_timing
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 def fixture(root):

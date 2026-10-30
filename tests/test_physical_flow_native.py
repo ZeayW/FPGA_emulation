@@ -8,7 +8,7 @@ from contextlib import closing
 
 import pytest
 from emuflow.common.native_tools import native_file_generation
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from emuflow.platform.platform import Platform
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule

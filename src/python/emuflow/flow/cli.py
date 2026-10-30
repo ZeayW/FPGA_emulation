@@ -72,7 +72,6 @@ from emuflow.timing.sta import derive_partition_net_weights, validate_sta_path_d
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
-from emuflow.frontend.yosys import import_yosys_json
 from emuflow.frontend.verilog import emit_mapped_verilog
 
 def _print_json(value: Dict[str, Any]) -> None:
@@ -207,14 +206,6 @@ def _build_parser() -> argparse.ArgumentParser:
     ir_validate.add_argument("path", type=Path)
     ir_stats = ir_subparsers.add_parser("stats", help="show EmuIR statistics")
     ir_stats.add_argument("path", type=Path)
-
-    importer = subparsers.add_parser(
-        "import-yosys", help="convert Yosys JSON to EmuIR"
-    )
-    importer.add_argument("input", type=Path)
-    importer.add_argument("--output", "-o", type=Path, required=True)
-    importer.add_argument("--top")
-    importer.add_argument("--clock", action="append", default=[])
 
     synthesis = subparsers.add_parser(
         "synth-yosys", help="synthesize RTL to mapped Xilinx Yosys JSON"
@@ -1497,12 +1488,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         else:
             _print_json(ir.stats())
-        return 0
-
-    if args.command == "import-yosys":
-        ir = import_yosys_json(args.input, top=args.top, clocks=args.clock)
-        write_json(args.output, ir.to_dict())
-        _print_json(ir.stats())
         return 0
 
     if args.command == "synth-yosys":

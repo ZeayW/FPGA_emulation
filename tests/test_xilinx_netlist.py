@@ -12,7 +12,7 @@ from emuflow.physical.xilinx_netlist import (
     is_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):

@@ -6,7 +6,7 @@ from unittest.mock import patch
 from emuflow.common.io import write_json
 from emuflow.common.errors import ValidationError
 from emuflow.frontend.verilog import emit_mapped_verilog, mapped_verilog, write_mapped_verilog
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 ROOT = Path(__file__).resolve().parents[1]

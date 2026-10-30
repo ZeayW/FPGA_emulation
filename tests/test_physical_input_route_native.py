@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index
 from emuflow.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
 from tests.native_build import emuflow_native

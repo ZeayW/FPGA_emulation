@@ -10,7 +10,7 @@ from unittest import mock
 
 import pytest
 from emuflow.common.errors import ValidationError
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from emuflow.physical.xilinx_physical_backend import run_rapidwright_openparf_native_candidate_backend
 from tests.test_openparf_runtime_native import executable as placement_tool
 from tests.test_rwroute_stage_native import setup as route_tool

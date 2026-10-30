@@ -59,7 +59,7 @@ def test_source_declared_undriven_inputs_remain_disconnected_and_queried_paths_f
 
 
 def test_undriven_declaration_reader_streams_completed_sqlite_source(tmp_path):
-    from emuflow.frontend.yosys import import_yosys_json
+    from tests.yosys_reference import import_yosys_json
     from emuflow.ir.ir import EmuIR
     value = import_yosys_json(
         Path(__file__).resolve().parents[1] / "examples/yosys/counter.json",

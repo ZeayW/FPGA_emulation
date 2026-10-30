@@ -241,7 +241,7 @@ def test_atomic_source_binds_mapped_input_and_source_seal_before_consumption(
         emit_xilinx_mapped_index,
         open_xilinx_mapped_index,
     )
-    from emuflow.frontend.yosys import import_yosys_json
+    from tests.yosys_reference import import_yosys_json
     from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
     mapped_json, _, _ = write_openparf_runtime_fixture(tmp_path, include_hard=True)

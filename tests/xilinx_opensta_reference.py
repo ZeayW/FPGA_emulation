@@ -40,7 +40,7 @@ from tests.routed_timing_adapter import (
     validate_xilinx_routed_timing,
 )
 from emuflow.physical.xilinx_netlist import is_xilinx_mapped_index
-from emuflow.frontend.yosys import import_yosys_json, import_yosys_json_indexed
+from tests.yosys_reference import import_yosys_json, import_yosys_json_indexed
 
 
 XILINX_ROUTED_OPENSTA_SCHEMA = "emuflow.xilinx-routed-opensta-summary/v1"

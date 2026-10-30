@@ -16,7 +16,7 @@ from emuflow.common.io import file_sha256
 from emuflow.timing.opensta import OPENSTA_PROVIDER, run_opensta_path_database
 from emuflow.timing.sta import (STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming,
                          iter_sta_path_database_paths, validate_sta_path_database)
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.sta_path_reference import endpoint_facts
 from tests.sta_path_reference import path_facts
 

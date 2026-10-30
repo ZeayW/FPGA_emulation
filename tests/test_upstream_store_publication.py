@@ -36,7 +36,7 @@ def coordinates(generation=0):
 
 
 def setup_case(kind, root):
-    from emuflow.frontend.yosys import import_yosys_json
+    from tests.yosys_reference import import_yosys_json
     from emuflow.timing import sta
 
     ir = import_yosys_json(

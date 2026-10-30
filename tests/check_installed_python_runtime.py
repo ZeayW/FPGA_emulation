@@ -38,7 +38,7 @@ def main(source_root: Path, install_root: Path) -> None:
     from emuflow.timing.opensta import OPENSTA_RUNTIME_CHECK_SCRIPT
     from emuflow.physical.vivado.vivado_physical import _vivado_script
     assert Path(emuflow.__file__).resolve().parent == package.resolve()
-    for retired in ("cli", "phase3", "native_compile_adapter", "xilinx_rwroute"):
+    for retired in ("cli", "phase3", "native_compile_adapter", "xilinx_rwroute", "frontend.yosys"):
         assert importlib.util.find_spec("emuflow." + retired) is None, retired
     data = [p for p in (source / "data").rglob("*") if p.suffix in {".json", ".sql", ".tcl", ".v"}]
     for path in data:

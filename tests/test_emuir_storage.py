@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from emuflow.ir.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite, _write_emuir_sqlite_v1
 from emuflow.ir.ir import EmuIR
-from emuflow.frontend.yosys import import_yosys_json, import_yosys_json_indexed
+from tests.yosys_reference import import_yosys_json, import_yosys_json_indexed
 
 
 ROOT = Path(__file__).resolve().parents[1]

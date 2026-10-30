@@ -21,7 +21,7 @@ from tests.xilinx_site_reference import validate_xilinx_packing
 from tests.xilinx_site_reference import validate_xilinx_placement
 from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input
 from tests.rwroute_reference import export_rwroute_reference
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 

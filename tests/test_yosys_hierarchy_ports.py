@@ -51,7 +51,7 @@ def fixture(direction, binding):
 
 class HierarchyPortTest(unittest.TestCase):
     def test_constant_child_outputs_propagate_through_nested_parent_aliases(self):
-        from emuflow.frontend.yosys import import_yosys_json_indexed
+        from tests.yosys_reference import import_yosys_json_indexed
         from emuflow.ir.indexed_physical_ir import IndexedPhysicalIR
         from emuflow.physical.vivado.vivado_source import validate_vivado_source
 

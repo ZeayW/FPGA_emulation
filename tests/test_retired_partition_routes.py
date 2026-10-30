@@ -98,7 +98,7 @@ def test_retired_phase3_snapshot_routes_are_absent_from_public_api(tmp_path, opt
 
 def test_plain_graph_phase3_has_no_python_fallback(tmp_path):
     from emuflow.common.io import write_json
-    from emuflow.frontend.yosys import import_yosys_json
+    from tests.yosys_reference import import_yosys_json
     root = Path(__file__).parents[1]
     graph = tmp_path/'design.json'
     write_json(graph, import_yosys_json(root/'examples/yosys/counter.json', top='counter', clocks=['clk']).value)

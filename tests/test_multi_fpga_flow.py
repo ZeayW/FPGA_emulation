@@ -544,6 +544,15 @@ class MultiFpgaFlowTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError,'requires 3.1.0 or newer'):run_preflight(**options)
             self.assertFalse((root/'native').exists())
 
+    def test_python_yosys_import_entry_is_retired(self) -> None:
+        from importlib.util import find_spec
+        self.assertIsNone(find_spec("emuflow.frontend.yosys"))
+        with self.assertRaises(SystemExit) as rejected:
+            _build_parser().parse_args([
+                "import-yosys", "/unused.json", "--output", "/unused.emuir.sqlite",
+            ])
+        self.assertEqual(rejected.exception.code, 2)
+
     def test_python_checkpoint_publication_is_retired(self) -> None:
         from emuflow.flow import multi_fpga_flow as flow
         self.assertFalse(hasattr(flow, "finalize_multi_fpga_physical_checkpoint"))

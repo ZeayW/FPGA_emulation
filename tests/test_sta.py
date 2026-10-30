@@ -23,7 +23,7 @@ from emuflow.timing.sta import (
     write_emuir_net_map,
 )
 from emuflow.timing.sta_projection import project_sta_path_database
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 ROOT = Path(__file__).resolve().parents[1]

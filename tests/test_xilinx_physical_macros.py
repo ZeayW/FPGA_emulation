@@ -14,7 +14,7 @@ from emuflow.physical.xilinx_physical_macros import (
     validate_xilinx_physical_macro_contract,
 )
 from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 class ImmutableMacroDerivationTests(unittest.TestCase):

@@ -6,7 +6,7 @@ from pathlib import Path
 from emuflow.ir.emuir_storage import _write_emuir_sqlite_v1
 from scripts.validation.qualify_handoffs import main
 from emuflow.ir.ir import EmuIR
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from emuflow.common.errors import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]

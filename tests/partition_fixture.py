@@ -50,7 +50,7 @@ def run_phase3_fixture(*args, **kwargs):
 def run_multi_fpga_flow_fixture(*args, **kwargs):
     """Exercise the actual native controller with a bounded initializer input."""
     from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-    from emuflow.frontend.yosys import import_yosys_json
+    from tests.yosys_reference import import_yosys_json
     from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
     from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
     assert not args and kwargs["partition_provider"] == "tritonpart"

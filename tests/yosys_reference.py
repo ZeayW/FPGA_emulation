@@ -1,3 +1,9 @@
+"""Independent Yosys import oracle for differential fixtures only.
+
+The production frontend imports directly into compact EmuIR in the native core.
+This reference is never installed or used by the normal compile path.
+"""
+
 from __future__ import annotations
 
 import json
@@ -536,7 +542,7 @@ def import_yosys_json_indexed(
 ) -> Optional[Dict[str, Any]]:
     """Import Yosys interchange directly into indexed EmuIR.
 
-    Unlike :func:`import_yosys_json`, this production importer never builds a
+    Unlike :func:`import_yosys_json`, this indexed fixture oracle never builds a
     second, graph-sized Python ``instances``/``nets`` tree.  With an explicit
     top module, leaf records are decoded directly from the input stream;
     endpoints and name aliases are staged as normalized SQLite rows and the

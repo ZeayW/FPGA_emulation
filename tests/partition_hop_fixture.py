@@ -12,7 +12,7 @@ from tests.native_partition_facts import (build_clusters, build_partition_assign
 from tests.native_partition_kernel_driver import initialize
 from emuflow.partition.partition_ir import load_partition_ir
 from emuflow.platform.platform import Platform
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 PLACEMENT = {'q_reg[0]': 'F0', 'q_reg[1]': 'F0', 'q_reg[2]': 'F1', 'q_reg[3]': 'F1',

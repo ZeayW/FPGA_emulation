@@ -16,7 +16,7 @@ from emuflow.timing.opensta import (
 from emuflow.timing.xilinx_preplacement_timing import (
     build_xilinx_preplacement_timing_db,
 )
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 def _sha(path: Path) -> str:

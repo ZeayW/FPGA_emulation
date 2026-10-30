@@ -370,7 +370,7 @@ def test_native_controller_completes_existing_nonphysical_contract_fixture(tmp_p
     # native timing stage forwards its environment through the tool protocol.
     monkeypatch.setenv("EMUFLOW_COMPILE_EMPTY_ENV", "")
     from tests.partition_fixture import write_fixture_solution
-    from emuflow.frontend.yosys import import_yosys_json
+    from tests.yosys_reference import import_yosys_json
     solution = tmp_path / "initial.part"
     write_fixture_solution(
         import_yosys_json(root / "examples/yosys/static_exact_chain.json", top="static_exact_chain", clocks=["clk"]),

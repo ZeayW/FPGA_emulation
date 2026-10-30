@@ -15,7 +15,7 @@ from emuflow.ir.ir import EmuIR
 from emuflow.timing.opensta_export_native import export_opensta_inputs
 from emuflow.timing.sta import write_emuir_net_map
 from emuflow.frontend.verilog import mapped_verilog, write_mapped_verilog
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 ROOT = Path(__file__).parents[1]
 

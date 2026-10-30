@@ -11,7 +11,7 @@ from unittest import mock
 import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from emuflow.physical.transport_synthesis import synthesize_transport
 from tests.transport_fanout_reference import buffer_transport_high_fanout_records as reference_buffer
 
@@ -60,7 +60,7 @@ print(json.dumps({data!r}))
 
 def test_complete_native_transport_source_import_and_tree(tmp_path):
     options,data,trace=case(tmp_path)
-    with mock.patch('emuflow.frontend.yosys.import_yosys_json_indexed',side_effect=AssertionError('host graph import')):
+    with mock.patch('tests.yosys_reference.import_yosys_json_indexed',side_effect=AssertionError('host graph import')):
         result=synthesize_transport(**options)
     assert result['implementation_id']=='native-transport-synthesis-v1'
     assert result['fanout_buffering']['summary']=={'buffered_nets':1,'buffer_cells':7,'added_nets':7,

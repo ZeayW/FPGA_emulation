@@ -32,7 +32,7 @@ from emuflow.transport.transport_storage import (
 from emuflow.transport.virtual_board import (
     IO_CONTRACT_STORAGE_SCHEMA,
 )
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.native_build import tlr_router
 
 ROOT=Path(__file__).resolve().parents[1]

@@ -15,7 +15,7 @@ from emuflow.physical.vivado.vivado_lineage import (INVENTORY_HEADER, LINEAGE_PO
 from tests.vivado_lineage_host import import_cell_lineage
 from tests.vivado_query_host import resolve_vivado_query as resolve_timing_query
 from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 class VivadoLineageTests(unittest.TestCase):

@@ -49,7 +49,7 @@ from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.transport.phase6 import run_phase6, validate_phase6
 from emuflow.timing.phase7c import run_phase7c
 from emuflow.platform.platform import Platform
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.native_build import tlr_router,emuflow_native
 
 

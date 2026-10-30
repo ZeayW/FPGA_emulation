@@ -50,7 +50,7 @@ def stage(mapped, timing, output):
 def test_native_stages_without_python_endpoints_cells_or_complete_model(tmp_path):
     mapped, timing, output = fixture(tmp_path)
     with patch("tests.routed_timing_adapter.iter_xilinx_routed_timing_endpoints", side_effect=AssertionError("Python endpoint population")), \
-         patch("emuflow.frontend.yosys.import_yosys_json_indexed", side_effect=AssertionError("Python staging graph")), \
+         patch("tests.yosys_reference.import_yosys_json_indexed", side_effect=AssertionError("Python staging graph")), \
          patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("Python graph materialization")):
         model, report = stage(mapped, timing, output)
     assert isinstance(model, RoutedTimingModel)

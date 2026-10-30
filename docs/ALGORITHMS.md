@@ -290,7 +290,7 @@ adapter.
 
 | Component | Relationship to upstream work | Implementation entry point |
 | --- | --- | --- |
-| Yosys / ABC synthesis | Direct upstream tool execution; EmuFlow mapping profiles and import | [yosys.py](../src/python/emuflow/frontend/yosys.py) |
+| Yosys / ABC synthesis | Direct upstream tool execution; EmuFlow mapping profiles and import | [native frontend](../src/core/frontend/frontend.cpp) |
 | OpenSTA path extraction | Direct STA-engine integration; EmuFlow path contract | [opensta.py](../src/python/emuflow/timing/opensta.py) |
 | TritonPart | Upstream initializer integration; shared assignment/legality contracts | [partition.py](../src/python/emuflow/partition/partition.py) |
 | PATRON | EmuFlow path-aware K-way refinement initialized by TritonPart; not an external paper implementation | [patron_refiner.cpp](../src/core/partition/patron_refiner.cpp) |

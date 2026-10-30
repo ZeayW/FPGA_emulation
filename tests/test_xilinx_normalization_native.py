@@ -11,7 +11,7 @@ import pytest
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.storage.store_publication import bind_store_source
 from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY, normalize_xilinx_mapped_json, normalize_xilinx_indexed_staging
-from emuflow.frontend.yosys import import_yosys_json_indexed
+from tests.yosys_reference import import_yosys_json_indexed
 from emuflow.frontend.yosys_hierarchy_native import stage_hierarchy
 from emuflow.ir.ir import EmuIR
 from tests.native_build import emuflow_native

@@ -29,7 +29,7 @@ from emuflow.timing.sta import (
     validate_sta_path_database,
 )
 from emuflow.frontend.verilog import mapped_verilog
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.sta_path_reference import endpoint_facts
 
 

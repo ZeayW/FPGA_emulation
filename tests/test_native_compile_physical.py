@@ -12,7 +12,7 @@ from tests.test_physical_flow_native import setup, write_flow_transport_tool
 
 def test_baseline_compile_owns_physical_without_a_python_phase_adapter(tmp_path,monkeypatch):
     from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-    from emuflow.frontend.yosys import import_yosys_json
+    from tests.yosys_reference import import_yosys_json
     from tests.partition_fixture import write_fixture_solution
     from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
     root=Path(__file__).resolve().parents[1]

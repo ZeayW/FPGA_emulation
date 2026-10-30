@@ -17,7 +17,7 @@ from emuflow.physical.xilinx_netlist import (
 )
 from tests.openparf_source_fixture import write_xilinx_openparf_atomic_source_storage
 from emuflow.physical.openparf.xilinx_openparf_source_storage import OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 

@@ -25,7 +25,7 @@ from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.phase3_exact_fixture import indexed_exact_manifest
 from emuflow.platform.platform import BoardLink, FpgaNode, Platform
 from emuflow.ir.resources import RESOURCE_FIELDS, ResourceVector
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 ROOT = Path(__file__).resolve().parents[1]

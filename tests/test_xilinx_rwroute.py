@@ -27,7 +27,7 @@ from tests.xilinx_timing_reference import (
     iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 
 
 SHA = "0" * 64

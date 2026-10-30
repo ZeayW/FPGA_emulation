@@ -27,7 +27,7 @@ from tests.routing_reference import exact_route_tree_selection
 from emuflow.scheduling.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, load_sta_paths, normalize_sta_paths, reconstruct_system_route_timing, validate_native_system_routes)
 from emuflow.routing.system_route_storage import SYSTEM_ROUTE_STORAGE_SCHEMA, SYSTEM_ROUTE_USER_VERSION, SystemRoutesView, read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.native_build import emuflow_native, tlr_router
 
 

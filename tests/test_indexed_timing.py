@@ -22,7 +22,7 @@ from emuflow.timing.sta import (
     write_emuir_net_map,
 )
 from emuflow.frontend.verilog import mapped_verilog, write_mapped_verilog
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.sta_path_reference import endpoint_facts
 
 ROOT = Path(__file__).resolve().parents[1]

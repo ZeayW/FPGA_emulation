@@ -122,7 +122,7 @@ def phase2_runtime(tmp_path, monkeypatch):
 def _counter_stage_input(root):
     from pathlib import Path
     from tests.sta_path_reference import endpoint_facts
-    from emuflow.frontend.yosys import import_yosys_json
+    from tests.yosys_reference import import_yosys_json
     repository = Path(__file__).resolve().parents[1]
     ir = import_yosys_json(repository / 'examples/yosys/counter.json',
                            top='counter', clocks=['clk'])
@@ -448,7 +448,7 @@ def test_native_policy_matches_all_specialized_pin_roles_and_clock_polarities(tm
     from copy import deepcopy
     from unittest.mock import patch
     from tests.test_xilinx_preplacement_timing import _mapped_fixture
-    from emuflow.frontend.yosys import import_yosys_json
+    from tests.yosys_reference import import_yosys_json
     from emuflow.timing.opensta import (build_architecture_opensta_timing_model,
         render_opensta_liberty, validate_timing_model_coverage, _sealed_string_set_summary)
     mapped = tmp_path / 'mapped.json'

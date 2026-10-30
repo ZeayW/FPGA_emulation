@@ -23,7 +23,7 @@ from emuflow.timing.opensta import (
     classify_through_net_timing_endpoints,
     load_timing_model,
 )
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.phase3_store_fixture import write_current_assignment_fixture
 from tests.cut_qualification_reference import build_cut_segment_qualification_value, CUT_SEGMENT_QUALIFICATION_SCHEMA
 

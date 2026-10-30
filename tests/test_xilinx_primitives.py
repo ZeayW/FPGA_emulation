@@ -17,7 +17,7 @@ from emuflow.physical.xilinx_primitives import (
     _IndexedCellMapping,
 )
 from emuflow.ir.resources import ResourceVector, classify_primitive_resources
-from emuflow.frontend.yosys import import_yosys_json_indexed
+from tests.yosys_reference import import_yosys_json_indexed
 
 
 def _cell(cell_type: str) -> dict:

@@ -6,7 +6,7 @@ from unittest.mock import patch
 from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.common.io import write_json
 from emuflow.ir.ir import EmuIR
-from emuflow.frontend.yosys import import_yosys_json
+from tests.yosys_reference import import_yosys_json
 from tests.vivado_query_host import write_vivado_boundary_query as write_vivado_boundary_timing_query
 from tests.vivado_input_host import prepare_vivado_inputs
 from emuflow.ir.emuir_compact import write_compact_emuir
