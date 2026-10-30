@@ -47,6 +47,12 @@ public:
         break;
     }
   }
+  bool ConsumeNull() {
+    if (Peek() != 'n')
+      return false;
+    Check(Value() == "null", "invalid null token");
+    return true;
+  }
   std::string Value() {
     std::string out;
     Read(&out, 0);

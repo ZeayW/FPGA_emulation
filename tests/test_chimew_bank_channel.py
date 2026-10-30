@@ -41,9 +41,7 @@ from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
     read_chimew_bank_channel_report,
 )
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.transport.chimew.chimew_qualification import (
-    validate_chimew_bank_channel_report_artifact,
-)
+from tests.chimew_qualification_fixture import validate_chimew_bank_channel_report_artifact
 from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
 from tests.native_build import chimew_bank_oracle, emuflow_native
 
@@ -1187,7 +1185,7 @@ class ChimewBankChannelTest(unittest.TestCase):
                                 self.document, executable=str(executable)
                             )
 
-    def test_semantic_channel_index_batches_one_large_bank(self) -> None:
+    def test_semantic_channel_index_handles_large_bank_without_python_staging(self) -> None:
         document = copy.deepcopy(self.document)
         document["bank_pairs"] = [copy.deepcopy(document["bank_pairs"][0])]
         document["bank_pairs"][0]["channels"] = [
@@ -1218,30 +1216,17 @@ class ChimewBankChannelTest(unittest.TestCase):
         report = evaluate_chimew_bank_channel_assignment(
             document, executable=str(self.executable)
         )
-        real_connect = sqlite3.connect
-        channel_batches = []
-
-        class ConnectionSpy:
-            def __init__(self, connection):
-                self.connection = connection
-
-            def executemany(self, sql, rows):
-                if "INSERT INTO channels" in sql:
-                    channel_batches.append(len(rows))
-                return self.connection.executemany(sql, rows)
-
-            def __getattr__(self, name):
-                return getattr(self.connection, name)
-
-        with mock.patch.object(
-            qualification_module.sqlite3,
-            "connect",
-            side_effect=lambda *args, **kwargs: ConnectionSpy(
-                real_connect(*args, **kwargs)
-            ),
-        ):
-            validate_chimew_bank_channel_report_artifact(document, report)
-        self.assertEqual(channel_batches, [4096, 905])
+        from tests.chimew_qualification_fixture import typed_pair
+        with typed_pair(document, report) as (source, result):
+            with mock.patch.object(
+                source, "validated_problem",
+                side_effect=AssertionError("Python bank model validation"),
+            ), mock.patch.object(
+                sqlite3, "connect", side_effect=AssertionError("Python SQL staging"),
+            ):
+                proof = qualification_module.validate_chimew_bank_channel_report_artifact(source, result)
+            self.assertEqual(proof["metrics"]["channels"], 5001)
+            self.assertEqual(proof["metrics"]["groups"], 1)
 
     def test_indexed_report_rejects_resealed_malformed_store_and_symlink(self) -> None:
         report = evaluate_chimew_bank_channel_assignment(

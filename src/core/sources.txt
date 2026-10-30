@@ -127,3 +127,5 @@ physical/flow/partition.cpp
 physical/flow/assembly.cpp
 physical/flow/controller.cpp
 physical/flow/compile_request.cpp
+
+transport/chimew/qualification.cpp

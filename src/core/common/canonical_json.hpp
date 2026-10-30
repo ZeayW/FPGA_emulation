@@ -9,7 +9,9 @@ inline std::string CanonicalJsonToken(const std::string &token) {
   if (token[0] == '{') {
     std::map<std::string, std::string> fields;
     VisitJsonObjectTokens(token, [&](const auto &k, const auto &v) {
-      fields.emplace(k, CanonicalJsonToken(v));
+      if (!fields.emplace(k, CanonicalJsonToken(v)).second)
+        throw StageError(ErrorCode::kInvalidArtifact,
+                         "duplicate canonical JSON object key");
     });
     return BoundedJson::Encode(fields);
   }

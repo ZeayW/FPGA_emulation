@@ -17,7 +17,7 @@ from emuflow.transport.chimew.chimew_bank_channel_report_storage import BankChan
 from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
 from emuflow.transport.chimew.chimew_grouping import build_chimew_initial_groups
 from emuflow.transport.chimew.chimew_phase6 import CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA, CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V1, CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V2, CHIMEW_PHASE6_BINDING_PROVIDER, chimew_adapter_report_generation_path, validate_chimew_adapter_generation, run_chimew_phase6_adapter, validate_chimew_electrical_map, validate_chimew_phase6_binding
-from emuflow.transport.chimew.chimew_qualification import build_chimew_phase6_qualification, canonical_sha256, validate_chimew_phase6_qualification
+from emuflow.transport.chimew.chimew_qualification import qualify_chimew_artifact_chain, canonical_sha256, validate_chimew_phase6_qualification
 from emuflow.transport.chimew.chimew_refinement import refine_chimew_groups
 from emuflow.transport.chimew.chimew_rudy import evaluate_chimew_rudy
 from emuflow.common.errors import ValidationError
@@ -430,12 +430,6 @@ def _validate_pipeline_artifact_semantics_records(
     )
     schedule = own(read_tdm_schedule(paths["schedule"]))
     platform = Platform.load(paths["platform"])
-    crossings = read_json(paths["crossings"])
-    positions = read_json(paths["positions"])
-    initial = read_json(paths["initial_grouping"])
-    refined = read_json(paths["refined_grouping"])
-    rudy_input = read_json(paths["rudy_input"])
-    rudy_report = read_json(paths["rudy_report"])
     if (
         "bank_channel_input_store" in paths
         and getattr(bank_input, "store_path", None)
@@ -473,6 +467,9 @@ def _validate_pipeline_artifact_semantics_records(
     )
     source_binding = None
     if source_bound:
+        crossings = read_json(paths["crossings"])
+        positions = read_json(paths["positions"])
+        rudy_input = read_json(paths["rudy_input"])
         expected_digests = _source_digests(
             crossings,
             positions,
@@ -497,15 +494,9 @@ def _validate_pipeline_artifact_semantics_records(
     qualification = read_json(paths["qualification"])
     qualification_validation = validate_chimew_phase6_qualification(
         qualification,
-        schedule,
-        crossings,
-        initial,
-        positions,
-        refined,
-        rudy_input,
-        rudy_report,
-        bank_input,
-        bank_report,
+        {key: paths[key] for key in (
+            "schedule", "crossings", "initial_grouping", "positions", "refined_grouping",
+            "rudy_input", "rudy_report", "bank_channel_input", "bank_channel_report")},
         source_binding=source_binding,
     )
     adapter_bank_report = own(
@@ -738,19 +729,6 @@ def _run_chimew_phase6_pipeline_with_bank_input(
             "digests": expected_digests,
         }
 
-    qualification = build_chimew_phase6_qualification(
-        schedule,
-        crossings,
-        initial,
-        positions,
-        refined,
-        rudy_input,
-        rudy_report,
-        bank_input,
-        bank_report,
-        source_binding=source_binding,
-    )
-
     provider = (
         CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER
         if source_paths is not None
@@ -820,7 +798,6 @@ def _run_chimew_phase6_pipeline_with_bank_input(
             "initial_grouping": initial,
             "refined_grouping": refined,
             "rudy_report": rudy_report,
-            "qualification": qualification,
         }
         for label, document in kernel_documents.items():
             path = kernels_dir / f"{label}.json"
@@ -838,6 +815,14 @@ def _run_chimew_phase6_pipeline_with_bank_input(
             )
         artifact_paths["bank_channel_report_store"] = (
             bank_report_path.parent / bank_report_store.name
+        )
+
+        artifact_paths["qualification"] = kernels_dir / "qualification.json"
+        qualification = qualify_chimew_artifact_chain(
+            {key: artifact_paths[key] for key in (
+                "schedule", "crossings", "initial_grouping", "positions", "refined_grouping",
+                "rudy_input", "rudy_report", "bank_channel_input", "bank_channel_report")},
+            artifact_paths["qualification"], source_binding=source_binding,
         )
 
         adapter_report = run_chimew_phase6_adapter(

@@ -42,7 +42,7 @@ from emuflow.transport.chimew.chimew_bank_channel_storage import read_chimew_ban
 from emuflow.transport.chimew.chimew_bank_channel_report_storage import read_chimew_bank_channel_report
 from emuflow.transport.chimew.chimew_grouping import materialize_chimew_schedule_ratios
 from emuflow.transport.chimew.chimew_pipeline import run_chimew_phase6_pipeline, validate_chimew_phase6_pipeline
-from emuflow.transport.chimew.chimew_qualification import build_chimew_phase6_qualification
+from emuflow.transport.chimew.chimew_qualification import qualify_chimew_artifact_chain
 from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2, STATIC_EXACT_DEFAULT_CANDIDATE_POLICY, STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
 from emuflow.physical.rapidwright.rapidwright_provider import load_rapidwright_provider_manifest, run_rapidwright_device_import, validate_rapidwright_architecture, validate_rapidwright_provider_manifest
 from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input, run_rwroute, validate_xilinx_route_db
@@ -2081,20 +2081,13 @@ def _dispatch(args: argparse.Namespace) -> int:
             _print_json(report)
             return 0
         if args.pin_plan_command == "chimew-qualify":
-            with read_chimew_bank_channel_input(args.assignment_input) as assignment_input, \
-                    read_chimew_bank_channel_report(args.assignment_report) as assignment_report:
-                report = build_chimew_phase6_qualification(
-                    read_json(args.schedule),
-                    read_json(args.crossings),
-                    read_json(args.initial_grouping),
-                    read_position_hints(args.positions),
-                    read_json(args.refined_grouping),
-                    read_json(args.rudy_input),
-                    read_json(args.rudy_report),
-                    assignment_input,
-                    assignment_report,
-                )
-            write_json(args.output, report)
+            report = qualify_chimew_artifact_chain({
+                "schedule": args.schedule, "crossings": args.crossings,
+                "initial_grouping": args.initial_grouping, "positions": args.positions,
+                "refined_grouping": args.refined_grouping, "rudy_input": args.rudy_input,
+                "rudy_report": args.rudy_report, "bank_channel_input": args.assignment_input,
+                "bank_channel_report": args.assignment_report,
+            }, args.output)
             _print_json(report)
             return 0
         if args.pin_plan_command == "chimew-run":

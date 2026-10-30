@@ -14,6 +14,7 @@
 #include "transport/chimew/signals.hpp"
 #include "transport/chimew/lookahead.hpp"
 #include "transport/chimew/bank_store.hpp"
+#include "transport/chimew/qualification.hpp"
 #include "board/wiring.hpp"
 #include "flow/preflight.hpp"
 #include "physical/placement_lowering.hpp"
@@ -105,6 +106,8 @@ constexpr const char* kUsage =
     "  phase6 prepare-policy EMUIR CONFIGURATION OUTPUT\n"
     "  phase6 assign-bank-store SELECTOR REPORT\n"
     "  phase6 copy-bank-report SELECTOR REPORT\n"
+    "  phase6 audit-bank-assignment INPUT_SELECTOR REPORT_SELECTOR SUMMARY\n"
+    "  phase6 qualify-chimew-chain REQUEST CERTIFICATE\n"
     "  phase6 prepare-chimew-lookahead REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-signals REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-geometry REQUEST OUTPUT_DIR\n"
@@ -314,6 +317,19 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-configuration") {
     ToolSignals signals;return Finish(emuflow::core::PreparePhase6Configuration(emuflow::core::ArtifactRef::Bind(argv[3],"phase6-configuration-input-v1"),argv[4],&tool_cancelled),report);
   }
+  if(argc==6 && std::string(argv[1])=="phase6" && std::string(argv[2])=="audit-bank-assignment") {
+    ToolSignals signals;
+    if(!report.empty() && (SamePath(report,argv[3]) || SamePath(report,argv[4]) || SamePath(report,argv[5])))
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a bank validation artifact");
+    try {
+      const auto input=emuflow::core::ArtifactRef::Bind(argv[3],"chimew-bank-input-selector-v1");
+      const auto assignment=emuflow::core::ArtifactRef::Bind(argv[4],"chimew-bank-report-selector-v1");
+      return Finish(emuflow::core::AuditChimewBankAssignment(input,assignment,argv[5],&tool_cancelled),report);
+    } catch(const emuflow::core::StageError& error) {
+      emuflow::core::StageResult result;result.stage="phase6.audit-bank-assignment";result.error=error.code();result.message=error.what();
+      return Finish(std::move(result),report);
+    }
+  }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="copy-bank-report") {
     ToolSignals signals;
     if(!report.empty() && (SamePath(report,argv[3]) || SamePath(report,argv[4])))
@@ -337,6 +353,18 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     } catch(const emuflow::core::StageError& error) {
       emuflow::core::StageResult result;
       result.stage="phase6.assign-bank-store";result.error=error.code();result.message=error.what();
+      return Finish(std::move(result),report);
+    }
+  }
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="qualify-chimew-chain") {
+    ToolSignals signals;
+    if(!report.empty() && (SamePath(report,argv[3]) || SamePath(report,argv[4])))
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a Chimew qualification artifact");
+    try {
+      const auto input=emuflow::core::ArtifactRef::Bind(argv[3],"chimew-qualification-input-v1");
+      return Finish(emuflow::core::QualifyChimewChain(input,argv[4],&tool_cancelled),report);
+    } catch(const emuflow::core::StageError& error) {
+      emuflow::core::StageResult result;result.stage="phase6.qualify-chimew-chain";result.error=error.code();result.message=error.what();
       return Finish(std::move(result),report);
     }
   }

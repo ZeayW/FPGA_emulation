@@ -1,3 +1,4 @@
+from tests.chimew_qualification_fixture import build_chimew_phase6_qualification, validate_chimew_phase6_qualification
 from tests.chimew_bank_report_fixture import write_chimew_bank_channel_report_storage
 from tests.chimew_bank_fixture import build_chimew_phase6_pin_plan
 from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
@@ -33,9 +34,7 @@ from emuflow.transport.chimew.chimew_grouping import (
 )
 from emuflow.transport.chimew.chimew_qualification import (
     CHIMEW_QUALIFICATION_PROVIDER,
-    build_chimew_phase6_qualification,
     canonical_sha256,
-    validate_chimew_phase6_qualification,
     validate_chimew_qualification_seal,
 )
 from emuflow.transport.chimew.chimew_phase6 import (

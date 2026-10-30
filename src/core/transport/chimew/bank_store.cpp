@@ -4,6 +4,7 @@
 #include "common/exact_signed_sum.hpp"
 #include "common/hash.hpp"
 #include "storage/store.hpp"
+#include "transport/chimew/qualification.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fcntl.h>
@@ -780,13 +781,16 @@ void AuditStoredReport(
   D metrics(expected_header.at("metrics"));
   const auto physical_agrees = [](double a, double b) {
     return std::isfinite(a) && std::isfinite(b) &&
-        std::abs(a - b) <= std::max(1e-9, 1e-10 * std::max(std::abs(a), std::abs(b)));
+           std::abs(a - b) <=
+               std::max(1e-9, 1e-10 * std::max(std::abs(a), std::abs(b)));
   };
   Check(metrics.Integer("groups") == I(expected_count) && expected_count > 0 &&
             bank_total == metrics.Integer("stage1_cost_rank") &&
             channel_total == metrics.Integer("stage2_cost_rank") &&
-            physical_agrees(bank_physical, metrics.Number("stage1_physical_site_cost")) &&
-            physical_agrees(channel_physical, metrics.Number("stage2_physical_site_cost")),
+            physical_agrees(bank_physical,
+                            metrics.Number("stage1_physical_site_cost")) &&
+            physical_agrees(channel_physical,
+                            metrics.Number("stage2_physical_site_cost")),
         "stored report aggregate costs disagree");
   Check(DecodeJsonString(Meta(db, "assignments_sha256")) == relation.Finish() &&
             DecodeJsonString(Meta(db, "logical_sha256")) == expected_digest &&
@@ -1177,6 +1181,225 @@ StageResult CopyChimewBankReport(const ArtifactRef &selector,
                               "chimew-bank-report-store-v1"),
             ArtifactRef::Bind(target.string(),
                               "chimew-bank-report-selector-v1")};
+      });
+}
+
+ChimewBankValidation
+ValidateChimewBankAssignment(const ArtifactRef &input,
+                             const ArtifactRef &report,
+                             const ChimewBankGroupVisitor &visit_group,
+                             const volatile std::sig_atomic_t *cancelled) {
+  Lease input_lease(input.path(), "emuflow-bank-channel-locks", false),
+      report_lease(report.path(), "emuflow-bank-report-locks", false);
+  BankInput bank(cancelled);
+  bank.Read(input);
+  ReportSource solution;
+  solution.Read(report, cancelled);
+  D header(solution.manifest.at("header"));
+  const O expected{
+      {"schema", JsonQuote("emuflow.chimew-bank-channel-report/v1")},
+      {"status", JsonQuote("standalone_paper_kernel")},
+      {"integration_status", JsonQuote("not-a-phase6-pin-plan")},
+      {"provider", JsonQuote("chimew-section3.4-two-stage-assignment-v1")},
+      {"paper_scope", JsonQuote("FPGA-2026-Sections-3.4.1-through-3.4.3")},
+      {"algorithm2_interpretation",
+       JsonQuote(
+           "per-signal-fanout-distance-plus-mean-fanin-distance; optional "
+           "source-bound timing weights are an EmuFlow integration extension")},
+      {"numeric_policy",
+       JsonQuote("nearest-integer-cost-rank-with-explicit-scale")},
+      {"design", JsonQuote(bank.design)},
+      {"platform", JsonQuote(bank.platform)},
+      {"input_sha256", JsonQuote(bank.logical)},
+      {"provenance", D::Encode(bank.provenance)}};
+  SqliteDatabase compare(":memory:", SqliteDatabase::Mode::kReadOnly);
+  for (const auto &field : expected)
+    RequireEquivalentJson(
+        compare, header.Token(field.first), field.second,
+        "Chimew bank/channel report provenance does not agree");
+  D relation(solution.manifest.at("assignments"));
+  Check(relation.Integer("records") == I(bank.model.groups.size()),
+        "bank/channel assignment coverage is invalid");
+  std::map<std::string, int> banks, channels;
+  for (std::size_t i = 0; i < bank.bank_ids.size(); ++i)
+    banks.emplace(bank.bank_ids[i], int(i));
+  for (std::size_t i = 0; i < bank.channel_ids.size(); ++i)
+    channels.emplace(bank.channel_ids[i], int(i));
+  SqliteDatabase joined(":memory:", SqliteDatabase::Mode::kCreateExclusive);
+  {
+    auto attach = joined.Prepare("ATTACH DATABASE ? AS problem");
+    attach.BindText(1, SqliteImmutableUri(bank.store->path()));
+    attach.Execute();
+  }
+  {
+    auto attach = joined.Prepare("ATTACH DATABASE ? AS solution");
+    attach.BindText(1, SqliteImmutableUri(solution.refs[1].path()));
+    attach.Execute();
+  }
+  std::vector<std::vector<std::pair<int, int>>> assigned(
+      bank.model.banks.size());
+  I stage1 = 0, stage2 = 0;
+  double raw1 = 0, raw2 = 0;
+  auto rows = joined.Prepare(
+      "SELECT grouping.seq,grouping.group_id,grouping.record_json,"
+      "assignment.bank_pair,assignment.channel,assignment.bank_cost_rank,"
+      "assignment.channel_cost_rank,assignment.bank_cost,assignment.channel_"
+      "cost "
+      "FROM problem.groups AS grouping LEFT JOIN solution.assignments AS "
+      "assignment "
+      "ON assignment.group_id=grouping.group_id ORDER BY grouping.seq");
+  std::size_t count = 0;
+  const auto close = [](double a, double b) {
+    return std::isfinite(a) && std::isfinite(b) &&
+           std::abs(a - b) <=
+               std::max(1e-9, 1e-10 * std::max(std::abs(a), std::abs(b)));
+  };
+  while (rows.Step()) {
+    Stop(cancelled);
+    Check(count < bank.model.groups.size() &&
+              rows.TypedInteger(0) == I(count) &&
+              rows.TypedText(1) == bank.group_ids[count] && !rows.IsNull(3) &&
+              !rows.IsNull(4),
+          "bank/channel assignment coverage is invalid");
+    const auto b = banks.find(rows.TypedText(3)),
+               c = channels.find(rows.TypedText(4));
+    Check(b != banks.end() && c != channels.end(),
+          "bank/channel assignment coverage is invalid");
+    const auto &group = bank.model.groups[count];
+    const auto &owner = bank.model.banks[b->second];
+    const auto &channel = bank.model.channels[c->second];
+    Check(owner.domain == group.domain && channel.bank == b->second,
+          "bank/channel assignment coverage is invalid");
+    const auto cost1 = Cost(group, owner.bank_a, owner.bank_b,
+                            bank.model.cost_scale),
+               cost2 = Cost(group, channel.pin_a, channel.pin_b,
+                            bank.model.cost_scale);
+    const auto physical1 = RawCost(group, owner.bank_a, owner.bank_b),
+               physical2 = RawCost(group, channel.pin_a, channel.pin_b);
+    Check(rows.TypedInteger(5) == cost1 && rows.TypedInteger(6) == cost2 &&
+              close(rows.TypedReal(7), physical1) &&
+              close(rows.TypedReal(8), physical2),
+          "bank/channel assignment cost does not agree");
+    Sum(stage1, cost1);
+    Sum(stage2, cost2);
+    raw1 += physical1;
+    raw2 += physical2;
+    assigned[b->second].emplace_back(int(count), channel.order);
+    if (visit_group)
+      visit_group(count, rows.TypedText(2));
+    ++count;
+  }
+  Check(count == bank.model.groups.size(),
+        "bank/channel assignment coverage is invalid");
+  O priorities;
+  for (std::size_t b = 0; b < assigned.size(); ++b) {
+    if (assigned[b].empty())
+      continue;
+    std::array<I, 3> counts{};
+    I common = 0;
+    for (const auto &assignment : assigned[b]) {
+      const auto &group = bank.model.groups[assignment.first];
+      if (group.kind == 0)
+        ++counts[group.direction];
+      else
+        ++common;
+    }
+    const auto compatible = [&](int first) {
+      const auto second = 1 - first;
+      const auto dedicated =
+          common == 0 && std::count_if(counts.begin(), counts.end(),
+                                       [](I n) { return n != 0; }) == 1;
+      for (const auto &assignment : assigned[b]) {
+        const auto &group = bank.model.groups[assignment.first];
+        const auto position = assignment.second;
+        int direction = -1;
+        if (dedicated) {
+          for (int i = 0; i < 3; ++i)
+            if (counts[i])
+              direction = i;
+        } else if (position < counts[first])
+          direction = first;
+        else if (position < counts[first] + counts[second])
+          direction = second;
+        else if (position < counts[0] + counts[1] + counts[2])
+          direction = 2;
+        if (direction >= 0 ? group.kind != 0 || group.direction != direction
+                           : group.kind != 1)
+          return false;
+      }
+      return true;
+    };
+    const bool first = compatible(0), second = compatible(1);
+    Check(first || second, "direction priority does not agree");
+    priorities[bank.bank_ids[b]] = JsonQuote(first ? "a_to_b" : "b_to_a");
+  }
+  RequireEquivalentJson(compare, header.Token("direction_priority"),
+                        D::Encode(priorities),
+                        "Chimew direction priority does not agree");
+  O metrics = bank.metrics;
+  metrics["stage1_cost_rank"] = std::to_string(stage1);
+  metrics["stage2_cost_rank"] = std::to_string(stage2);
+  metrics["stage1_physical_site_cost"] = JsonRecord(raw1).Encode();
+  metrics["stage2_physical_site_cost"] = JsonRecord(raw2).Encode();
+  metrics["certified_matchings"] = std::to_string(1 + 2 * priorities.size());
+  metrics["certificate_disagreements"] = "0";
+  D supplied(header.Token("metrics"));
+  Check(supplied.Fields().size() == metrics.size(),
+        "bank/channel report metrics do not agree");
+  for (const auto &field : metrics) {
+    const bool physical = field.first == "stage1_physical_site_cost" ||
+                          field.first == "stage2_physical_site_cost";
+    Check(physical
+              ? close(supplied.Number(field.first),
+                      ParseFiniteDecimal(field.second, "physical cost"))
+              : supplied.Integer(field.first) == D::IntegerToken(field.second),
+          "bank/channel report metrics do not agree");
+  }
+  ChimewBankValidation proof;
+  proof.design = bank.design;
+  proof.platform = bank.platform;
+  proof.input_sha256 = bank.logical;
+  proof.report_sha256 =
+      DecodeJsonString(solution.manifest.at("logical_sha256"));
+  proof.provenance = D::Encode(bank.provenance);
+  proof.metrics = D::Encode(metrics);
+  proof.inputs = bank.sources;
+  proof.inputs.insert(proof.inputs.end(), solution.refs.begin(),
+                      solution.refs.end());
+  for (const auto &ref : proof.inputs)
+    ref.RequireUnchanged();
+  return proof;
+}
+StageResult
+AuditChimewBankAssignment(const ArtifactRef &input, const ArtifactRef &report,
+                          const std::string &summary,
+                          const volatile std::sig_atomic_t *cancelled) {
+  std::optional<ChimewBankValidation> proof;
+  return RunStage(
+      "phase6.audit-bank-assignment",
+      [&] {
+        proof = ValidateChimewBankAssignment(input, report, {}, cancelled);
+        return proof->inputs;
+      },
+      [&](const auto &refs) {
+        PublishTextArtifact(summary, refs, [&](std::ostream &out) {
+          out << D::Encode(
+                     {{"schema",
+                       JsonQuote(
+                           "emuflow.chimew-bank-assignment-validation/v1")},
+                      {"status", JsonQuote("pass")},
+                      {"design", JsonQuote(proof->design)},
+                      {"platform", JsonQuote(proof->platform)},
+                      {"input_sha256", JsonQuote(proof->input_sha256)},
+                      {"report_sha256", JsonQuote(proof->report_sha256)},
+                      {"provenance", proof->provenance},
+                      {"metrics", proof->metrics}})
+              << '\n';
+        });
+      },
+      [&] {
+        return std::vector<ArtifactRef>{
+            ArtifactRef::Bind(summary, "chimew-bank-validation-v1")};
       });
 }
 } // namespace emuflow::core
