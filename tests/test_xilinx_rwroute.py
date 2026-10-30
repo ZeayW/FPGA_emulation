@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 from tests.physical_handoff_fixture import write_handoff_fixture
 import copy
 import hashlib
@@ -183,7 +184,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             handoff = root / "physical-handoff.sqlite"
             output = root / "route.tsv"
             source.write_text(json.dumps(mapped), encoding="utf-8")
-            import_yosys_json(source).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source)).value)
             emit_xilinx_mapped_index(ir_path, mapped_index)
             write_handoff_fixture(handoff, packed, placement)
             packed_view, placement_view = open_xilinx_physical_handoff(handoff)
@@ -293,7 +294,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             text = output.read_text(encoding="utf-8")
             ir_path = root / "mapped.emuir.sqlite"
             mapped_index = root / "mapped.sqlite"
-            import_yosys_json(paths[0]).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(paths[0])).value)
             emit_xilinx_mapped_index(ir_path, mapped_index)
             indexed_output = root / "route-indexed.tsv"
             with open_xilinx_mapped_index(mapped_index) as indexed:
@@ -574,7 +575,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             mapped_json.write_text(json.dumps(mapped), encoding="utf-8")
             packed_path.write_text(json.dumps(packed), encoding="utf-8")
             route_path.write_text(json.dumps(self._route()), encoding="utf-8")
-            import_yosys_json(mapped_json).save(mapped_ir)
+            write_emuir_fixture(mapped_ir, (import_yosys_json(mapped_json)).value)
             emit_xilinx_mapped_index(mapped_ir, mapped_index)
             route = json.loads(route_path.read_text())
             route['source'].update(mapped_sha256=hashlib.sha256(mapped_index.read_bytes()).hexdigest(),
@@ -855,7 +856,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             mapped_index = root / "mapped.sqlite"
             handoff = root / "physical-handoff.sqlite"
             indexed_output = root / "route-indexed.tsv"
-            import_yosys_json(paths[0]).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(paths[0])).value)
             emit_xilinx_mapped_index(ir_path, mapped_index)
             write_handoff_fixture(handoff, packed, placement)
             packed_view, placement_view = open_xilinx_physical_handoff(handoff)
@@ -986,7 +987,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                         json.dumps({"modules": {"top": {"cells": cells}}}),
                         encoding="utf-8",
                     )
-                    import_yosys_json(source).save(ir_path)
+                    write_emuir_fixture(ir_path, (import_yosys_json(source)).value)
                     emit_xilinx_mapped_index(ir_path, mapped_index)
                     write_handoff_fixture(handoff, packed, placement)
                     with open_xilinx_mapped_index(mapped_index) as indexed:

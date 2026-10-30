@@ -25,7 +25,7 @@ def catalogs(source, mode="static"):
     ir, constraints = source
     if mode in {"positive", "inline-bitmap"}:
         from tests.test_combinational_cut import _chain_ir
-        from emuflow.ir.emuir_compact import write_compact_emuir
+        from emuflow_tools.ir.emuir_fixture import write_compact_emuir
         from emuflow_tools.partition.partition_ir import load_partition_ir
 
         value = _chain_ir().to_dict()

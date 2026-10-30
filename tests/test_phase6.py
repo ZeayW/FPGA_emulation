@@ -21,7 +21,7 @@ from emuflow.validation.equivalence import _MappedModel, simulate_partition_equi
 from emuflow_tools.transport.chimew.chimew_phase6 import CHIMEW_PHASE6_BINDING_PROVIDER, CHIMEW_PHASE6_BINDING_SCHEMA_V1
 from emuflow_tools.transport.chimew.chimew_binding_storage import CHIMEW_BINDING_STORAGE_SCHEMA, read_chimew_binding
 from emuflow.common.errors import ValidationError
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.ir.ir import EmuIR
 from emuflow.common.json_io import file_sha256, write_json
 from emuflow_tools.document_io import read_json

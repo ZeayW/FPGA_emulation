@@ -76,7 +76,7 @@ def compact_source(ir):
         raise AssertionError('partition qualification fixture exceeds its explicit bound')
     if getattr(ir, 'path', None) is not None and str(ir.path).endswith(('.sqlite', '.sqlite3')):
         return ir
-    from emuflow.ir.emuir_compact import write_compact_emuir
+    from emuflow_tools.ir.emuir_fixture import write_compact_emuir
     from emuflow_tools.partition.partition_ir import load_partition_ir
     scratch = _ClusterScratch(prefix='partition-source-facts-')
     path = Path(scratch.name)/'source.sqlite'

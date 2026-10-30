@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import os
 from contextlib import closing
 import json
@@ -35,7 +36,7 @@ def fixture(root):
     source = root / "source.json"
     source.write_text(json.dumps(value))
     ir = root / "source.emuir.sqlite"
-    import_yosys_json(source).save(ir)
+    write_emuir_fixture(ir, (import_yosys_json(source)).value)
     return ir
 
 

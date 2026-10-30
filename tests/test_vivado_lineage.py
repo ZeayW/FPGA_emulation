@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 from contextlib import closing
 import csv
 import json
@@ -146,7 +147,7 @@ proc get_timing_paths {args} {
         source = root/"source.json"
         source.write_text(json.dumps(value))
         ir = root/"source.emuir.sqlite"
-        import_yosys_json(source).save(ir)
+        write_emuir_fixture(ir, (import_yosys_json(source)).value)
         report = emit_vivado_mapped_verilog(ir, root/"dut.v")
         self.assertEqual(report["optimization_policy"], LINEAGE_POLICY)
         self.assertNotIn("DONT_TOUCH", (root/"dut.v").read_text())

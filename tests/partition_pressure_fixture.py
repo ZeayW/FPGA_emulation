@@ -212,7 +212,7 @@ def prepare_native(root, reference, platform, constraints, timing, routes, origi
     """Serialize small input facts to the current source-owned test boundary."""
     import json
     from types import SimpleNamespace
-    from emuflow.ir.emuir_compact import write_compact_emuir
+    from emuflow_tools.ir.emuir_fixture import write_compact_emuir
     from emuflow_tools.partition.partition_ir import load_partition_ir
     from tests.native_partition_kernel_driver import initialize
     from emuflow_tools.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming

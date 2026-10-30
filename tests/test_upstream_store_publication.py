@@ -1,4 +1,5 @@
 """Cross-phase publication failures must not invalidate prior primary owners."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 
 import errno
 import importlib
@@ -43,13 +44,13 @@ def setup_case(kind, root):
         ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
     )
     ir_path = root / "input.emuir.sqlite"
-    ir.save(ir_path)
+    write_emuir_fixture(ir_path, (ir).value)
     input_text = root / "input.txt"
     input_text.write_text("immutable input")
     sources = (bind_store_source(input_text, "sta-source-document-v1"),)
     output = root / ("result.emuir.sqlite" if kind == "emuir" else "result.json")
     module_name = {
-        "emuir": "emuflow.ir.emuir_compact",
+        "emuir": "emuflow_tools.ir.emuir_fixture",
         "routes": "emuflow_tools.routing.system_route_storage",
         "paths": "emuflow_tools.timing.sta",
         "weights": "emuflow_tools.timing.sta",

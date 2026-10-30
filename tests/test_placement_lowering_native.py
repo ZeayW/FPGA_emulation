@@ -11,7 +11,7 @@ import pytest
 
 from emuflow_tools.timing.boundary_timing import validate_boundary_identity_database
 from emuflow_tools.timing.boundary_identity_storage import read_boundary_identity_storage
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.ir.ir import EmuIR
 from emuflow_tools.physical.lowering import run_placement_ir_lowering_from_split
 from emuflow_tools.transport.netlist import transport_endpoint_port

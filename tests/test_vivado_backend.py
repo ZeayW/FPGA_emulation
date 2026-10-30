@@ -9,7 +9,7 @@ from emuflow.ir.ir import EmuIR
 from tests.yosys_reference import import_yosys_json
 from tests.vivado_query_host import write_vivado_boundary_query as write_vivado_boundary_timing_query
 from tests.vivado_input_host import prepare_vivado_inputs
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from tests.vivado_measurement_host import import_indexed_vivado_boundary
 from emuflow_tools.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
 
@@ -180,7 +180,7 @@ class VivadoBackendTest(unittest.TestCase):
                 }
             )
             value["nets"][0]["fanout"] = 2
-            from emuflow.ir.emuir_compact import write_compact_emuir
+            from emuflow_tools.ir.emuir_fixture import write_compact_emuir
             write_compact_emuir(ir_path, value)
             identity = {
                 "schema": "emuflow.boundary-identity/v1",
@@ -250,7 +250,7 @@ class VivadoBackendTest(unittest.TestCase):
         import json
         import sqlite3
         from contextlib import closing
-        from emuflow.ir.emuir_compact import write_compact_emuir
+        from emuflow_tools.ir.emuir_fixture import write_compact_emuir
         from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -319,7 +319,7 @@ class VivadoBackendTest(unittest.TestCase):
 
 
     def test_current_indexed_export_retains_generic_cell_semantics(self):
-        from emuflow.ir.emuir_compact import write_compact_emuir
+        from emuflow_tools.ir.emuir_fixture import write_compact_emuir
         from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
         value = _ir().to_dict()
         value['instances'][0].update(type='$lut', parameters={'WIDTH': '1', 'LUT': '10'})

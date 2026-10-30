@@ -16,7 +16,7 @@ from tests.virtual_binding_fixture import binding_text
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow_tools.document_io import read_json
 from emuflow.common.json_io import write_json
 from tests.native_partition_facts import (build_clusters, normalize_partition_constraints)

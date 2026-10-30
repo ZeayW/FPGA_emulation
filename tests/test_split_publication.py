@@ -9,7 +9,7 @@ import pytest
 
 from emuflow.transport import split_netlist_storage as split
 from emuflow.transport import split_overlay as owner
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage

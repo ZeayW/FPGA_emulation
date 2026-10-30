@@ -12,7 +12,7 @@ from unittest import mock
 
 from emuflow.partition.combinational_cut import semantic_contract_sha256
 from emuflow_tools.validation.cut_segment_qualification import CUT_SEGMENT_INDEXED_QUALIFICATION_SCHEMA, build_cut_segment_qualification, validate_cut_segment_qualification
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow_tools.document_io import read_json
 from emuflow.common.json_io import write_json
 from emuflow_tools.stage_clients.opensta import (

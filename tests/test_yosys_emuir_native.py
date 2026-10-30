@@ -50,7 +50,7 @@ def test_complete_hierarchical_xilinx_owner_matches_original(native,tmp_path,mon
     value=xilinx_source(mode)
     expected,actual=tmp_path/"expected.emuir.sqlite",tmp_path/"actual.emuir.sqlite"
     old_source_to_emuir(value,expected,normalize=True)
-    with patch("tests.yosys_reference.write_emuir_sqlite",side_effect=AssertionError("Python rebuilt final circuit rows")),patch("tests.yosys_reference._indexed_endpoint_groups",side_effect=AssertionError("Python grouped endpoint population")):
+    with patch("tests.yosys_reference.write_compact_emuir",side_effect=AssertionError("Python rebuilt final circuit rows")),patch("tests.yosys_reference._indexed_endpoint_groups",side_effect=AssertionError("Python grouped endpoint population")):
         report=import_yosys_json_indexed(Path("<source>"),actual,top="top",_source_stream=io.StringIO(json.dumps(value)),_expand_hierarchy=True,staging_transform=normalize_xilinx_indexed_staging)
     assert EmuIR.load(actual).to_dict()==EmuIR.load(expected).to_dict()
     assert payloads(actual)==payloads(expected)
@@ -149,7 +149,7 @@ def test_large_fanout_has_no_python_endpoint_or_net_population(native,tmp_path,m
         out.write('}}}}')
     tracemalloc.start()
     try:
-        with patch("tests.yosys_reference.write_emuir_sqlite",side_effect=AssertionError("Python writer called")),patch("tests.yosys_reference._indexed_endpoint_groups",side_effect=AssertionError("Python endpoints grouped")):
+        with patch("tests.yosys_reference.write_compact_emuir",side_effect=AssertionError("Python writer called")),patch("tests.yosys_reference._indexed_endpoint_groups",side_effect=AssertionError("Python endpoints grouped")):
             result=import_yosys_json_indexed(source,output,top="top",_expand_hierarchy=True)
         _,peak=tracemalloc.get_traced_memory()
     finally:

@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow_tools.document_io import read_json
 from emuflow_tools.stage_clients.transport import run_phase6, validate_phase6

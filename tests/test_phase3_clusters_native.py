@@ -9,7 +9,7 @@ import subprocess
 from unittest.mock import patch
 import pytest
 
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters)

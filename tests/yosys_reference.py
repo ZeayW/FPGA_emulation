@@ -32,7 +32,7 @@ from typing import (
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.common.errors import ImportError
 from emuflow.storage.store_publication import bind_store_source, validate_store_destination
-from emuflow.ir.emuir_storage import write_emuir_sqlite
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow_tools.document_io import read_json
 from emuflow.ir.ir import EMUIR_SCHEMA, EmuIR
 from emuflow.ir.resources import ResourceVector, classify_primitive_resources
@@ -1234,7 +1234,7 @@ def import_yosys_json_indexed(
             ],
             "warnings": sorted(set(warnings)),
         }
-        write_emuir_sqlite(
+        write_compact_emuir(
             output, value, source_bindings=source_bindings, _finalize=_finalize_emuir,
         )
     finally:

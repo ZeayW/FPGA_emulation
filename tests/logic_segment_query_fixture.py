@@ -4,7 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow_tools.stage_clients.schedule_native import run_native_phase5
 from emuflow_tools.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture

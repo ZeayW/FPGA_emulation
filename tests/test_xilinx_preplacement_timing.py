@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import hashlib
 import json
 import tempfile
@@ -155,7 +156,7 @@ CLK ADDR_A[0] 500
             from emuflow_tools.timing.indexed_timing import IndexedTimingView
             from emuflow_tools.frontend.verilog import mapped_verilog, write_mapped_verilog
             compact = root / "design.emuir.sqlite"
-            ir.save(compact)
+            write_emuir_fixture(compact, (ir).value)
             view = IndexedTimingView(compact)
             try:
                 compact_model, compact_types = build_architecture_opensta_timing_model(view, database)

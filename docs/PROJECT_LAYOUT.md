@@ -8,7 +8,7 @@ select algorithms or change artifact schemas.
 | `src/core` | Shared C++ implementation library |
 | `src/cli` | C++ executable entry points |
 | `src/python/emuflow` | Bounded compile client, runtime contracts, OpenPARF host and small-design oracle |
-| `tools/emuflow_tools` | Separately installed native-stage qualification clients, artifact readers, source preparation and research tools |
+| `tools/emuflow_tools` | Separately installed native-stage qualification clients, artifact readers, storage fixtures, source preparation and research tools |
 | `tests` | Independent validation, bounded fixtures and regression tests |
 | `engines` | Third-party tool sources |
 

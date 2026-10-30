@@ -1,4 +1,5 @@
 """Native multi-FPGA control contracts; whole-design qualification uses NVDLA."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import json
 from pathlib import Path
 import sqlite3
@@ -32,7 +33,7 @@ def setup(root, source_ir=None):
         'netnames':{n:{'bits':[b]} for n,b in [('clk',9),('a',1),('q',2)]}}
     raw=root/'source.json';raw.write_text(json.dumps({'creator':'fixture','modules':{'top':module}}))
     if source_ir is None:
-        ir=import_yosys_json(raw,clocks=['clk']);source=root/'source.emuir.sqlite';ir.save(source)
+        ir=import_yosys_json(raw,clocks=['clk']);source=root/'source.emuir.sqlite';write_emuir_fixture(source, (ir).value)
     else:
         from emuflow.ir.ir import EmuIR
         source=source_ir;ir=EmuIR.load(source)

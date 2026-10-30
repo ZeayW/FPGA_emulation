@@ -72,6 +72,12 @@ def main(source_root: Path, install_root: Path) -> None:
     import emuflow.transport.phase6_oracle
     assert "emuflow_tools" not in sys.modules, "installed runtime imported optional tools"
     assert importlib.util.find_spec("emuflow.common.io") is None
+    from emuflow.ir import emuir_compact, emuir_storage
+    from emuflow.ir.ir import EmuIR
+    assert not hasattr(EmuIR, "save")
+    assert not hasattr(emuir_compact, "write_compact_emuir")
+    assert not hasattr(emuir_storage, "write_emuir_sqlite")
+    assert not hasattr(emuir_storage, "_write_emuir_sqlite_v1")
     _build_parser().parse_args(["run", "top.sv", "--top", "top", "--clock", "clk=10"])
     _build_parser().parse_args(["run", "design.run.json", "--out", "unused", "--backend", "vivado"])
     from emuflow.flow.designs.nvdla_contract import CATALOG_PATH, COMPAT_PATH

@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir, write_emuir_fixture, write_legacy_emuir_fixture
 from contextlib import closing
 import json
 import sqlite3
@@ -7,8 +8,6 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.ir.emuir_compact import write_compact_emuir
-from emuflow.ir.emuir_storage import _write_emuir_sqlite_v1
 from emuflow.common.errors import ValidationError
 from emuflow_tools.timing.indexed_timing import IndexedTimingView
 from emuflow.ir.ir import EmuIR
@@ -25,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_compact_stream_preserves_exact_timing_netlist_and_endpoint_identity(tmp_path):
     ir = import_yosys_json(ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"])
     source, compact = tmp_path / "old.emuir.sqlite", tmp_path / "new.emuir.sqlite"
-    _write_emuir_sqlite_v1(source, ir.value)
+    write_legacy_emuir_fixture(source, ir.value)
     with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
         write_compact_emuir(compact, ir.value)
     assert EmuIR.load(source).value == EmuIR.load(compact).value
@@ -47,7 +46,7 @@ def test_compact_stream_preserves_exact_timing_netlist_and_endpoint_identity(tmp
 def test_compact_stream_uses_real_provider_protocol_without_ir_reload(tmp_path):
     ir = import_yosys_json(ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"])
     path = tmp_path / "design.emuir.sqlite"
-    ir.save(path)
+    write_emuir_fixture(path, (ir).value)
     out = tmp_path / "paths.json"
     with patch("emuflow_tools.stage_clients.opensta.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
         report = run_opensta_path_database(
@@ -59,7 +58,7 @@ def test_compact_stream_uses_real_provider_protocol_without_ir_reload(tmp_path):
     assert records
     # Compare the actual path population, not only summary scalars.
     old = tmp_path / "old.emuir.sqlite"
-    _write_emuir_sqlite_v1(old, ir.value)
+    write_legacy_emuir_fixture(old, ir.value)
     import os
     import subprocess
     from tests.sta_path_reference import path_facts
@@ -77,7 +76,7 @@ def test_compact_timing_validators_do_not_reload_the_whole_graph(tmp_path):
         ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
     )
     path = tmp_path / "design.emuir.sqlite"
-    ir.save(path)
+    write_emuir_fixture(path, (ir).value)
     database = tmp_path / "paths.json"
     run_opensta_path_database(
         path,
@@ -111,8 +110,8 @@ def test_repeated_resources_and_long_endpoint_owners_are_not_stored_per_pin(tmp_
             "aliases": [], "drivers": [{"instance": name, "port": "O", "bit": 0}],
             "sinks": [{"instance": name, "port": "I0", "bit": 0}]})
     old, new = tmp_path / "old.emuir.sqlite", tmp_path / "new.emuir.sqlite"
-    _write_emuir_sqlite_v1(old, value)
-    EmuIR(value).save(new)
+    write_legacy_emuir_fixture(old, value)
+    write_emuir_fixture(new, (EmuIR(value)).value)
     assert new.stat().st_size < old.stat().st_size * 0.5
     assert EmuIR.load(old).value == EmuIR.load(new).value
     view = IndexedTimingView(new)
@@ -134,7 +133,7 @@ def test_repeated_resources_and_long_endpoint_owners_are_not_stored_per_pin(tmp_
 def test_compact_corruption_is_not_silently_dropped(tmp_path, statement, pattern):
     ir = import_yosys_json(ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"])
     path = tmp_path / "design.emuir.sqlite"
-    ir.save(path)
+    write_emuir_fixture(path, (ir).value)
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(statement)
     with pytest.raises(ValueError, match=pattern):
@@ -153,7 +152,7 @@ def test_escaped_names_do_not_reconstruct_endpoints_for_each_emitted_pin(tmp_pat
             "sinks": [{"instance": owner, "port": "I" + str(pin), "bit": 0} for pin in range(6)]})
     ir = EmuIR(value)
     path = tmp_path / "design.emuir.sqlite"
-    ir.save(path)
+    write_emuir_fixture(path, (ir).value)
     view = IndexedTimingView(path)
     statements = []
     try:
@@ -171,7 +170,7 @@ def test_escaped_owner_alias_collision_still_rejects_before_export(tmp_path):
                  "constant_connections": [{"port": "I0", "bit": 0, "value": "0"}]}
                  for owner in ("unit\\ff", "unit\\\\ff")], "nets": [], "clocks": [], "warnings": []}
     path = tmp_path / "design.emuir.sqlite"
-    EmuIR(value).save(path)
+    write_emuir_fixture(path, (EmuIR(value)).value)
     view = IndexedTimingView(path)
     try:
         with pytest.raises(ValidationError, match="alias is ambiguous"):

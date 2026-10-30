@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from tests.partition_balance_fixture import active_partition_fpgas
 from tests.partition_balance_fixture import transported_cut_classes_for_clusters
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)

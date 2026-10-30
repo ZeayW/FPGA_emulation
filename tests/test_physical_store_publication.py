@@ -1,4 +1,5 @@
 """Source-bound publication failures must preserve the last physical evidence."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 
 import importlib
 import json
@@ -246,7 +247,7 @@ def test_atomic_source_binds_mapped_input_and_source_seal_before_consumption(
         tmp_path / name
         for name in ("mapped.emuir.sqlite", "mapped.sqlite", "source.json")
     )
-    import_yosys_json(mapped_json).save(ir)
+    write_emuir_fixture(ir, (import_yosys_json(mapped_json)).value)
     report = emit_xilinx_mapped_index(ir, mapped)
     with open_xilinx_mapped_index(mapped) as indexed:
         source = build_xilinx_openparf_atomic_source(

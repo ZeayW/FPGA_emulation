@@ -1,4 +1,5 @@
 """Shared-core timing export; fixture gates do not qualify NVDLA."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 from contextlib import closing
 import json
 import os
@@ -30,7 +31,7 @@ def runtime(tmp_path, monkeypatch):
 def counter(tmp_path):
     ir = import_yosys_json(ROOT/"examples/yosys/counter.json", top="counter", clocks=["clk"])
     path = tmp_path/"source ?#%é.emuir.sqlite"
-    ir.save(path)
+    write_emuir_fixture(path, (ir).value)
     return ir, path
 
 
@@ -61,7 +62,7 @@ def test_sparse_bus_constants_inout_and_clock_polarity_match_independent_rendere
                                    "constant_connections": [{"port": "D", "bit": 4, "value": "0"}, {"port": "CE", "bit": 0, "value": "1"}]})
         value["nets"].append({"id": f"n{i}é", "drivers": [{"instance": owner, "port": "Q", "bit": 0}, {"instance": None, "port": "bus", "bit": i%5}],
                               "sinks": [{"instance": owner, "port": "D", "bit": 1}, {"instance": owner, "port": "R", "bit": 0}, {"instance": None, "port": "bus", "bit": i%5}], "cut_class": "multi_driver"})
-    ir = EmuIR(value);path = tmp_path/"fixture.emuir.sqlite";ir.save(path)
+    ir = EmuIR(value);path = tmp_path/"fixture.emuir.sqlite";write_emuir_fixture(path, (ir).value)
     policies = [None, {i["id"]: _TimingTypes.for_instance(i) for i in value["instances"]}]
     with closing(IndexedTimingView(path)) as view:
         for i, policy in enumerate(policies):
@@ -150,7 +151,7 @@ def test_large_unique_cell_population_keeps_host_memory_bounded(tmp_path):
         owner = "dut/unique/"+str(i)
         value["instances"].append({"id": owner, "type": "LUT1", "resources": {"lut": 1}, "parameters": {}, "constant_connections": []})
         value["nets"].append({"id": "n"+str(i), "drivers": [{"instance": owner, "port": "O", "bit": 0}], "sinks": [{"instance": owner, "port": "I0", "bit": 0}], "cut_class": "combinational"})
-    path = tmp_path/"scale.emuir.sqlite";EmuIR(value).save(path);del value
+    path = tmp_path/"scale.emuir.sqlite";write_emuir_fixture(path, (EmuIR(value)).value);del value
     with closing(IndexedTimingView(path)) as view:
         tracemalloc.start()
         try:

@@ -1,4 +1,5 @@
 """Small contract gates for bounded Phase 2 preparation and clock polarity."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import json
 import sqlite3
 from types import SimpleNamespace
@@ -126,7 +127,7 @@ def _counter_stage_input(root):
     next(cell for cell in ir.value['instances'] if cell['type'] == 'FDRE')[
         'parameters']['IS_C_INVERTED'] = '1'
     source = root / 'counter ?#é.emuir.sqlite'
-    ir.save(source)
+    write_emuir_fixture(source, (ir).value)
     objects = sorted(endpoint_facts(ir))
     nets = [net['id'] for net in ir.value['nets']]
     records = []
@@ -467,7 +468,7 @@ def test_native_policy_matches_all_specialized_pin_roles_and_clock_polarities(tm
     mapped.write_text(json.dumps(graph))
     ir = import_yosys_json(mapped, top='top', clocks=['clk'])
     source = tmp_path / 'mixed.emuir.sqlite'
-    ir.save(source)
+    write_emuir_fixture(source, (ir).value)
     database = _architecture_stage_contract(tmp_path)
     from contextlib import closing
     with closing(IndexedTimingView(source)) as view:

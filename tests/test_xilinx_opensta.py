@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import hashlib
 import json
 import os
@@ -256,7 +257,7 @@ def test_indexed_routed_opensta_staging_matches_graph_semantics(tmp_path):
     routed_path = tmp_path / "routed.emuir.sqlite"
     mapped_index = tmp_path / "current-mapped.sqlite"
     source_ir = tmp_path / "current-source.emuir.sqlite"
-    import_yosys_json(mapped_path, clocks=["clk"]).save(source_ir)
+    write_emuir_fixture(source_ir, (import_yosys_json(mapped_path, clocks=["clk"])).value)
     emit_xilinx_mapped_index(source_ir, mapped_index)
     timing["source"]["mapped_sha256"] = _sha(mapped_index)
     timing_path.write_text(json.dumps(timing))
@@ -346,7 +347,7 @@ def _indexed_routed_fixture(tmp_path, *, registered_launch=False):
     source = tmp_path / "mapped-source.json"
     source.write_text(json.dumps(mapped), encoding="utf-8")
     ir_path = tmp_path / "mapped-source.emuir.sqlite"
-    import_yosys_json(source, clocks=("clk",)).save(ir_path)
+    write_emuir_fixture(ir_path, (import_yosys_json(source, clocks=("clk",))).value)
     mapped_index = tmp_path / "mapped.sqlite"
     emit_xilinx_mapped_index(ir_path, mapped_index)
     timing_path = tmp_path / "routed-timing.json"

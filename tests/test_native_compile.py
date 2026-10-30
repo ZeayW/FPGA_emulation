@@ -151,7 +151,7 @@ def fixture_request(tmp_path, *, fail=None, waiting=False, prepared_timing=True)
     native_root = tmp_path / "native-inputs"
     native_root.mkdir()
     case, _, _, _ = native_inputs(native_root)
-    from emuflow.ir.emuir_compact import write_compact_emuir
+    from emuflow_tools.ir.emuir_fixture import write_compact_emuir
     from tests.native_partition_facts import (build_clusters)
     from emuflow_tools.partition.partition_ir import load_partition_ir
     source_ir = native_root / "source.emuir.sqlite"

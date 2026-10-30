@@ -1,4 +1,5 @@
 """Private generation edits cannot mutate a published owner or stale its inputs."""
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir, write_emuir_fixture
 
 import copy
 import hashlib
@@ -8,8 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.ir import emuir_compact; from tests import routed_opensta_reference as xilinx_opensta
-from emuflow.ir.emuir_storage import write_emuir_sqlite
+from emuflow_tools.ir import emuir_fixture as emuir_compact; from tests import routed_opensta_reference as xilinx_opensta
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
 from emuflow.storage.store_publication import bind_store_source
@@ -24,7 +24,7 @@ from tests.test_xilinx_opensta import _indexed_routed_fixture
 )
 def test_fanout_finishes_before_the_only_publication(tmp_path, failure):
     output = tmp_path / "transport.emuir.sqlite"
-    _transport_ir(2).save(output)
+    write_emuir_fixture(output, (_transport_ir(2)).value)
     before = output.read_bytes()
     source = tmp_path / "transport.sv"
     source.write_text("module transport; endmodule\n")
@@ -61,7 +61,7 @@ def test_fanout_finishes_before_the_only_publication(tmp_path, failure):
         emuir_compact, "publish_sqlite_store", side_effect=adopt
     ) as publisher:
         if failure is None:
-            write_emuir_sqlite(
+            write_compact_emuir(
                 output,
                 _transport_ir(17).value,
                 source_bindings=sources,
@@ -70,7 +70,7 @@ def test_fanout_finishes_before_the_only_publication(tmp_path, failure):
             publisher.assert_called_once()
         else:
             with pytest.raises(ValidationError, match="rejected|generation changed"):
-                write_emuir_sqlite(
+                write_compact_emuir(
                     output,
                     _transport_ir(17).value,
                     source_bindings=sources,

@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.common.errors import ValidationError
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow_tools.document_io import read_json
 from emuflow.ir.ir import EmuIR
 from tests.partition_balance_fixture import validate_cluster_assignment_balance

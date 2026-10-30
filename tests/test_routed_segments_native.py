@@ -1,4 +1,5 @@
 """Native routed graph equivalence and scale gates; not device qualification."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import hashlib
 import importlib
 import json
@@ -44,7 +45,7 @@ def case(root):
                   "tx": {"direction": "output", "bits": [7]}}, "cells": cells,
         "netnames": {name: {"bits": [bit]} for name, bit in [("clk", 2), ("rx", 3), ("data", 4), ("state", 5), ("mid", 6), ("tx", 7)]}}}}))
     ir = root / "source.emuir.sqlite"
-    import_yosys_json(source).save(ir)
+    write_emuir_fixture(ir, (import_yosys_json(source)).value)
     mapped = root / "mapped.sqlite"
     emit_xilinx_mapped_index(ir, mapped)
     endpoints = [{"sink": {"instance": name, "pin": pin}, "route_delay_ns": delay}

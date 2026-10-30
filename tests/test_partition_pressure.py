@@ -228,7 +228,7 @@ class SmallPartitionFactsTest(unittest.TestCase):
             constraints_path = root / "constraints.json"
             timing_path = root / "timing.json"
             route_path = root / "routes.json"
-            from emuflow.ir.emuir_compact import write_compact_emuir
+            from emuflow_tools.ir.emuir_fixture import write_compact_emuir
             write_compact_emuir(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)
@@ -348,7 +348,7 @@ class SmallPartitionFactsTest(unittest.TestCase):
             timing_path = root / "timing.json"
             route_path = root / "routes.json"
             solution_path = root / "static-exact.part.2"
-            from emuflow.ir.emuir_compact import write_compact_emuir
+            from emuflow_tools.ir.emuir_fixture import write_compact_emuir
             write_compact_emuir(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)

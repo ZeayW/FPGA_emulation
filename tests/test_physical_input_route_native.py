@@ -1,4 +1,5 @@
 """Physical producer/validator contracts against original source generations."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 
 import hashlib
 import json
@@ -31,7 +32,7 @@ def mapped_source(root):
 
     raw, compact = root / "input.json", root / "input.emuir.sqlite"
     raw.write_text(json.dumps(XilinxMappedNetlistTests._fixture()))
-    import_yosys_json(raw, clocks=("clk",)).save(compact)
+    write_emuir_fixture(compact, (import_yosys_json(raw, clocks=("clk",))).value)
     return compact
 
 

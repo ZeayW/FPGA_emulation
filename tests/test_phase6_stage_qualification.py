@@ -13,7 +13,7 @@ from contextlib import closing
 
 import pytest
 
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from tests.native_build import emuflow_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage

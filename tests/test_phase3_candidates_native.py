@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from tests.partition_graph_oracle import candidate_ids
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
 from emuflow_tools.partition.partition_ir import load_partition_ir

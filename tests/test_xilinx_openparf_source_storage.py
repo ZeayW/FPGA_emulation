@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import json
 import os
 import shutil
@@ -65,7 +66,7 @@ class XilinxOpenparfSourceStorageTest(unittest.TestCase):
             )
             mapped_ir = root / "partition.mapped.emuir.sqlite"
             mapped_index = root / "partition.mapped.sqlite"
-            import_yosys_json(mapped_json).save(mapped_ir)
+            write_emuir_fixture(mapped_ir, (import_yosys_json(mapped_json)).value)
             report = emit_xilinx_mapped_index(mapped_ir, mapped_index)
             source_path = root / "openparf-atomic-source.json"
             with open_xilinx_mapped_index(mapped_index) as indexed:

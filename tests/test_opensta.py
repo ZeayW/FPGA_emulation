@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import hashlib
 import json
 import sqlite3
@@ -73,7 +74,7 @@ class OpenStaProviderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ir_path = root / "ir.emuir.sqlite"
-            self.ir.save(ir_path)
+            write_emuir_fixture(ir_path, (self.ir).value)
             net = self.ir.value["nets"][0]["id"]
             objects = sorted(endpoint_facts(self.ir))
             path_id = f"{objects[0]}->{objects[-1]}#00000000"
@@ -126,7 +127,7 @@ class OpenStaProviderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ir_path = root / "ir.emuir.sqlite"
-            self.ir.save(ir_path)
+            write_emuir_fixture(ir_path, (self.ir).value)
             net = self.ir.value["nets"][0]["id"]
             raw = root / "paths.tsv"
             rows = [
@@ -351,7 +352,7 @@ class OpenStaProviderTest(unittest.TestCase):
             output_path = root / "database.json"
             log_path = root / "opensta.log"
             executable = root / "fake-openroad"
-            self.ir.save(ir_path)
+            write_emuir_fixture(ir_path, (self.ir).value)
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
@@ -443,7 +444,7 @@ print("fake OpenSTA pass")
             ir_path = root / "ir.emuir.sqlite"
             output_path = root / "database.json"
             executable = root / "fake-opensta"
-            self.ir.save(ir_path)
+            write_emuir_fixture(ir_path, (self.ir).value)
             net = self.ir.value["nets"][0]["id"]
             executable.write_text(
                 f"""#!/usr/bin/env python3
@@ -502,7 +503,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             ir_path = root / "ir.emuir.sqlite"
             output_path = root / "database.json"
             executable = root / "fake-opensta"
-            self.ir.save(ir_path)
+            write_emuir_fixture(ir_path, (self.ir).value)
             executable.write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = \"-version\" ]; then echo 3.1.0; exit 0; fi\n"
@@ -652,7 +653,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             output_path = root / "database.json"
             coverage_path = root / "coverage.json"
             executable = root / "fake-opensta"
-            self.ir.save(ir_path)
+            write_emuir_fixture(ir_path, (self.ir).value)
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
@@ -723,7 +724,7 @@ Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
             ir_path = root / "ir.emuir.sqlite"
             output_path = root / "database.json"
             executable = root / "fake-opensta"
-            self.ir.save(ir_path)
+            write_emuir_fixture(ir_path, (self.ir).value)
             executable.write_text(
                 """#!/usr/bin/env python3
 import os

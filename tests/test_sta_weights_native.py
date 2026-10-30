@@ -1,4 +1,5 @@
 """Whole native weight producer/source auditor, not real-design qualification."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 from contextlib import closing
 import json
 import math
@@ -158,7 +159,7 @@ def test_distinct_paths_and_nets_do_not_create_python_weight_populations(tmp_pat
     source = tmp_path/"large.emuir.sqlite"
     value = {"schema": "emuflow.emuir/v1", "design": {"name": "scale", "top": "scale", "source_format": "test"}, "instances": [], "ports": [], "clocks": [], "warnings": [],
              "nets": [{"id": f"n{i}", "drivers": [], "sinks": [], "cut_class": "undriven"} for i in range(count)]}
-    EmuIR(value).save(source);del value
+    write_emuir_fixture(source, (EmuIR(value)).value);del value
     measured = tmp_path/"paths.tsv"
     with measured.open("w") as stream:
         stream.write(STA_PATH_DATABASE_TSV_HEADER+"\n")

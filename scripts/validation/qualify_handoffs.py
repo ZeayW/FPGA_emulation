@@ -14,8 +14,10 @@ import sys
 import time
 from pathlib import Path
 
-from emuflow.ir.emuir_compact import source_metadata, source_instances, compact_nets, write_compact_emuir
-from emuflow.ir.emuir_storage import _json, open_emuir_sqlite_read_only, _write_emuir_sqlite_v1
+from emuflow.ir.emuir_compact import source_metadata, source_instances, compact_nets
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
+from emuflow.ir.emuir_storage import _json, open_emuir_sqlite_read_only
+from emuflow_tools.ir.emuir_fixture import write_legacy_emuir_fixture
 from emuflow_tools.timing.indexed_timing import IndexedTimingView
 from emuflow.ir.ir import EmuIR
 from emuflow_tools.stage_clients.opensta import build_architecture_opensta_timing_model, load_timing_model, DEFAULT_TIMING_MODEL, render_opensta_liberty, run_opensta_path_database
@@ -85,7 +87,7 @@ def main():
             if args.operation == "repack":
                 if args.out.resolve() == args.ir.resolve():
                     raise ValueError("output must not overwrite source")
-                writer = write_compact_emuir if args.storage_version == 2 else _write_emuir_sqlite_v1
+                writer = write_compact_emuir if args.storage_version == 2 else write_legacy_emuir_fixture
                 writer(args.out, {**metadata, "instances": instances, "nets": nets})
                 result["output_bytes"] = args.out.stat().st_size
                 result["storage_version"] = args.storage_version

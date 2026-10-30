@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import tempfile
 import unittest
 from pathlib import Path
@@ -67,11 +68,11 @@ def _transport_ir(fanout: int, *, cut_class: str = "combinational") -> EmuIR:
 
 def _buffer_current(ir, *, max_fanout):
     # Exercise the writer-owned path used by the physical flow.
-    from emuflow.ir.emuir_storage import write_emuir_sqlite
+    from emuflow_tools.ir.emuir_fixture import write_compact_emuir
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary)/'transport.emuir.sqlite'
         reports = []
-        write_emuir_sqlite(path, ir.value, _finalize=lambda connection: reports.append(
+        write_compact_emuir(path, ir.value, _finalize=lambda connection: reports.append(
             buffer_transport_high_fanout_records(connection, max_fanout=max_fanout)))
         return reports[0], EmuIR.load(path)
 
@@ -118,7 +119,7 @@ class TransportFanoutTest(unittest.TestCase):
             root = Path(temporary)
             ir_path = root / "transport.emuir.sqlite"
             mapped_path = root / "mapped.sqlite"
-            ir.save(ir_path)
+            write_emuir_fixture(ir_path, (ir).value)
             emit_xilinx_mapped_index(ir_path, mapped_path)
             with open_xilinx_mapped_index(mapped_path) as mapped:
                 module = mapped["modules"]["transport"]

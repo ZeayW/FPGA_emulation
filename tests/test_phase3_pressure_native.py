@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow_tools.document_io import read_json
 from emuflow.common.json_io import write_json
 from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER

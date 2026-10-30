@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Set
 
 from emuflow.common.errors import ValidationError
-from emuflow.ir.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite
+from emuflow.ir.emuir_storage import is_emuir_sqlite, read_emuir_sqlite
 from emuflow.common.json_io import read_json
 from emuflow.ir.resources import ResourceVector
 
@@ -37,14 +37,6 @@ class EmuIR:
         if sqlite_target:
             return cls(read_emuir_sqlite(path))
         return cls(read_json(path))
-
-    def save(self, path: Path) -> None:
-        if path.name.endswith(".emuir.sqlite"):
-            write_emuir_sqlite(path, self.value)
-            return
-        raise ValueError(
-            "new EmuIR artifacts must use the indexed .emuir.sqlite format"
-        )
 
     def validate(self) -> None:
         value = self.value

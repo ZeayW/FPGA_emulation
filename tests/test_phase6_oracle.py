@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.partition.combinational_cut import semantic_contract_sha256
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow.transport.phase6_oracle import read_bounded_assignment
 from tests.phase3_store_fixture import write_current_assignment_fixture

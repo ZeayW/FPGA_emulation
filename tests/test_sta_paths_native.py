@@ -1,4 +1,5 @@
 """Native path import/audit equivalence, ownership and scale; not NVDLA acceptance."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 from contextlib import closing
 import json
 import math
@@ -31,7 +32,7 @@ def runtime(tmp_path, monkeypatch):
 
 def fixture(tmp_path):
     ir = import_yosys_json(ROOT/"examples/yosys/counter.json", top="counter", clocks=["clk"])
-    path = tmp_path/"ir ?#%é.emuir.sqlite";ir.save(path)
+    path = tmp_path/"ir ?#%é.emuir.sqlite";write_emuir_fixture(path, (ir).value)
     objects = sorted(endpoint_facts(ir))
     nets = [n["id"] for n in ir.value["nets"]]
     records = []
@@ -92,7 +93,7 @@ def test_escaped_cell_and_bus_provider_spellings_match_reference_certificates(tm
             if endpoint["instance"] is not None:
                 endpoint["instance"] = renamed[endpoint["instance"]]
     ir.value["ports"].append({"id": "bus\\wire", "direction": "input", "width": 3})
-    source = tmp_path/"escaped.emuir.sqlite";ir.save(source)
+    source = tmp_path/"escaped.emuir.sqlite";write_emuir_fixture(source, (ir).value)
     index = endpoint_facts(ir)
     internal = next(name for name in sorted(index) if "/" in name and name == index[name]["object"])
     pairs = [(internal, "bus\\wire[2]"), (internal.replace("\\", "\\\\"), "bus\\wire__2".replace("\\", "\\\\"))]
@@ -184,7 +185,7 @@ def test_many_distinct_paths_and_nets_do_not_grow_python_populations(tmp_path):
              "instances": [], "nets": [], "ports": [], "clocks": [], "warnings": []}
     count = 30000
     for i in range(count):value["nets"].append({"id": "net/"+str(i), "drivers": [], "sinks": [], "cut_class": "undriven"})
-    source = tmp_path/"scale.emuir.sqlite";EmuIR(value).save(source);del value
+    source = tmp_path/"scale.emuir.sqlite";write_emuir_fixture(source, (EmuIR(value)).value);del value
     measured = tmp_path/"scale.tsv";negative = [-1e16, -1.0, -1e-16, -2.3]
     with measured.open('w') as stream:
         stream.write(STA_PATH_DATABASE_TSV_HEADER+"\n")
@@ -208,7 +209,7 @@ def test_unreached_wide_top_port_does_not_expand_for_internal_endpoint_queries(t
     ir = import_yosys_json(ROOT/"examples/yosys/counter.json", top="counter", clocks=["clk"])
     objects = sorted(name for name in endpoint_facts(ir) if "/" in name)
     ir.value["ports"].append({"id": "unreached", "direction": "input", "width": 10000000})
-    source = tmp_path/"wide.emuir.sqlite";ir.save(source)
+    source = tmp_path/"wide.emuir.sqlite";write_emuir_fixture(source, (ir).value)
     measured = tmp_path/"wide.tsv"
     identity = f"{objects[0]}->{objects[-1]}#00000000"
     write(measured, [[identity.encode().hex(), b"clk".hex(), "10", "1", "0", ir.value["nets"][0]["id"].encode().hex()]])

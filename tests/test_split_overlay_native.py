@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 import pytest
 
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.common.native_tools import native_file_generation
 from emuflow_tools.stage_clients.schedule_native import run_native_phase5
 from emuflow.transport.split_netlist_storage import SplitNetlistView,validate_split_netlists_sqlite

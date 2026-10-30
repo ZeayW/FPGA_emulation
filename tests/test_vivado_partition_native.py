@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow_tools.ir.indexed_physical_ir import IndexedPhysicalIR
 from emuflow_tools.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
 from emuflow_tools.physical.vivado.vivado_physical import run_indexed_vivado_partition

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow_tools.document_io import read_json
 from emuflow.common.json_io import write_json

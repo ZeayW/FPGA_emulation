@@ -208,9 +208,9 @@ def test_bound_model_cannot_fall_back_to_inline_graph_loading(tmp_path):
     mapped, timing, output = fixture(tmp_path)
     model, _ = stage(mapped, timing, output)
     from emuflow.ir.ir import EmuIR
-    from emuflow.ir.emuir_storage import _write_emuir_sqlite_v1
+    from emuflow_tools.ir.emuir_fixture import write_legacy_emuir_fixture
     legacy = tmp_path/"legacy.emuir.sqlite"
-    _write_emuir_sqlite_v1(legacy, EmuIR.load(output).value)
+    write_legacy_emuir_fixture(legacy, EmuIR.load(output).value)
     with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole graph fallback")), \
          pytest.raises(ValidationError, match="indexed streaming"):
         run_opensta_path_database(legacy, tmp_path / "paths.json", _timing_model=model)

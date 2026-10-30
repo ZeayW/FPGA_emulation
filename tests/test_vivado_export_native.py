@@ -1,4 +1,5 @@
 """Record/byte migration gates, not physical or NVDLA qualification."""
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import json
 import os
 from pathlib import Path
@@ -144,7 +145,7 @@ def test_late_group_publication_failure_restores_both_outputs(tmp_path, previous
         old = (rtl.read_bytes(), functions.read_bytes())
         value = EmuIR.load(ir).to_dict()
         value["instances"][0]["parameters"]["INIT"] = "1"
-        EmuIR(value).save(ir)
+        write_emuir_fixture(ir, (EmuIR(value)).value)
     publish = store_publication.publish_sqlite_store
 
     def late_failure(temporary, destination, schema, **kwargs):

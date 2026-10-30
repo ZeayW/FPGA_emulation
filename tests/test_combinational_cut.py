@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir, write_emuir_fixture
 from tests.phase3_exact_fixture import write_exact_fixture
 from tests.phase3_store_fixture import assignment_selector_fixture, cluster_document_fixture, write_assignment_index_fixture, write_current_assignment_fixture
 from tests.native_split_fixture import NativeSplitFixture
@@ -30,7 +31,6 @@ from emuflow.validation.equivalence import (
     exhaustively_verify_static_exact_partition_equivalence,
     simulate_static_exact_partition_equivalence,
 )
-from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.ir.ir import EmuIR
 from emuflow_tools.document_io import read_json
 from emuflow.common.json_io import write_json
@@ -2592,7 +2592,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             assignment_path = root / "assignment.json"
             schedule_path = root / "schedule.json"
             output = root / "phase6"
-            self.ir.save(ir_path)
+            write_emuir_fixture(ir_path, (self.ir).value)
             write_current_assignment_fixture(assignment_path, self.ir, assignment)
             indexed_segments = []
             indexed_captures = []

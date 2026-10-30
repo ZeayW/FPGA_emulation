@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import hashlib
 import json
 import tempfile
@@ -66,7 +67,7 @@ def test_undriven_declaration_reader_streams_completed_sqlite_source(tmp_path):
     net["drivers"] = []
     net["cut_class"] = "undriven"
     path = tmp_path / "source.emuir.sqlite"
-    EmuIR(value).save(path)
+    write_emuir_fixture(path, (EmuIR(value)).value)
     assert net["id"] in xilinx_segment_timing._declared_undriven_nets(path)
     bad = tmp_path / "bad.json"
     bad.write_text(json.dumps({"nets": [{"id": "n", "cut_class": "undriven", "drivers": [{}]}]}))

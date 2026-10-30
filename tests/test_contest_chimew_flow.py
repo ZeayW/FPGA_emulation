@@ -411,7 +411,7 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
             )
             ir_path = root / "counter.emuir.sqlite"
-            from emuflow.ir.emuir_compact import write_compact_emuir
+            from emuflow_tools.ir.emuir_fixture import write_compact_emuir
             write_compact_emuir(ir_path, ir.to_dict())
             phase3_root = root / "phase3"
             phase4_root = root / "phase4"

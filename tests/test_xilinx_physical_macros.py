@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import copy
 import json
 import tempfile
@@ -32,7 +33,7 @@ class ImmutableMacroDerivationTests(unittest.TestCase):
             }}}))
             ir = root / "source.emuir.sqlite"
             mapped_path = root / "mapped.sqlite"
-            import_yosys_json(source).save(ir)
+            write_emuir_fixture(ir, (import_yosys_json(source)).value)
             emit_xilinx_mapped_index(ir, mapped_path)
             with mock.patch.object(
                 physical_macros, "_derive_contract", wraps=physical_macros._derive_contract

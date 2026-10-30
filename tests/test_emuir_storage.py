@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir, write_emuir_fixture, write_legacy_emuir_fixture
 from contextlib import closing
 import hashlib
 import gzip
@@ -10,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.ir.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite, _write_emuir_sqlite_v1
+from emuflow.ir.emuir_storage import is_emuir_sqlite, read_emuir_sqlite
 from emuflow.ir.ir import EmuIR
 from tests.yosys_reference import import_yosys_json, import_yosys_json_indexed
 
@@ -35,8 +36,8 @@ class EmuIRStorageTest(unittest.TestCase):
             root = Path(temporary_directory)
             first = root / "first.emuir.sqlite"
             second = root / "second.emuir.sqlite"
-            self.ir.save(first)
-            self.ir.save(second)
+            write_emuir_fixture(first, (self.ir).value)
+            write_emuir_fixture(second, (self.ir).value)
             self.assertTrue(is_emuir_sqlite(first))
             self.assertEqual(EmuIR.load(first).to_dict(), self.ir.to_dict())
             self.assertEqual(_sha256(first), _sha256(second))
@@ -56,8 +57,8 @@ class EmuIRStorageTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = Path(temporary_directory) / "design.emuir.sqlite"
-            with patch("emuflow.ir.emuir_storage.sqlite3.connect", without_audits):
-                self.ir.save(artifact)
+            with patch("emuflow_tools.ir.emuir_fixture.sqlite3.connect", without_audits):
+                write_emuir_fixture(artifact, (self.ir).value)
                 self.assertEqual(EmuIR.load(artifact).to_dict(), self.ir.to_dict())
             # An explicit offline engine audit remains possible, but is not
             # invoked by a producer/consumer or needed for logical round-trip.
@@ -68,12 +69,12 @@ class EmuIRStorageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             artifact = root / "design.emuir.sqlite"
-            self.ir.save(artifact)
+            write_emuir_fixture(artifact, (self.ir).value)
             original = artifact.read_bytes()
             invalid = self.ir.to_dict()
             invalid["instances"] = [*invalid["instances"], invalid["instances"][0]]
             with self.assertRaises(sqlite3.IntegrityError):
-                write_emuir_sqlite(artifact, invalid)
+                write_compact_emuir(artifact, invalid)
             self.assertEqual(artifact.read_bytes(), original)
             self.assertEqual(list(root.glob(".*.tmp")), [])
 
@@ -102,7 +103,7 @@ class EmuIRStorageTest(unittest.TestCase):
         ir = EmuIR(value)
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = Path(temporary_directory) / "many.emuir.sqlite"
-            ir.save(artifact)
+            write_emuir_fixture(artifact, (ir).value)
             tracemalloc.start()
             try:
                 loaded = read_emuir_sqlite(artifact)
@@ -128,7 +129,7 @@ class EmuIRStorageTest(unittest.TestCase):
             for index, statement in enumerate(statements):
                 with self.subTest(statement=statement):
                     artifact = Path(temporary_directory) / f"orphan{index}.emuir.sqlite"
-                    _write_emuir_sqlite_v1(artifact, self.ir.value)
+                    write_legacy_emuir_fixture(artifact, self.ir.value)
                     with closing(sqlite3.connect(artifact)) as connection, connection:
                         connection.execute(statement)
                     with self.assertRaisesRegex(ValueError, "orphaned"):
@@ -137,7 +138,7 @@ class EmuIRStorageTest(unittest.TestCase):
     def test_invalid_endpoint_role_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = Path(temporary_directory) / "role.emuir.sqlite"
-            _write_emuir_sqlite_v1(artifact, self.ir.value)
+            write_legacy_emuir_fixture(artifact, self.ir.value)
             with closing(sqlite3.connect(artifact)) as connection, connection:
                 connection.execute("UPDATE endpoints SET role = 2 WHERE net_seq = 0 AND role = 0")
             with self.assertRaisesRegex(ValueError, "endpoint role"):
@@ -146,7 +147,7 @@ class EmuIRStorageTest(unittest.TestCase):
     def test_truncation_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = Path(temporary_directory) / "design.emuir.sqlite"
-            self.ir.save(artifact)
+            write_emuir_fixture(artifact, (self.ir).value)
             raw = artifact.read_bytes()
             artifact.write_bytes(raw[: len(raw) // 2])
             with self.assertRaises((ValueError, sqlite3.DatabaseError)):
@@ -156,7 +157,7 @@ class EmuIRStorageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = Path(temporary_directory) / "design.emuir.json"
             with self.assertRaisesRegex(ValueError, "indexed"):
-                self.ir.save(artifact)
+                write_emuir_fixture(artifact, (self.ir).value)
 
     def test_indexed_yosys_import_matches_legacy_logical_graph(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

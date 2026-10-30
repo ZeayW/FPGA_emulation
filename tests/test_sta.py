@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import json
 import sqlite3
 import tempfile
@@ -77,7 +78,7 @@ class StaAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, measured, output = root / "ir.emuir.sqlite", root / "paths.tsv", root / "out.json"
-            ir.save(source)
+            write_emuir_fixture(source, (ir).value)
             measured.write_text(STA_PATH_DATABASE_TSV_HEADER + "\n" + "\t".join([
                 "path0".encode().hex(), "clk".encode().hex(), "10", "0", "1",
                 "missing".encode().hex(),
@@ -106,7 +107,7 @@ class StaAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ir_path = root / "design.emuir.sqlite"
-            ir.save(ir_path)
+            write_emuir_fixture(ir_path, (ir).value)
             tsv = root / "paths.tsv"
             tsv.write_text(STA_PATH_DATABASE_TSV_HEADER + "\n" + "\t".join([
                 "path0".encode().hex(), "clk".encode().hex(), "10", "-2", "1", net_id.encode().hex()
@@ -143,7 +144,7 @@ class StaAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ir_path = root / "design.emuir.sqlite"
-            ir.save(ir_path)
+            write_emuir_fixture(ir_path, (ir).value)
             ordinary = root / "ordinary.tsv"
             reused = root / "reused.tsv"
             report = write_emuir_net_map(ir_path, ordinary)
@@ -317,7 +318,7 @@ class StaAdapterTest(unittest.TestCase):
             root = Path(temporary)
             ir_path = root / "ir.emuir.sqlite"
             input_path = root / "paths.tsv"
-            ir.save(ir_path)
+            write_emuir_fixture(ir_path, (ir).value)
             input_path.write_text(
                 STA_PATH_DATABASE_TSV_HEADER + "\n" + "\t".join([
                     identity.encode().hex(), b'clk'.hex(), '10', '-1', '0', b'data'.hex(),
@@ -498,7 +499,7 @@ class StaAdapterTest(unittest.TestCase):
                 tsv_path, ir_path, database_path, provider="opensta-fpga-path-database-v1"
             )
             indexed_ir, indexed_database = root / "weights.emuir.sqlite", root / "weights-paths.json"
-            ir.save(indexed_ir)
+            write_emuir_fixture(indexed_ir, (ir).value)
             import_sta_path_database_tsv_streaming(
                 tsv_path, indexed_ir, indexed_database, provider="opensta-fpga-path-database-v1"
             )

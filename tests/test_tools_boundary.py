@@ -24,6 +24,12 @@ assert importlib.util.find_spec('emuflow_tools') is None
 import emuflow.flow.cli, emuflow.flow.native_compile, emuflow.transport.phase6_oracle
 assert 'emuflow_tools' not in sys.modules
 assert importlib.util.find_spec('emuflow.common.io') is None
+from emuflow.ir import emuir_compact, emuir_storage
+from emuflow.ir.ir import EmuIR
+assert not hasattr(EmuIR, 'save')
+assert not hasattr(emuir_compact, 'write_compact_emuir')
+assert not hasattr(emuir_storage, 'write_emuir_sqlite')
+assert not hasattr(emuir_storage, '_write_emuir_sqlite_v1')
 for name in ('partition.phase3', 'partition.phase3_native', 'routing.phase4', 'routing.phase4_native',
              'scheduling.phase5', 'scheduling.phase5_native', 'transport.phase6', 'transport.phase6_native',
              'timing.phase7c', 'flow.multi_fpga_physical_flow', 'flow.multi_fpga_flow',

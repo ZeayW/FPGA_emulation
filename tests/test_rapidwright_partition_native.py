@@ -2,6 +2,7 @@
 
 These are contract regressions. Whole-design qualification continues to use NVDLA.
 """
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 import copy
 import json
 from pathlib import Path
@@ -34,7 +35,7 @@ def case(root):
             'port_directions':{'C':'input','D':'input','Q':'output','CE':'input','R':'input'}}
     module['ports']['q1']={'direction':'output','bits':[3]}
     source=root/'source.json';source.write_text(json.dumps({'creator':'fixture','modules':{'top':module}}))
-    ir=root/'source.emuir.sqlite';import_yosys_json(source,clocks=['clk']).save(ir)
+    ir=root/'source.emuir.sqlite';write_emuir_fixture(ir, (import_yosys_json(source,clocks=['clk'])).value)
     _,_,arch=write_openparf_runtime_fixture(root/'architecture')
     doc=json.loads(arch.read_text());doc['part']='xcvu19p-test'
     for site in doc['sites']:site['physical_region']={'slr':'SLR0','clock_region':'X0Y0'}

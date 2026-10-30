@@ -1,3 +1,4 @@
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 from tests.physical_handoff_fixture import write_handoff_fixture
 import json
 import hashlib
@@ -57,7 +58,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             ir_path = root / "source.emuir.sqlite"
             index = root / "mapped.sqlite"
             source.write_text(json.dumps(self._fixture()), encoding="utf-8")
-            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source, clocks=("clk",))).value)
             source_hash = hashlib.sha256(ir_path.read_bytes()).hexdigest()
             source_mtime = ir_path.stat().st_mtime_ns
             report = emit_xilinx_mapped_index(ir_path, index)
@@ -90,7 +91,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             source.write_text(json.dumps(mapped, ensure_ascii=False), encoding="utf-8")
             ir = import_yosys_json(source, clocks=("clk",))
             next(port for port in ir.value["ports"] if port["id"] == "a")["width"] = 2
-            ir.save(ir_path)
+            write_emuir_fixture(ir_path, (ir).value)
             connection = sqlite3.connect(ir_path)
             try:
                 connection.executescript("""
@@ -147,7 +148,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             ir_path = root / "source.emuir.sqlite"
             index = root / "mapped.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
-            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source, clocks=("clk",))).value)
             report = emit_xilinx_mapped_index(ir_path, index)
             self.assertEqual(report["index_builder"], "native-primitive-projection-v1")
             self.assertEqual(report["audit"]["hard_block_cells"], {"RAMB18E2": 1})
@@ -170,7 +171,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             ir_path = root / "source.emuir.sqlite"
             index = root / "mapped.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
-            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source, clocks=("clk",))).value)
             report = emit_xilinx_mapped_index(ir_path, index)
             with open_xilinx_mapped_index(index) as indexed:
                 self.assertEqual(
@@ -186,7 +187,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             ir_path = root / "source.emuir.sqlite"
             index = root / "mapped.sqlite"
             source.write_text(json.dumps(self._fixture()), encoding="utf-8")
-            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source, clocks=("clk",))).value)
             connection = sqlite3.connect(ir_path)
             try:
                 cell_seq = connection.execute(
@@ -222,7 +223,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             ir_path = root / "source.emuir.sqlite"
             index = root / "mapped.sqlite"
             source.write_text(json.dumps(self._fixture()), encoding="utf-8")
-            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source, clocks=("clk",))).value)
             connection = sqlite3.connect(ir_path)
             try:
                 cell_seq = connection.execute(
@@ -331,7 +332,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             index = root / "mapped.sqlite"
             handoff = root / "physical-handoff.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
-            import_yosys_json(source).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source)).value)
             emit_xilinx_mapped_index(ir_path, index)
             write_handoff_fixture(handoff, packed, placement)
             with open_xilinx_mapped_index(index) as indexed:
@@ -445,7 +446,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             index = root / "mapped.sqlite"
             absent_json = root / "mapped.json"
             source.write_text(json.dumps(mapped), encoding="utf-8")
-            import_yosys_json(source).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source)).value)
             report = emit_xilinx_mapped_index(ir_path, index)
             with open_xilinx_mapped_index(index) as indexed:
                 self.assertEqual(indexed.cell_type_counts(), {"LUT1": 1})
@@ -520,7 +521,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             ir_path = root / "source.emuir.sqlite"
             index = root / "mapped.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
-            import_yosys_json(source).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source)).value)
             report = emit_xilinx_mapped_index(ir_path, index)
             with open_xilinx_mapped_index(index) as indexed:
                 self.assertEqual(
@@ -567,7 +568,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                 port for port in value["ports"] if port["id"] == "y"
             )
             output_port["width"] = 2
-            ir.save(ir_path)
+            write_emuir_fixture(ir_path, (ir).value)
             report = emit_xilinx_mapped_index(ir_path, root / "mapped.sqlite")
             with open_xilinx_mapped_index(root / "mapped.sqlite") as indexed:
                 ports = indexed.ports
@@ -608,7 +609,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                 port for port in value["ports"] if port["id"] == "a"
             )
             input_port["width"] = 2
-            ir.save(ir_path)
+            write_emuir_fixture(ir_path, (ir).value)
             report = emit_xilinx_mapped_index(ir_path, root / "mapped.sqlite")
             with open_xilinx_mapped_index(root / "mapped.sqlite") as indexed:
                 ports = indexed.ports
@@ -654,7 +655,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             source = root / "source.json"
             ir_path = root / "source.emuir.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
-            import_yosys_json(source).save(ir_path)
+            write_emuir_fixture(ir_path, (import_yosys_json(source)).value)
             emit_xilinx_mapped_index(ir_path, root / "mapped.sqlite")
             with open_xilinx_mapped_index(root / "mapped.sqlite") as indexed:
                 self.assertEqual(
@@ -709,7 +710,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             ir_path = root / "source.emuir.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
             ir = import_yosys_json(source, clocks=("clk",))
-            ir.save(ir_path)
+            write_emuir_fixture(ir_path, (ir).value)
             report = emit_xilinx_mapped_index(ir_path, root / "mapped.sqlite")
             with open_xilinx_mapped_index(root / "mapped.sqlite") as indexed:
                 module = indexed["modules"]["top"]

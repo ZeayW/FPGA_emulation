@@ -82,9 +82,9 @@ def test_native_tree_and_every_final_fact_match_the_independent_reference(tmp_pa
     actual=synthesize_transport(**options)
     source_path=tmp_path/'reference.json';source_path.write_text(json.dumps(data))
     ir=import_yosys_json(source_path,top='transport',clocks=['fabric_clk'])
-    from emuflow.ir.emuir_storage import write_emuir_sqlite
+    from emuflow_tools.ir.emuir_fixture import write_compact_emuir
     reports=[];reference=tmp_path/'reference.emuir.sqlite'
-    write_emuir_sqlite(reference,ir.value,_finalize=lambda db:reports.append(reference_buffer(db,max_fanout=maximum)))
+    write_compact_emuir(reference,ir.value,_finalize=lambda db:reports.append(reference_buffer(db,max_fanout=maximum)))
     expected=EmuIR.load(reference).value;observed=EmuIR.load(Path(actual['output'])).value
     for key in ('instances','nets','ports','clocks','warnings'):assert observed[key]==expected[key],key
     assert json.loads(Path(actual['fanout_buffering']['output']).read_text())==reports[0]

@@ -3,7 +3,7 @@ import sys
 import pytest
 from pathlib import Path
 
-from emuflow.ir.emuir_storage import _write_emuir_sqlite_v1
+from emuflow_tools.ir.emuir_fixture import write_legacy_emuir_fixture
 from scripts.validation.qualify_handoffs import main
 from emuflow.ir.ir import EmuIR
 from tests.yosys_reference import import_yosys_json
@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_separate_process_protocol_preserves_graph_inputs_and_timing(tmp_path, monkeypatch):
     ir = import_yosys_json(ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"])
     old, new, old_copy = [tmp_path / name for name in ("old.emuir.sqlite", "new.emuir.sqlite", "old-copy.emuir.sqlite")]
-    _write_emuir_sqlite_v1(old, ir.value)
+    write_legacy_emuir_fixture(old, ir.value)
 
     def run(operation, source, output, *extra):
         report = tmp_path / (output.name + "-" + operation + ".report.json")

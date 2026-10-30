@@ -1,4 +1,5 @@
 from __future__ import annotations
+from emuflow_tools.ir.emuir_fixture import write_emuir_fixture
 
 import json
 import tempfile
@@ -621,7 +622,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 "clocks": [{"id": "clk"}],
             }
             emuir_path = flow / "frontend/phase1/design.emuir.sqlite"
-            EmuIR(emuir).save(emuir_path)
+            write_emuir_fixture(emuir_path, (EmuIR(emuir)).value)
             phase3 = {"validation": {"resources_by_fpga": {
                 "F0": {"lut": 50, "ff": 20}, "F1": {"lut": 40, "ff": 30}
             }}}

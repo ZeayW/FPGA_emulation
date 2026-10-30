@@ -5,7 +5,7 @@ import copy
 from pathlib import Path
 from types import SimpleNamespace
 
-from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow_tools.ir.emuir_fixture import write_compact_emuir
 from emuflow.ir.ir import EmuIR
 from emuflow_tools.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
 from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
