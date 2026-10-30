@@ -7,7 +7,6 @@ independent native audits. Production calls only the complete phase owner.
 from array import array
 from dataclasses import dataclass
 import json
-import mmap
 import os
 from pathlib import Path
 import struct
@@ -17,7 +16,7 @@ from types import SimpleNamespace
 import zlib
 
 from emuflow.common.errors import ValidationError
-from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn, _MappedNames
+from tests.native_column_fixture import read_fixture_columns, _ClusterScratch, _ColumnOwner, _MappedColumn, _MappedNames
 from emuflow.common.native_tools import native_file_generation, resolve_native_executable, require_native_schema
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_protocol import CheckedRequestWriter as _Writer
@@ -33,8 +32,7 @@ LIMIT=65536
 
 
 def _read_ids(path, scratch, expected_nets):
-    with path.open('rb') as stream:
-        data=mmap.mmap(stream.fileno(),0,access=mmap.ACCESS_READ)
+    data=read_fixture_columns(path)
     owner=_ColumnOwner(data,scratch)
     try:
         if len(data)<48:
@@ -102,8 +100,7 @@ def build_native_candidate_ids(ir):
 
 
 def _load_columns(output, scratch, expected_cells, fixed, groups, generation):
-    with output.open('rb') as stream:
-        data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+    data = read_fixture_columns(output)
     owner = _ColumnOwner(data,scratch)
     try:
         if len(data) < 204:

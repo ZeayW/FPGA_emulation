@@ -942,9 +942,8 @@ fs::path PublishReport(const ArtifactRef &staged, O manifest,
   PublishTextArtifact(selector_publication.path(), sources,
                       [&](std::ostream &out) { out << text << '\n'; });
   files.emplace_back(selector_publication.path(), target);
-  fs::create_directory(workspace / "backup");
   Stop(cancelled);
-  PublishArtifactGroup(files, workspace / "backup", sources);
+  PublishArtifactGroup(files, sources);
   if (obsolete && *obsolete != final_store && !fs::is_symlink(*obsolete) &&
       std::none_of(sources.begin(), sources.end(),
                    [&](const auto &ref) { return ref.path() == *obsolete; })) {
@@ -1182,6 +1181,18 @@ StageResult CopyChimewBankReport(const ArtifactRef &selector,
             ArtifactRef::Bind(target.string(),
                               "chimew-bank-report-selector-v1")};
       });
+}
+
+ChimewBankValidation InspectChimewBankInput(const ArtifactRef& input,
+    const volatile std::sig_atomic_t* cancelled) {
+  Lease lease(input.path(), "emuflow-bank-channel-locks", false);
+  BankInput bank(cancelled); bank.Read(input);
+  ChimewBankValidation proof;
+  proof.design=bank.design;proof.platform=bank.platform;
+  proof.input_sha256=bank.logical;proof.provenance=D::Encode(bank.provenance);
+  proof.metrics=D::Encode(bank.metrics);proof.inputs=bank.sources;
+  for(const auto& ref:proof.inputs)ref.RequireUnchanged();
+  return proof;
 }
 
 ChimewBankValidation

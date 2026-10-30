@@ -7,7 +7,6 @@ flow. Explicit fixture ownership is never repaired by an optimizer.
 from collections import Counter
 from collections.abc import Mapping
 import json
-import mmap
 import os
 from pathlib import Path
 import struct
@@ -15,7 +14,7 @@ import zlib
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
-from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn
+from tests.native_column_fixture import read_fixture_columns, _ClusterScratch, _ColumnOwner, _MappedColumn
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import resolve_native_executable
 from emuflow.partition.partition import CLUSTERS_SCHEMA
@@ -173,7 +172,8 @@ class _Leases:
             def cleanup(self):
                 if self.live:
                     self.live = False; group.release()
-            def __del__(self): self.cleanup()
+            # The mapping/fact owner releases this lease after closing its
+            # resources; a second finalizer can run first inside a GC cycle.
         return Lease()
     def release(self):
         self.count -= 1
@@ -231,7 +231,7 @@ def finalize_selected_semantics(ir, platform, records, assignment, instance_assi
         summary=json.loads(originals[3].path.read_text());metrics=summary['metrics']
         nodes=read_nodes(originals[0].path,_validated_source=originals[0]);nodes.adopt_native_scratch(group.lease())
         captures=read_captures(originals[1].path,_validated_source=originals[1]);captures.adopt_native_scratch(group.lease())
-        with originals[2].path.open('rb') as stream:data=mmap.mmap(stream.fileno(),0,access=mmap.ACCESS_READ)
+        data=read_fixture_columns(originals[2].path)
         count_owner=_ColumnOwner(data,group.lease())
         assert struct.unpack_from('<QIQ',data)==(0x31544350464D5545,1,len(nodes))
         assert len(data)==24+8*len(nodes) and zlib.crc32(data[:-4])==struct.unpack_from('<I',data,len(data)-4)[0]

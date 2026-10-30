@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests.chimew_qualification_fixture import build_chimew_phase6_qualification, validate_chimew_phase6_qualification
 from tests.chimew_bank_report_fixture import write_chimew_bank_channel_report_storage
 from tests.chimew_bank_fixture import build_chimew_phase6_pin_plan
@@ -37,11 +38,8 @@ from emuflow.transport.chimew.chimew_qualification import (
     canonical_sha256,
     validate_chimew_qualification_seal,
 )
-from emuflow.transport.chimew.chimew_phase6 import (
-    CHIMEW_ELECTRICAL_MAP_PROVIDER,
-    CHIMEW_ELECTRICAL_MAP_SCHEMA,
-    validate_chimew_phase6_binding,
-)
+from emuflow.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER, CHIMEW_ELECTRICAL_MAP_SCHEMA
+from tests.pin_contract_fixture import validate_chimew_phase6_binding
 from emuflow.transport.chimew.chimew_pipeline import (
     CHIMEW_PIPELINE_PROVIDER,
     CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
@@ -81,6 +79,7 @@ class ChimewQualificationTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.schedule = {
+            "routes": [], "demand_completions": [], "domain_schedules": [],
             "schema": "emuflow.tdm-schedule/v1",
             "design": "qualification_fixture",
             "platform": "two_fpga",
@@ -105,6 +104,10 @@ class ChimewQualificationTest(unittest.TestCase):
                 },
             ],
         }
+        for index, entry in enumerate(self.schedule["entries"]):
+            entry.update(demand=f"d{index}", net=f"n{index}", hop=0,
+                         capacity_key=f"{entry['link']}:{entry['from']}:{entry['to']}",
+                         ready_slot=entry["slot"], arrival_slot=entry["slot"]+1)
         self.crossings = {
             "schema": CHIMEW_CROSSING_SCHEMA,
             "provider": CHIMEW_CROSSING_PROVIDER,
@@ -320,6 +323,8 @@ class ChimewQualificationTest(unittest.TestCase):
                     write_chimew_bank_channel_report_storage(
                         paths[label], document
                     ).close()
+                elif label == "schedule":
+                    write_tdm_schedule_storage(paths[label], document)
                 else:
                     write_json(paths[label], document)
             output = root / "qualification.json"
@@ -486,6 +491,8 @@ class ChimewQualificationTest(unittest.TestCase):
                     write_chimew_bank_channel_storage(
                         paths[label], document
                     ).close()
+                elif label == "schedule":
+                    write_tdm_schedule_storage(paths[label], document)
                 else:
                     write_json(paths[label], document)
             electrical = {
@@ -565,7 +572,7 @@ class ChimewQualificationTest(unittest.TestCase):
             )
             self.assertEqual(main(["pin-plan", "chimew-validate", str(output)]), 0)
             validation = validate_chimew_phase6_pipeline(output)
-            self.assertEqual(validation["artifact_hashes_verified"], 30)
+            self.assertEqual(validation["artifact_hashes_verified"], 31)
             self.assertEqual(
                 validation["qualification_scope"], "byte-bound-source-artifacts"
             )
@@ -1048,7 +1055,7 @@ class ChimewQualificationTest(unittest.TestCase):
             direct_lane = copy.deepcopy(self.schedule)
             for entry in direct_lane["entries"]:
                 entry.pop("tdm_ratio")
-            write_json(paths["schedule"], direct_lane)
+            write_tdm_schedule_storage(paths["schedule"], direct_lane)
             direct_output = root / "direct-lane-pipeline"
             direct_arguments = list(arguments[:-2])
             direct_arguments.extend(["--out", str(direct_output)])
@@ -1190,10 +1197,9 @@ class ChimewQualificationTest(unittest.TestCase):
                     path.read_bytes()
                 ).hexdigest()
             write_json(legacy_output / "pipeline_report.json", legacy_report)
-            self.assertEqual(
-                validate_chimew_phase6_pipeline(legacy_output)["status"],
-                "pass",
-            )
+            # Inline historical handoffs no longer have a production reader.
+            with self.assertRaises(ValidationError):
+                validate_chimew_phase6_pipeline(legacy_output)
             (legacy_output / "unexpected.txt").write_text("unexpected\n")
             with self.assertRaisesRegex(ValidationError, "coverage is not exact"):
                 validate_chimew_phase6_pipeline(legacy_output)

@@ -17,8 +17,8 @@ from emuflow.storage import store_publication
 from emuflow.common.errors import ValidationError
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import native_file_generation
-from emuflow.transport.pin_plan_storage import write_pin_plan_storage
-from emuflow.transport.chimew.chimew_binding_storage import write_chimew_binding_storage
+from tests.pin_plan_storage_fixture import write_pin_plan_storage
+from tests.chimew_binding_storage_fixture import write_chimew_binding_storage
 from emuflow.transport.transport_storage import DDL
 from tests.native_build import emuflow_native
 from tests.test_pin_plan_storage import _plan
@@ -41,7 +41,7 @@ def private_store(root, schema="pin-plan-store-v1"):
                 },
             ).store_path
         elif schema == "position-hints-store-v1":
-            from emuflow.transport.position_hints_storage import write_position_hints_storage
+            from tests.position_hints_storage_fixture import write_position_hints_storage
             from tests.test_position_hints_storage import _positions
 
             source = write_position_hints_storage(
@@ -355,7 +355,7 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
             )
             schema = "chimew-binding-store-v1"
         elif kind == "position":
-            from emuflow.transport.position_hints_storage import write_position_hints_storage
+            from tests.position_hints_storage_fixture import write_position_hints_storage
             from tests.test_position_hints_storage import _positions
 
             view = write_position_hints_storage(
@@ -408,39 +408,27 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
 def test_existing_identical_store_does_not_bypass_source_checks_or_leak_staging(
     tmp_path, kind
 ):
-    from emuflow.transport import pin_plan_storage; from emuflow.transport.chimew import chimew_binding_storage
+    from emuflow.transport.pin_plan_storage import copy_pin_plan_storage
+    from emuflow.transport.chimew.chimew_binding_storage import copy_chimew_binding_storage
 
     source, _temporary = private_store(tmp_path)
     bound = store_publication.bind_store_source(source, "pin-plan-store-v1")
     output = tmp_path / "output.json"
-    module, writer, document = (
-        (pin_plan_storage, write_pin_plan_storage, _plan())
+    writer, copier, document = (
+        (write_pin_plan_storage, copy_pin_plan_storage, _plan())
         if kind == "pin"
-        else (
-            chimew_binding_storage,
-            write_chimew_binding_storage,
-            {"schema": "emuflow.chimew-phase6-electrical-binding/v3", "entries": []},
-        )
+        else (write_chimew_binding_storage, copy_chimew_binding_storage,
+              {"schema": "emuflow.chimew-phase6-electrical-binding/v3", "entries": []})
     )
-    with patch.object(
-        store_publication,
-        "resolve_native_executable",
-        return_value=str(emuflow_native()),
-    ):
-        writer(output, document, source_bindings=[bound])
-        previous = output.read_bytes()
-        digest = module.file_sha256
-
-        def source_changes_after_hash(path):
-            result = digest(path)
-            if Path(path).suffix == ".tmp":
-                source.write_bytes(source.read_bytes() + b"\n")
-            return result
-
-        with patch.object(module, "file_sha256", side_effect=source_changes_after_hash):
-            with pytest.raises(ValidationError, match="generation changed"):
-                writer(output, document, source_bindings=[bound])
-    assert output.read_bytes() == previous
+    owner = writer(tmp_path / "owner.json", document)
+    copier(owner, output, source_bindings=[bound])
+    previous = output.read_bytes()
+    payload = output.with_name(json.loads(previous)["artifact"])
+    previous_payload = payload.read_bytes()
+    source.write_bytes(source.read_bytes() + b"\n")
+    with pytest.raises(ValidationError, match="generation changed"):
+        copier(owner, output, source_bindings=[bound])
+    assert output.read_bytes() == previous and payload.read_bytes() == previous_payload
     assert not list(tmp_path.glob(".output.*.sqlite.tmp"))
 
 

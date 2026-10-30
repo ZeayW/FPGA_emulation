@@ -574,7 +574,7 @@ StageResult ProjectStaPaths(const std::vector<ArtifactRef> &inputs,
         summary_file.Close();
         Stop(cancelled);
         PublishArtifactGroup(
-            {{artifact.path, target}, {summary_file.path, report}}, work.path,
+            {{artifact.path, target}, {summary_file.path, report}},
             refs, [&] { Stop(cancelled); });
         source_paths.RequireUnchanged();
         source_assignment.RequireUnchanged();

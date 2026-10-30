@@ -530,6 +530,56 @@ int main() {
       catch(const std::runtime_error&){rejected=true;}
       if(!rejected || std::filesystem::exists(dest_one) || std::filesystem::exists(dest_two))throw std::runtime_error("rejected directory group retained a public generation");
     }
+    // The actual native group publisher retains the same failure guarantees
+    // as selector owners: late rejection, invalidated inputs, incomplete
+    // snapshots and failed restoration. No Python writer is involved.
+    for(const auto& mode:std::vector<std::string>{"late","changed","partial-backup","failed-rollback"}) {
+      namespace fs=std::filesystem;
+      const auto scope=root/("native-group-"+mode);
+      fs::create_directory(scope);
+      const auto caller=scope/"caller-scratch";fs::create_directory(caller);
+      const auto source=scope/"source",first=scope/"payload",last=scope/"selector";
+      const auto write=[](const fs::path& path,const std::string& value){std::ofstream out(path);out<<value;};
+      const auto read=[](const fs::path& path){std::ifstream in(path);return std::string(std::istreambuf_iterator<char>(in),{});};
+      write(source,"source");write(first,"old payload");
+      if(mode=="partial-backup"){fs::create_directory(last);write(last/"marker","old selector");}
+      else write(last,"old selector");
+      const auto bound=ArtifactRef::Bind(source.string(),"physical-input-document-v1");
+      bool rejected=false;
+      {
+        emuflow::core::StagedArtifact next_first(first.string()),next_last(last.string());
+        write(next_first.path(),"new payload");write(next_last.path(),"new selector");
+        try {
+          emuflow::core::PublishArtifactGroup({{next_first.path(),first},{next_last.path(),last}},{bound},[&]{
+            if(mode=="changed"){write(source,"changed while validating");return;}
+            if(mode=="failed-rollback"){
+              fs::rename(last,scope/"saved-new-selector");
+              fs::create_directory(last);write(last/"blocker","restoration blocked");
+            }
+            throw std::runtime_error("injected late rejection");
+          });
+        } catch(const emuflow::core::StageError& error) {
+          rejected=true;
+          if(mode=="changed" && error.code()!=ErrorCode::kMixedGeneration)
+            throw std::runtime_error("post-acceptance source change lost its error");
+          if(mode=="failed-rollback" && std::string(error.what()).find("prior snapshots retained at")==std::string::npos)
+            throw std::runtime_error("failed restoration omitted recovery location");
+        } catch(const std::exception&) {rejected=true;}
+      }
+      fs::remove_all(caller);
+      if(!rejected)throw std::runtime_error("native publication failure was accepted");
+      std::vector<fs::path> snapshots;
+      for(const auto& entry:fs::directory_iterator(scope))
+        if(entry.path().filename().string().find(".artifact-backup-")==0)snapshots.push_back(entry.path());
+      if(mode=="failed-rollback") {
+        if(snapshots.size()!=1 || read(snapshots[0]/"prior-0")!="old payload" ||
+           read(snapshots[0]/"prior-1")!="old selector" || read(first)!="new payload" ||
+           read(scope/"saved-new-selector")!="new selector")
+          throw std::runtime_error("caller cleanup destroyed a recoverable generation");
+      } else if(!snapshots.empty() || read(first)!="old payload" ||
+                (mode=="partial-backup"?read(last/"marker"):read(last))!="old selector")
+        throw std::runtime_error("failed publication changed prior artifacts or leaked snapshots");
+    }
     const auto sqlite_artifact = (root / "source-artifact.sqlite").string();
     {
       emuflow::core::SqliteDatabase db(sqlite_artifact, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);

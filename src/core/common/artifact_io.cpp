@@ -5,6 +5,7 @@
 #include "common/hash.hpp"
 
 #include <atomic>
+#include <exception>
 #include <cmath>
 #include <cstdlib>
 #include <locale.h>
@@ -373,8 +374,32 @@ void PublishTemporaryFile(const std::string& temporary_path_, const std::string&
 void PublishArtifactGroup(
     const std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
         &files,
-    const std::filesystem::path &backup, const std::vector<ArtifactRef> &refs,
+    const std::vector<ArtifactRef> &refs,
     const std::function<void()> &accepted) {
+  namespace fs=std::filesystem;
+  if(files.empty())throw StageError(ErrorCode::kInvalidRequest,"empty artifact publication group");
+  struct Backup {
+    fs::path root;
+    bool retained=false;
+    explicit Backup(const fs::path& parent) {
+#if !defined(_WIN32)
+      auto pattern=(parent/".artifact-backup-XXXXXX").string();
+      std::vector<char> value(pattern.begin(),pattern.end());value.push_back('\0');
+      const auto created=mkdtemp(value.data());
+      if(!created)throw StageError(ErrorCode::kPublicationFailed,"cannot create artifact recovery snapshots");
+      root=created;
+#else
+      for(unsigned attempt=0;attempt<1024;++attempt){
+        root=parent/(".artifact-backup-"+std::to_string(ProcessId())+"-"+std::to_string(temporary_sequence.fetch_add(1)));
+        std::error_code error;
+        if(fs::create_directory(root,error))return;
+        if(error)throw StageError(ErrorCode::kPublicationFailed,"cannot create artifact recovery snapshots");
+      }
+      throw StageError(ErrorCode::kPublicationFailed,"artifact recovery namespace exhausted");
+#endif
+    }
+    ~Backup(){if(!retained){std::error_code error;fs::remove_all(root,error);}}
+  } backup(files.front().second.parent_path());
   struct Original {
     std::filesystem::path target, backup;
     std::optional<ArtifactRef> prior;
@@ -382,15 +407,18 @@ void PublishArtifactGroup(
   std::vector<Original> originals;
   for (unsigned i = 0; i < files.size(); ++i) {
     const auto &target = files[i].second;
-    Original item{target, backup / ("prior-" + std::to_string(i)), {}};
+    Original item{target, backup.root / ("prior-" + std::to_string(i)), {}};
     if (std::filesystem::exists(target)) {
       item.prior =
           ArtifactRef::Bind(target.string(), "physical-input-document-v1");
       std::filesystem::copy_file(target, item.backup);
+      SyncFile(item.backup.string());
       item.prior->RequireUnchanged();
     }
     originals.push_back(std::move(item));
   }
+  SyncDirectory(backup.root);
+  SyncDirectory(backup.root.parent_path());
   std::size_t published = 0;
   try {
     for (unsigned i = 0; i < files.size(); ++i) {
@@ -404,21 +432,27 @@ void PublishArtifactGroup(
       r.RequireUnchanged();
     if (accepted)
       accepted();
+    for(const auto& ref:refs)ref.RequireUnchanged();
   } catch (...) {
-    for (std::size_t n = published; n; --n) {
-      auto &item = originals[n - 1];
-      if (item.prior) {
-        StagedArtifact restore(item.target.string());
-        std::filesystem::copy_file(
-            item.backup, restore.path(),
-            std::filesystem::copy_options::overwrite_existing);
-        PublishTemporaryFile(restore.path(), item.target.string());
-      } else {
-        std::error_code e;
-        std::filesystem::remove(item.target, e);
+    const auto failure=std::current_exception();
+    try {
+      for (std::size_t n = published; n; --n) {
+        auto &item = originals[n - 1];
+        if (item.prior) {
+          StagedArtifact restore(item.target.string());
+          std::filesystem::copy_file(item.backup, restore.path(),fs::copy_options::overwrite_existing);
+          PublishTemporaryFile(restore.path(), item.target.string());
+        } else {
+          std::error_code error;fs::remove(item.target,error);
+          if(error)throw StageError(ErrorCode::kPublicationFailed,"cannot retire rejected artifact");
+          SyncDirectory(item.target.parent_path());
+        }
       }
+    } catch (...) {
+      backup.retained=true;
+      throw StageError(ErrorCode::kPublicationFailed,"artifact group rollback failed; prior snapshots retained at "+backup.root.string());
     }
-    throw;
+    std::rethrow_exception(failure);
   }
 }
 

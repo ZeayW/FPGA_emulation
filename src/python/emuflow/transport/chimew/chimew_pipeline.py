@@ -16,7 +16,7 @@ from emuflow.transport.chimew.chimew_bank_channel_storage import chimew_bank_cha
 from emuflow.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView, chimew_bank_channel_report_store_path, copy_chimew_bank_channel_report_storage, read_chimew_bank_channel_report
 from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
 from emuflow.transport.chimew.chimew_grouping import build_chimew_initial_groups
-from emuflow.transport.chimew.chimew_phase6 import CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA, CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V1, CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V2, CHIMEW_PHASE6_BINDING_PROVIDER, chimew_adapter_report_generation_path, validate_chimew_adapter_generation, run_chimew_phase6_adapter, validate_chimew_electrical_map, validate_chimew_phase6_binding
+from emuflow.transport.chimew.chimew_phase6 import CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA, CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V1, CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V2, CHIMEW_PHASE6_BINDING_PROVIDER, chimew_adapter_report_generation_path, validate_chimew_adapter_generation, run_chimew_phase6_adapter, validate_chimew_phase6_binding
 from emuflow.transport.chimew.chimew_qualification import qualify_chimew_artifact_chain, canonical_sha256, validate_chimew_phase6_qualification
 from emuflow.transport.chimew.chimew_refinement import refine_chimew_groups
 from emuflow.transport.chimew.chimew_rudy import evaluate_chimew_rudy
@@ -460,11 +460,8 @@ def _validate_pipeline_artifact_semantics_records(
         != _sha256(paths["platform"])
     ):
         raise ValidationError("Chimew electrical map BoardDB hash differs")
-    validate_chimew_electrical_map(
-        electrical_map,
-        platform,
-        validate_chimew_bank_channel_input(bank_input),
-    )
+    from emuflow.transport.pin_artifacts_native import audit_electrical_map
+    audit_electrical_map(bank_input.manifest_path, paths["electrical_map"], platform)
     source_binding = None
     if source_bound:
         crossings = read_json(paths["crossings"])
@@ -526,12 +523,11 @@ def _validate_pipeline_artifact_semantics_records(
     pin_plan = own(read_pin_plan(paths["adapter_pin_plan"]))
     position_hints = own(read_position_hints(paths["adapter_position_hints"]))
     electrical_binding = own(read_chimew_binding(paths["adapter_electrical_binding"]))
-    pin_validation = validate_pin_plan(
-        schedule, platform, position_hints, pin_plan
-    )
-    binding_validation = validate_chimew_phase6_binding(
-        schedule, platform, pin_plan, electrical_binding
-    )
+    from emuflow.transport.pin_artifacts_native import validate_pin_artifacts
+    checked = validate_pin_artifacts(paths["schedule"], platform, paths["adapter_pin_plan"],
+        positions_path=paths["adapter_position_hints"], binding_path=paths["adapter_electrical_binding"])
+    pin_validation = checked["pin_validation"]
+    binding_validation = checked["binding_validation"]
     adapter_report = read_json(paths["adapter_report"])
     if adapter_report.get("schema") not in {
         CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V1,

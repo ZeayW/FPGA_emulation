@@ -5,7 +5,7 @@ import tempfile
 import weakref
 
 from emuflow.ir.ir import EmuIR
-from emuflow.transport.pin_plan_storage import write_pin_plan_storage
+from tests.pin_plan_storage_fixture import write_pin_plan_storage
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.transport.transport_storage import write_transport_storage
 from tests.virtual_io_reference import write_virtual_binding_xdc, write_virtual_binding_systemverilog

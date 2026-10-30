@@ -1,3 +1,5 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
+from tests.pin_contract_fixture import validate_chimew_electrical_map, validate_chimew_phase6_binding, validate_pin_plan
 from tests.chimew_bank_fixture import build_chimew_phase6_pin_plan
 from tests.virtual_io_reference import build_virtual_io_physical_contract, write_virtual_binding_systemverilog, write_virtual_binding_xdc
 """Chimew electrical integration over real fixed wiring, with tiny mocked geometry.
@@ -13,14 +15,12 @@ from tests.chimew_fixed_wiring_reference import build_fixed_wiring_chimew_electr
 from emuflow.transport.chimew.chimew_fixed_wiring import (
     FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels,
 )
-from emuflow.transport.chimew.chimew_phase6 import (
-    run_chimew_phase6_adapter,
-    validate_chimew_electrical_map, validate_chimew_phase6_binding,
-    validate_chimew_adapter_generation, chimew_adapter_report_generation_path,
-)
+from emuflow.transport.chimew.chimew_phase6 import run_chimew_phase6_adapter, validate_chimew_adapter_generation, chimew_adapter_report_generation_path
+from tests.pin_contract_fixture import validate_chimew_electrical_map, validate_chimew_phase6_binding
 from emuflow.transport.chimew.chimew_bank_channel import validate_chimew_bank_channel_input
 from emuflow.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
-from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding, write_chimew_binding_storage
+from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
+from tests.chimew_binding_storage_fixture import write_chimew_binding_storage
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256, write_json
@@ -115,7 +115,7 @@ def test_independent_binding_rejects_changed_negative_pin(fixed_case):
 def test_report_committed_adapter_accepts_fixed_differential_map(fixed_case, tmp_path):
     platform, schedule, problem, electrical = fixed_case
     write_json(tmp_path / "platform.json", platform.to_dict())
-    write_json(tmp_path / "schedule.json", schedule)
+    write_tdm_schedule_storage(tmp_path / "schedule.json", schedule)
     electrical["provenance"]["boarddb_sha256"] = file_sha256(tmp_path / "platform.json")
     write_json(tmp_path / "map.json", electrical)
     with write_chimew_bank_channel_storage(tmp_path / "input.json", problem): pass
@@ -183,5 +183,5 @@ def test_selected_channels_reach_the_existing_phase7_lvds_contract(fixed_case, t
 def test_nonfinite_channel_geometry_is_rejected(fixed_case, field, value):
     platform, _, problem, electrical = fixed_case
     electrical["fpga_y_bounds"][0][field] = value
-    with pytest.raises(ValidationError, match="finite"):
+    with pytest.raises(ValidationError, match="finite|JSON"):
         validate_chimew_electrical_map(electrical, platform, validate_chimew_bank_channel_input(problem))

@@ -1,3 +1,4 @@
+from tests.pin_contract_fixture import validate_pin_plan
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests.pin_plan_fixture import make_pin_plan_fixture
 import copy
@@ -9,17 +10,12 @@ from unittest import mock
 
 
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.transport.pin_plan_storage import (
-    PinPlanEntrySequence,
-    write_pin_plan_storage,
-)
-from emuflow.transport.position_hints_storage import (
-    PositionHintEntrySequence,
-    write_position_hints_storage,
-)
+from emuflow.transport.pin_plan_storage import PinPlanEntrySequence
+from tests.pin_plan_storage_fixture import write_pin_plan_storage
+from emuflow.transport.position_hints_storage import PositionHintEntrySequence
+from tests.position_hints_storage_fixture import write_position_hints_storage
 from emuflow.transport.pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA,
-    validate_pin_plan,
 )
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm_schedule_storage import (
@@ -63,6 +59,8 @@ class ChimewPinContractTest(unittest.TestCase):
             }
         )
         self.schedule = {
+            "routes": [], "demand_completions": [], "domain_schedules": [],
+            "schema": "emuflow.tdm-schedule/v1",
             "design": "pin_fixture",
             "platform": "pin_fixture",
             "entries": [

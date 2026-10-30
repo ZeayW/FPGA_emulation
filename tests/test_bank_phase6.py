@@ -1,3 +1,5 @@
+from tests.pin_planning_reference import validate_bank_pin_assignment
+from tests.pin_contract_fixture import validate_pin_plan
 """Phase 6 cannot turn direction-fixed banks into independently reusable wires."""
 
 from tests.schedule_store_fixture import write_tdm_schedule_storage
@@ -5,19 +7,16 @@ import copy
 
 import pytest
 
-from emuflow.transport.chimew.chimew_phase6 import (
-    CHIMEW_PHASE6_BINDING_PROVIDER,
-    _canonical_sha256, validate_chimew_phase6_binding,
-)
+from emuflow.transport.chimew.chimew_phase6 import CHIMEW_PHASE6_BINDING_PROVIDER
+from tests.chimew_pin_reference import _canonical_sha256
+from tests.pin_contract_fixture import validate_chimew_phase6_binding
 from emuflow.transport.chimew.chimew_fixed_wiring import FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.common.errors import ValidationError
-from emuflow.transport.pin_planning import (
-    CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA,
-    SIGNAL_POSITION_HINTS_SCHEMA, _assignment_metrics, _baseline_assignment,
-    validate_bank_pin_assignment, validate_pin_plan,
-)
-from emuflow.transport.pin_plan_storage import write_pin_plan_storage
+from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA, SIGNAL_POSITION_HINTS_SCHEMA
+from tests.pin_planning_reference import _assignment_metrics, _baseline_assignment, validate_bank_pin_assignment
+from tests.pin_contract_fixture import validate_pin_plan
+from tests.pin_plan_storage_fixture import write_pin_plan_storage
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm import TDM_SCHEDULE_SCHEMA
 from emuflow.scheduling.tdm_schedule_storage import (canonical_tdm_schedule_sha256, read_tdm_schedule)
@@ -27,6 +26,7 @@ def fixture():
     platform = Platform.load(research_platform_path(2))
     link = platform.links[0]
     schedule = {
+        "routes": [], "demand_completions": [], "domain_schedules": [],
         "schema": TDM_SCHEDULE_SCHEMA, "design": "banks", "platform": platform.name,
         "bank_allocations": [
             {"link": link.id, "from": source, "to": sink, "bank_count": count,
@@ -175,9 +175,10 @@ def test_chimew_electrical_validator_rejects_bidirectional_bank_bundle():
                        "assignment_input_sha256": "d" * 64},
         "entries": [{"group": "g", "schedule_entries": ["e0", "e1"],
                      "link": platform.links[0].id, "fpga_a": "fpga0", "fpga_b": "fpga1",
-                     "physical_lane": 19, "direction": "bidirectional"}],
+                     "physical_lane": 19, "direction": "bidirectional",
+                     "package_pin_a": "P", "package_pin_b": "Q"}],
     }
-    with pytest.raises(ValidationError, match="one direction"):
+    with pytest.raises(ValidationError, match="bidirectional bundle.*HP-bank directions"):
         validate_chimew_phase6_binding(schedule, platform, plan, binding)
 
 

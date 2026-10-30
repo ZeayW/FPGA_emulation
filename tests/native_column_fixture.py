@@ -1,8 +1,44 @@
 """Test-only borrowed columns for bounded native protocol fixtures."""
 from pathlib import Path
+import mmap
 import shutil
 import struct
 import tempfile
+
+
+def read_fixture_columns(path):
+    """Snapshot bounded fixture bytes without retaining a source descriptor.
+
+    File-backed mmap descriptors can be inherited by a concurrently forked tool
+    while cyclic fixture finalizers remove their NFS source. Anonymous mappings
+    preserve the column buffer/close contract; original source generations are
+    still independently bound and checked by the native protocol drivers.
+    """
+    from emuflow.common.errors import ValidationError
+    from emuflow.common.native_tools import native_file_generation
+    path = Path(path)
+    before = native_file_generation(path)
+    size = before[2]
+    if not 0 < size <= 128 * 1024 * 1024:
+        raise ValidationError("native column fixture exceeds its byte bound")
+    data = mmap.mmap(-1, size)
+    try:
+        with path.open("rb") as stream:
+            offset = 0
+            while offset < size:
+                chunk = stream.read(min(1024 * 1024, size - offset))
+                if not chunk:
+                    raise ValidationError("native column fixture is truncated")
+                data[offset:offset + len(chunk)] = chunk
+                offset += len(chunk)
+            if stream.read(1):
+                raise ValidationError("native column fixture grew during snapshot")
+        if native_file_generation(path) != before:
+            raise ValidationError("native column fixture source generation changed")
+        return data
+    except BaseException:
+        data.close()
+        raise
 
 
 class _ClusterScratch:
@@ -46,7 +82,7 @@ class _MappedColumn:
         self.owner, self.offset = owner, offset
         self.itemsize = struct.calcsize(code)
         self.size = self.itemsize*count
-        self.view = memoryview(owner.data)[offset:offset+self.size].cast(code)
+        self.view = memoryview(owner.data)[offset:offset+self.size].cast(code).toreadonly()
         owner.views.append(self.view)
 
     def __len__(self):

@@ -1,3 +1,4 @@
+from tests.pin_contract_fixture import validate_chimew_electrical_map, validate_chimew_phase6_binding, validate_pin_plan
 from tests.chimew_bank_fixture import build_chimew_phase6_pin_plan
 from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
 from tests.schedule_store_fixture import write_tdm_schedule_storage
@@ -21,14 +22,8 @@ from emuflow.transport.chimew.chimew_bank_channel import (
 from emuflow.transport.chimew.chimew_bank_channel_storage import (
     write_chimew_bank_channel_storage,
 )
-from emuflow.transport.chimew.chimew_binding_storage import (
-    CHIMEW_BINDING_STORAGE_SCHEMA,
-    ChimewBindingEntrySequence,
-    ChimewBindingView,
-    open_chimew_binding_schedule_entry_lookup,
-    read_chimew_binding,
-    write_chimew_binding_storage,
-)
+from emuflow.transport.chimew.chimew_binding_storage import CHIMEW_BINDING_STORAGE_SCHEMA, ChimewBindingEntrySequence, ChimewBindingView, read_chimew_binding
+from tests.chimew_binding_storage_fixture import write_chimew_binding_storage
 from emuflow.transport.chimew.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
@@ -37,8 +32,6 @@ from emuflow.transport.chimew.chimew_phase6 import (
     chimew_adapter_report_generation_path,
     run_chimew_phase6_adapter,
     validate_chimew_adapter_generation,
-    validate_chimew_electrical_map,
-    validate_chimew_phase6_binding,
 )
 from emuflow.transport.chimew.chimew_qualification import (
     CHIMEW_QUALIFICATION_PROVIDER,
@@ -48,11 +41,9 @@ from emuflow.transport.chimew.chimew_qualification import (
 from emuflow.flow.cli import main
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json, write_json
-from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
-from emuflow.transport.pin_plan_storage import (
-    PinPlanEntrySequence,
-    write_pin_plan_storage,
-)
+from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER
+from emuflow.transport.pin_plan_storage import PinPlanEntrySequence
+from tests.pin_plan_storage_fixture import write_pin_plan_storage
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm_schedule_storage import (
     ScheduleRecordSequence,
@@ -102,6 +93,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         }
         self.platform = Platform.from_dict(self.platform_document)
         self.schedule = {
+            "routes": [], "demand_completions": [], "domain_schedules": [],
             "schema": "emuflow.tdm-schedule/v1",
             "design": "chimew_fixture",
             "platform": self.platform.name,
@@ -469,7 +461,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 duplicate["entries"][0]["schedule_entries"]
             )
             with self.assertRaisesRegex(
-                ValidationError, "duplicates schedule entries"
+                ValidationError, "duplicates schedule entries|repeats a group or schedule entry"
             ):
                 validate_chimew_phase6_binding(
                     indexed_schedule,
@@ -490,39 +482,15 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     wrong_direction,
                 )
 
-            original_connect = sqlite3.connect
-            observed_connections = []
-
-            class ObservedConnection(sqlite3.Connection):
-                close_calls = 0
-
-                def close(self):
-                    self.close_calls += 1
-                    return super().close()
-
-            def observed_connect(*args, **kwargs):
-                kwargs["factory"] = ObservedConnection
-                connection = original_connect(*args, **kwargs)
-                observed_connections.append(connection)
-                return connection
-
+            # The native owner has no Python validation DB or graph cursor.
+            sealed_binding = write_chimew_binding_storage(root / "sealed-binding.json", binding)
+            with mock.patch("sqlite3.connect", side_effect=AssertionError("Python SQL validation")):
+                proof = validate_chimew_phase6_binding(indexed_schedule, self.platform, indexed_plan, sealed_binding)
+            self.assertEqual(proof["status"], "pass")
             malformed_group = copy.deepcopy(binding)
             malformed_group["entries"][0]["group"] = None
-            with mock.patch(
-                "emuflow.transport.chimew.chimew_phase6.sqlite3.connect",
-                side_effect=observed_connect,
-            ):
-                with self.assertRaisesRegex(
-                    ValidationError, r"electrical_binding\[0\].group"
-                ):
-                    validate_chimew_phase6_binding(
-                        indexed_schedule,
-                        self.platform,
-                        indexed_plan,
-                        malformed_group,
-                    )
-            self.assertEqual(len(observed_connections), 1)
-            self.assertEqual(observed_connections[0].close_calls, 1)
+            with self.assertRaisesRegex(ValidationError, "malformed"):
+                validate_chimew_phase6_binding(indexed_schedule, self.platform, indexed_plan, malformed_group)
 
     def test_static_exact_v4_binding_validation_uses_typed_relation(self) -> None:
         result = build_chimew_phase6_pin_plan(
@@ -722,9 +690,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     raise AssertionError("typed Chimew members were expanded")
 
             indexed._entries = EntriesMustStayLazy()
-            with open_chimew_binding_schedule_entry_lookup(
-                indexed
-            ) as lookup_binding:
+            with indexed.open_schedule_entry_lookup() as lookup_binding:
                 first = lookup_binding("s0")
                 self.assertIsNotNone(first)
                 self.assertEqual(first["group"], "group_ab")
@@ -964,6 +930,8 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             ):
                 if key == "assignment":
                     write_chimew_bank_channel_storage(paths[key], document).close()
+                elif key == "schedule":
+                    write_tdm_schedule_storage(paths[key], document)
                 else:
                     write_json(paths[key], document)
             electrical_map = copy.deepcopy(self.electrical_map)
@@ -1038,6 +1006,8 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             ):
                 if key == "assignment":
                     write_chimew_bank_channel_storage(paths[key], document).close()
+                elif key == "schedule":
+                    write_tdm_schedule_storage(paths[key], document)
                 else:
                     write_json(paths[key], document)
             electrical_map = copy.deepcopy(self.electrical_map)
@@ -1227,6 +1197,8 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             ):
                 if key == "assignment":
                     write_chimew_bank_channel_storage(paths[key], document).close()
+                elif key == "schedule":
+                    write_tdm_schedule_storage(paths[key], document)
                 else:
                     write_json(paths[key], document)
             electrical_map = copy.deepcopy(self.electrical_map)
@@ -1344,37 +1316,30 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 executable=str(self.executable),
             )
 
-    def test_failed_pin_plan_closes_owned_report_and_active_cursor_with_live_traceback(self) -> None:
-        from emuflow.transport.chimew import chimew_phase6 as adapter
-        from emuflow.transport.chimew.chimew_bank_channel import evaluate_chimew_bank_channel_assignment as assign
+    def test_failed_native_pin_plan_preserves_error_and_retires_scratch_with_live_traceback(self):
+        from emuflow.transport.pin_artifacts_native import build_pin_artifacts
         assignment = copy.deepcopy(self.assignment_input)
         assignment["groups"][0]["members"][0]["fanout"]["y"] = 101.0
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            write_tdm_schedule_storage(root / "schedule.json", self.schedule)
+            write_json(root / "map.json", self.electrical_map)
             with write_chimew_bank_channel_storage(root / "input.json", assignment) as source:
-                report = assign(source, executable=str(self.executable), output_path=root / "report.json")
-                with mock.patch.object(adapter, "evaluate_chimew_bank_channel_assignment", return_value=report):
-                    try:
-                        adapter.build_chimew_phase6_pin_plan(
-                            self.schedule, self.platform, source, self.electrical_map,
-                            executable=str(self.executable), bank_channel_report_output_path=root / "report.json")
-                    except ValidationError as error:
-                        self.assertIn("outside FPGA bounds", str(error))
-                        traceback = error.__traceback__
-                    else:
-                        self.fail("out-of-bounds placement was accepted")
-                retained = traceback
-                found = False
-                while traceback is not None:
-                    if traceback.tb_frame.f_code.co_name == "build_chimew_phase6_pin_plan":
-                        cursor = traceback.tb_frame.f_locals["assignment_cursor"]
-                        self.assertIsNone(cursor.gi_frame)
-                        found = True
-                    traceback = traceback.tb_next
-                self.assertTrue(found)
-                with self.assertRaisesRegex(ValidationError, "closed"):
-                    report["assignments"][0]
+                before = source.store_path.read_bytes()
+                try:
+                    build_pin_artifacts(root / "schedule.json", self.platform, source.manifest_path,
+                        root / "map.json", root / "output", executable=str(self.executable))
+                except ValidationError as error:
+                    self.assertIn("outside FPGA bounds", str(error))
+                    retained = error.__traceback__
+                else:
+                    self.fail("out-of-bounds placement was accepted")
                 self.assertIsNotNone(retained)
+                self.assertFalse((root / "output").exists())
+                self.assertEqual(list(root.glob(".chimew-pins-*")), [])
+                self.assertEqual(list(root.glob(".pin-host-*")), [])
+                self.assertEqual(source.store_path.read_bytes(), before)
+                self.assertEqual(source["design"], assignment["design"])
 
     def test_bank_voltage_must_match_selected_iostandard(self) -> None:
         electrical_map = copy.deepcopy(self.electrical_map)

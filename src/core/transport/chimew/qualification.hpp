@@ -11,6 +11,9 @@ struct ChimewBankValidation {
   std::string provenance, metrics;
   std::vector<ArtifactRef> inputs;
 };
+ChimewBankValidation
+InspectChimewBankInput(const ArtifactRef &input,
+                       const volatile std::sig_atomic_t *cancelled = nullptr);
 using ChimewBankGroupVisitor =
     std::function<void(std::size_t, const std::string &)>;
 ChimewBankValidation ValidateChimewBankAssignment(

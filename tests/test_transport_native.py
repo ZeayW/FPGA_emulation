@@ -55,7 +55,7 @@ def test_native_hop_owner_matches_every_record_and_streamed_rtl(owners,tmp_path)
 
 
 def test_native_transport_joins_the_original_chimew_lane_owner(owners,tmp_path):
-    from emuflow.transport.pin_plan_storage import write_pin_plan_storage
+    from tests.pin_plan_storage_fixture import write_pin_plan_storage
     case,source,assignment,schedule=owners
     widths={link.id:link.transport_bits_per_cycle_per_direction for link in case.platform.links}
     budgets={(r['link'],r['from'],r['to']):r for r in schedule.get('bank_allocations',[])}
@@ -81,8 +81,8 @@ def test_native_transport_joins_the_original_chimew_lane_owner(owners,tmp_path):
 def test_transport_preserves_phase5_direction_banks_after_pin_remapping(owners,tmp_path,boundary):
     from emuflow.common.errors import ValidationError
     from emuflow.common.native_tools import native_file_generation
-    from emuflow.transport.pin_plan_storage import write_pin_plan_storage
-    from emuflow.transport.pin_planning import validate_bank_pin_assignment
+    from tests.pin_plan_storage_fixture import write_pin_plan_storage
+    from tests.pin_planning_reference import validate_bank_pin_assignment
 
     case,source,assignment,schedule=owners
     if not any(link.bank_count is not None for link in case.platform.links):

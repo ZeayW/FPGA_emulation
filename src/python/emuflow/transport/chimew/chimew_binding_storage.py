@@ -11,15 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-import uuid
 from contextlib import contextmanager
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Callable
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json
-from emuflow.storage.store_publication import publish_sqlite_store, commit_store_selector, require_store_sources_unchanged, bind_store_source
+from emuflow.common.io import read_json
+from emuflow.storage.store_publication import require_store_sources_unchanged
 
 
 CHIMEW_BINDING_STORAGE_SCHEMA = "emuflow.chimew-binding-storage/v1"
@@ -38,27 +37,8 @@ def _canonical(value: Any) -> str:
     )
 
 
-def _valid_digest(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
-def _logical_sha256(
-    header: Mapping[str, Any], records: int, entries_sha256: str, members: int,
-    members_sha256: str,
-) -> str:
-    return hashlib.sha256(
-        _canonical(
-            {
-                "header": header,
-                "entries": {"records": records, "sha256": entries_sha256},
-                "members": {"records": members, "sha256": members_sha256},
-            }
-        ).encode("utf-8")
-    ).hexdigest()
 
 
 def _start_canonical_document_hash(
@@ -199,138 +179,16 @@ class ChimewBindingEntrySequence(Sequence[Mapping[str, Any]]):
 
 class ChimewBindingView(Mapping[str, Any]):
     def __init__(self, manifest_path: Path):
-        self.manifest_path = Path(manifest_path).resolve()
-        selector_source = bind_store_source(
-            self.manifest_path, "chimew-binding-selector-v1"
-        )
-        manifest = read_json(self.manifest_path)
-        header = manifest.get("header")
-        entries = manifest.get("entries")
-        members = manifest.get("members")
-        if (
-            manifest.get("schema") != CHIMEW_BINDING_STORAGE_SCHEMA
-            or manifest.get("logical_schema") not in _LOGICAL_SCHEMAS
-            or manifest.get("application_id") != CHIMEW_BINDING_APPLICATION_ID
-            or manifest.get("user_version") != CHIMEW_BINDING_USER_VERSION
-            or not isinstance(header, dict)
-            or not isinstance(entries, dict)
-            or not isinstance(members, dict)
-            or header.get("schema") != manifest.get("logical_schema")
-            or "entries" in header
-        ):
-            raise ValidationError("Chimew binding storage manifest is malformed")
-        for label, relation in (("entries", entries), ("members", members)):
-            if (
-                isinstance(relation.get("records"), bool)
-                or not isinstance(relation.get("records"), int)
-                or relation["records"] < 0
-                or not _valid_digest(relation.get("sha256"))
-            ):
-                raise ValidationError(
-                    f"Chimew binding {label} seal is malformed"
-                )
-        if entries["records"] == 0 and members["records"] != 0:
-            raise ValidationError("Chimew binding relation counts disagree")
-        logical_sha256 = _logical_sha256(
-            header,
-            entries["records"],
-            entries["sha256"],
-            members["records"],
-            members["sha256"],
-        )
-        if manifest.get("logical_sha256") != logical_sha256:
-            raise ValidationError("Chimew binding logical seal disagrees")
-        if not _valid_digest(manifest.get("canonical_sha256")):
-            raise ValidationError("Chimew binding canonical seal is malformed")
-        artifact = manifest.get("artifact")
-        if (
-            not isinstance(artifact, str)
-            or Path(artifact).name != artifact
-            or Path(artifact).suffix != ".sqlite"
-        ):
-            raise ValidationError("Chimew binding storage path is invalid")
-        store_path = self.manifest_path.with_name(artifact)
-        try:
-            store_source = bind_store_source(store_path, "chimew-binding-store-v1")
-            stat = store_path.stat()
-        except OSError as error:
-            raise ValidationError("Chimew binding SQLite store is missing") from error
-        if (
-            isinstance(manifest.get("store_bytes"), bool)
-            or manifest.get("store_bytes") != stat.st_size
-            or not _valid_digest(manifest.get("store_sha256"))
-            or file_sha256(store_path) != manifest["store_sha256"]
-        ):
-            raise ValidationError("Chimew binding SQLite store seal disagrees")
-        connection = _connect(store_path)
-        try:
-            if (
-                connection.execute("PRAGMA application_id").fetchone()[0]
-                != CHIMEW_BINDING_APPLICATION_ID
-                or connection.execute("PRAGMA user_version").fetchone()[0]
-                != CHIMEW_BINDING_USER_VERSION
-            ):
-                raise ValidationError("unsupported Chimew binding SQLite artifact")
-            try:
-                metadata = {
-                    str(row[0]): json.loads(row[1])
-                    for row in connection.execute("SELECT key,value FROM metadata")
-                }
-            except json.JSONDecodeError as error:
-                raise ValidationError(
-                    "Chimew binding SQLite metadata is corrupt"
-                ) from error
-            group_count, minimum_seq, maximum_seq = connection.execute(
-                "SELECT count(*),min(seq),max(seq) FROM groups"
-            ).fetchone()
-            member_count = connection.execute(
-                "SELECT count(*) FROM members"
-            ).fetchone()[0]
-            orphan = connection.execute(
-                "SELECT member FROM members LEFT JOIN groups "
-                "ON groups.seq=members.group_seq WHERE groups.seq IS NULL LIMIT 1"
-            ).fetchone()
-            empty_group = connection.execute(
-                "SELECT groups.seq FROM groups LEFT JOIN members "
-                "ON members.group_seq=groups.seq "
-                "GROUP BY groups.seq HAVING count(members.member)=0 LIMIT 1"
-            ).fetchone()
-            noncontiguous_members = connection.execute(
-                "SELECT group_seq FROM members GROUP BY group_seq "
-                "HAVING min(member_seq)!=0 "
-                "OR max(member_seq)!=count(*)-1 LIMIT 1"
-            ).fetchone()
-            if (
-                metadata.get("header") != header
-                or metadata.get("entries_sha256") != entries["sha256"]
-                or metadata.get("members_sha256") != members["sha256"]
-                or metadata.get("logical_sha256") != logical_sha256
-                or metadata.get("canonical_sha256")
-                != manifest["canonical_sha256"]
-                or group_count != entries["records"]
-                or member_count != members["records"]
-                or orphan is not None
-                or empty_group is not None
-                or noncontiguous_members is not None
-                or (
-                    group_count > 0
-                    and (minimum_seq != 0 or maximum_seq != group_count - 1)
-                )
-            ):
-                raise ValidationError("Chimew binding SQLite metadata disagrees")
-        finally:
-            connection.close()
-        self.manifest = manifest
-        self.store_path = store_path
-        self._header = dict(header)
-        self._entries = ChimewBindingEntrySequence(
-            store_path, entries["records"]
-        )
-        self.canonical_sha256 = manifest["canonical_sha256"]
+        from emuflow.transport.pin_artifacts_native import read_pin_manifest
+        self.manifest_path = manifest_path.resolve()
+        self.manifest, self._source_bindings = read_pin_manifest(self.manifest_path, "chimew-binding-store-v1")
+        self.store_path = self.manifest_path.with_name(self.manifest["artifact"])
+        self._header = dict(self.manifest["header"])
+        entries = self.manifest["entries"]
+        members = self.manifest["members"]
+        self._entries = ChimewBindingEntrySequence(self.store_path, entries["records"])
+        self.canonical_sha256 = self.manifest["canonical_sha256"]
         self.member_count = members["records"]
-
-        self._source_bindings = (selector_source, store_source)
-        require_store_sources_unchanged(self._source_bindings)
 
     def bound_store_sources(self):
         require_store_sources_unchanged(self._source_bindings)
@@ -405,271 +263,13 @@ class ChimewBindingView(Mapping[str, Any]):
         return {**self._header, "entries": [dict(row) for row in self._entries]}
 
 
-def write_chimew_binding_storage(
-    path: Path, binding: Mapping[str, Any], *, source_bindings=()
-) -> ChimewBindingView:
-    if binding.get("schema") not in _LOGICAL_SCHEMAS:
-        raise ValidationError("Chimew binding has an unsupported schema")
-    source_bindings = tuple(source_bindings)
-    require_store_sources_unchanged(source_bindings)
-    records = binding.get("entries")
-    if not isinstance(records, Iterable) or isinstance(records, (str, bytes)):
-        raise ValidationError("Chimew binding entries must be iterable")
-    header = {key: value for key, value in binding.items() if key != "entries"}
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    previous_artifact: Path | None = None
-    if path.is_file():
-        try:
-            previous = read_json(path)
-        except (OSError, ValueError):
-            previous = {}
-        previous_name = previous.get("artifact")
-        if (
-            previous.get("schema") == CHIMEW_BINDING_STORAGE_SCHEMA
-            and isinstance(previous_name, str)
-            and Path(previous_name).name == previous_name
-            and Path(previous_name).suffix == ".sqlite"
-        ):
-            previous_artifact = path.with_name(previous_name)
-    temporary = path.with_name(f".{path.stem}.{uuid.uuid4().hex}.sqlite.tmp")
-    connection = sqlite3.connect(temporary)
-    entries_digest = hashlib.sha256()
-    members_digest = hashlib.sha256()
-    group_count = 0
-    member_count = 0
-    canonical_digest, canonical_keys, entries_key_index = (
-        _start_canonical_document_hash(header)
-    )
-    try:
-        connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("PRAGMA synchronous=OFF")
-        connection.execute(f"PRAGMA application_id={CHIMEW_BINDING_APPLICATION_ID}")
-        connection.execute(f"PRAGMA user_version={CHIMEW_BINDING_USER_VERSION}")
-        connection.executescript(
-            """
-            CREATE TABLE metadata(
-              key TEXT PRIMARY KEY,
-              value TEXT NOT NULL
-            ) WITHOUT ROWID;
-            CREATE TABLE groups(
-              seq INTEGER NOT NULL UNIQUE,
-              group_id TEXT PRIMARY KEY,
-              link_id TEXT NOT NULL,
-              fpga_a TEXT NOT NULL,
-              fpga_b TEXT NOT NULL,
-              physical_lane INTEGER NOT NULL,
-              direction TEXT NOT NULL,
-              package_pin_a TEXT NOT NULL,
-              package_pin_b TEXT NOT NULL,
-              group_json TEXT NOT NULL
-            ) WITHOUT ROWID;
-            CREATE TABLE members(
-              member TEXT PRIMARY KEY,
-              group_seq INTEGER NOT NULL,
-              member_seq INTEGER NOT NULL,
-              UNIQUE(group_seq,member_seq)
-            ) WITHOUT ROWID;
-            CREATE INDEX members_by_group
-              ON members(group_seq,member_seq);
-            """
-        )
-        group_rows: list[tuple[Any, ...]] = []
-        member_rows: list[tuple[Any, ...]] = []
-        for record in records:
-            if not isinstance(record, Mapping):
-                raise ValidationError("Chimew binding entry is malformed")
-            full = dict(record)
-            members = full.pop("schedule_entries", None)
-            required_strings = (
-                "group", "link", "fpga_a", "fpga_b", "direction",
-                "package_pin_a", "package_pin_b",
-            )
-            if (
-                not isinstance(members, list)
-                or not members
-                or not all(isinstance(member, str) and member for member in members)
-                or any(not isinstance(full.get(key), str) or not full[key]
-                       for key in required_strings)
-                or isinstance(full.get("physical_lane"), bool)
-                or not isinstance(full.get("physical_lane"), int)
-            ):
-                raise ValidationError("Chimew binding entry is malformed")
-            normalized = {**full, "schedule_entries": list(members)}
-            encoded = _canonical(normalized)
-            entries_digest.update(encoded.encode("utf-8"))
-            entries_digest.update(b"\n")
-            if group_count:
-                canonical_digest.update(b",")
-            canonical_digest.update(encoded.encode("utf-8"))
-            group_rows.append(
-                (
-                    group_count,
-                    full["group"],
-                    full["link"],
-                    full["fpga_a"],
-                    full["fpga_b"],
-                    full["physical_lane"],
-                    full["direction"],
-                    full["package_pin_a"],
-                    full["package_pin_b"],
-                    _canonical(full),
-                )
-            )
-            for member_seq, member in enumerate(members):
-                members_digest.update(
-                    _canonical(
-                        {
-                            "group_seq": group_count,
-                            "member_seq": member_seq,
-                            "member": member,
-                        }
-                    ).encode("utf-8")
-                )
-                members_digest.update(b"\n")
-                member_rows.append((member, group_count, member_seq))
-                member_count += 1
-            group_count += 1
-            if len(member_rows) >= 4096:
-                connection.executemany("INSERT INTO members VALUES (?,?,?)", member_rows)
-                member_rows.clear()
-            if len(group_rows) >= 1024:
-                connection.executemany(
-                    "INSERT INTO groups VALUES (?,?,?,?,?,?,?,?,?,?)", group_rows
-                )
-                group_rows.clear()
-        if group_rows:
-            connection.executemany(
-                "INSERT INTO groups VALUES (?,?,?,?,?,?,?,?,?,?)", group_rows
-            )
-        if member_rows:
-            connection.executemany("INSERT INTO members VALUES (?,?,?)", member_rows)
-        entries_sha256 = entries_digest.hexdigest()
-        members_sha256 = members_digest.hexdigest()
-        logical_sha256 = _logical_sha256(
-            header, group_count, entries_sha256, member_count, members_sha256
-        )
-        canonical_sha256 = _finish_canonical_document_hash(
-            canonical_digest, header, canonical_keys, entries_key_index
-        )
-        connection.executemany(
-            "INSERT INTO metadata(key,value) VALUES (?,?)",
-            (
-                ("header", _canonical(header)),
-                ("entries_sha256", _canonical(entries_sha256)),
-                ("members_sha256", _canonical(members_sha256)),
-                ("logical_sha256", _canonical(logical_sha256)),
-                ("canonical_sha256", _canonical(canonical_sha256)),
-            ),
-        )
-        connection.commit()
-        connection.close()
-    except sqlite3.IntegrityError as error:
-        try:
-            connection.close()
-        finally:
-            temporary.unlink(missing_ok=True)
-        raise ValidationError(
-            "Chimew binding repeats a group or schedule entry"
-        ) from error
-    except BaseException:
-        try:
-            connection.close()
-        finally:
-            temporary.unlink(missing_ok=True)
-        raise
-    try:
-        store_sha256 = file_sha256(temporary)
-        artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
-        created_artifact = not artifact.exists()
-        if created_artifact:
-            publish_sqlite_store(
-                temporary, artifact, "chimew-binding-store-v1", sources=source_bindings
-            )
-        else:
-            require_store_sources_unchanged(source_bindings)
-            if file_sha256(artifact) != store_sha256:
-                raise ValidationError("Chimew binding artifact digest collision")
-            temporary.unlink()
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-    manifest = {
-        "schema": CHIMEW_BINDING_STORAGE_SCHEMA,
-        "logical_schema": header["schema"],
-        "artifact": artifact.name,
-        "application_id": CHIMEW_BINDING_APPLICATION_ID,
-        "user_version": CHIMEW_BINDING_USER_VERSION,
-        "store_bytes": artifact.stat().st_size,
-        "store_sha256": store_sha256,
-        "header": header,
-        "entries": {"records": group_count, "sha256": entries_sha256},
-        "members": {"records": member_count, "sha256": members_sha256},
-        "logical_sha256": logical_sha256,
-        "canonical_sha256": canonical_sha256,
-    }
-    view = commit_store_selector(
-        path,
-        manifest,
-        source_bindings,
-        artifact,
-        created_artifact,
-        validate=lambda: ChimewBindingView(path),
-    )
-    if previous_artifact is not None and previous_artifact != artifact:
-        previous_artifact.unlink(missing_ok=True)
-    return view
 
 
-def read_chimew_binding(
-    path: Path, *, materialize: bool = False
-) -> Mapping[str, Any]:
-    value = read_json(path)
-    if value.get("schema") == CHIMEW_BINDING_STORAGE_SCHEMA:
-        view = ChimewBindingView(path)
-        return view.materialize() if materialize else view
-    return value
+def read_chimew_binding(path: Path, *, materialize: bool = False) -> Mapping[str, Any]:
+    view = ChimewBindingView(path)
+    return view.materialize() if materialize else view
 
 
-@contextmanager
-def open_chimew_binding_schedule_entry_lookup(
-    binding: Mapping[str, Any],
-) -> Iterator[Callable[[str], Mapping[str, Any] | None]]:
-    """Open one lookup contract for indexed and legacy binding artifacts.
-
-    Production selectors use :class:`ChimewBindingView` and therefore retain
-    only one group record per lookup.  Legacy JSON remains supported with the
-    same duplicate and shape checks as the former physical-flow adapter.
-    """
-
-    if isinstance(binding, ChimewBindingView):
-        with binding.open_schedule_entry_lookup() as lookup:
-            yield lookup
-        return
-
-    records = binding.get("entries", [])
-    if not isinstance(records, Sequence) or isinstance(records, (str, bytes)):
-        raise ValidationError("Chimew electrical binding entries must be an array")
-    legacy_index: dict[str, Mapping[str, Any]] = {}
-    for record in records:
-        if not isinstance(record, Mapping):
-            raise ValidationError("Chimew electrical binding entry is malformed")
-        members = record.get("schedule_entries")
-        if (
-            not isinstance(members, Sequence)
-            or isinstance(members, (str, bytes))
-            or not members
-        ):
-            raise ValidationError("Chimew electrical binding entry is malformed")
-        for entry_id in members:
-            if not isinstance(entry_id, str) or not entry_id:
-                raise ValidationError("Chimew electrical binding entry is malformed")
-            if entry_id in legacy_index:
-                raise ValidationError(
-                    "Chimew electrical binding duplicates a schedule entry"
-                )
-            legacy_index[entry_id] = record
-    yield legacy_index.get
 
 
 def chimew_binding_store_path(selector_path: Path) -> Path | None:
@@ -680,3 +280,14 @@ def chimew_binding_store_path(selector_path: Path) -> Path | None:
     if not isinstance(artifact, str) or Path(artifact).name != artifact:
         raise ValidationError("Chimew binding storage path is invalid")
     return Path(selector_path).with_name(artifact)
+
+
+def copy_chimew_binding_storage(source, path, *, source_bindings=()):
+    from emuflow.transport.pin_artifacts_native import copy_pin_artifact
+    require_store_sources_unchanged(source_bindings)
+    selector = source if isinstance(source, Path) else getattr(source, "manifest_path", None)
+    if selector is None:
+        raise ValidationError("pin artifact copying requires a current typed owner")
+    copy_pin_artifact(selector, "chimew-binding-store-v1", path)
+    require_store_sources_unchanged(source_bindings)
+    return ChimewBindingView(path)

@@ -10,15 +10,15 @@ from typing import Any, Dict, Mapping, Optional
 from emuflow.validation.equivalence import exhaustively_verify_static_exact_partition_equivalence, simulate_partition_equivalence, simulate_static_exact_partition_equivalence
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json, write_json
-from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding, write_chimew_binding_storage
+from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding, copy_chimew_binding_storage
 from emuflow.storage.managed_json_storage import pack_managed_json
 from emuflow.ir.ir import EmuIR
 from emuflow.transport.netlist import SPLIT_MANIFEST_SCHEMA
 from emuflow.platform.platform import Platform
-from emuflow.transport.pin_plan_storage import read_pin_plan, write_pin_plan_storage
+from emuflow.transport.pin_plan_storage import read_pin_plan, copy_pin_plan_storage
 from emuflow.storage.store_publication import bind_view_sources
 from emuflow.common.native_tools import require_native_schema
-from emuflow.transport.position_hints_storage import read_position_hints, write_position_hints_storage
+from emuflow.transport.position_hints_storage import read_position_hints, copy_position_hints_storage
 from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
 from emuflow.transport.transport_cost import predict_transport_resources, validate_transport_cost_database
 from emuflow.transport.runtime import build_virtual_runtime
@@ -291,9 +291,9 @@ def run_phase6(
         prefix=".pin-plan-validation-", dir=output_dir
     ) as temporary_directory:
         temporary_root = Path(temporary_directory)
-        staged_pin_plan = write_pin_plan_storage(
-            temporary_root / "pin_plan.json",
+        staged_pin_plan = copy_pin_plan_storage(
             pin_plan,
+            temporary_root / "pin_plan.json",
             source_bindings=bind_view_sources(
                 (schedule, "tdm-schedule-store-v4"), (pin_plan, "pin-plan-store-v1")
             ),
@@ -302,9 +302,9 @@ def run_phase6(
             raise ValueError(
                 "position_hints_path is required with pin_plan_path"
             )
-        staged_position_hints = write_position_hints_storage(
-            temporary_root / "position_hints.json",
+        staged_position_hints = copy_position_hints_storage(
             position_hints,
+            temporary_root / "position_hints.json",
             source_bindings=bind_view_sources(
                 (schedule, "tdm-schedule-store-v4"),
                 (position_hints, "position-hints-store-v1"),
@@ -616,9 +616,9 @@ def run_phase6(
         compact=managed_storage,
     )
     if electrical_binding_path is not None:
-        electrical_binding_view = write_chimew_binding_storage(
-            output_dir / "electrical_binding.json",
+        electrical_binding_view = copy_chimew_binding_storage(
             electrical_binding,
+            output_dir / "electrical_binding.json",
             source_bindings=bind_view_sources(
                 (schedule, "tdm-schedule-store-v4"),
                 (pin_plan, "pin-plan-store-v1"),

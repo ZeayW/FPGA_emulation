@@ -19,7 +19,8 @@ def build_fixed_wiring_chimew_electrical_map(
     its separately sealed bank/channel input.
     """
     from emuflow.transport.chimew.chimew_bank_channel import validate_chimew_bank_channel_input
-    from emuflow.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER, validate_chimew_electrical_map
+    from emuflow.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER
+    from tests.pin_contract_fixture import validate_chimew_electrical_map
 
     problem = validate_chimew_bank_channel_input(bank_channel_input)
     fixed = FixedWiringChannels(platform)

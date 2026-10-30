@@ -113,12 +113,14 @@ void PublishNewDirectoryGroup(const std::vector<NewDirectoryPublication>& direct
     const std::function<void()>& accepted = {});
 
 // Publish an invocation-owned group of closed files, with the report last.
-// Retain prior destinations in the caller's private backup directory and
-// restore them if a later member, source lease or acceptance check fails.
+// The publisher owns its backup directory and restores prior destinations if
+// a later member, source lease or acceptance check fails. Failed restoration
+// retains recoverable snapshots beside the destination independently of caller
+// scratch cleanup.
 void PublishArtifactGroup(
     const std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
         &files,
-    const std::filesystem::path &backup, const std::vector<ArtifactRef> &inputs,
+    const std::vector<ArtifactRef> &inputs,
     const std::function<void()> &accepted = {});
 
 // Same-directory exclusive staging with invocation-owned sidecars. Destruction

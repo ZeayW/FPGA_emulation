@@ -283,14 +283,12 @@ R Context::Assemble(const std::vector<R> &records) {
   if (queries)
     (void)ResolvePhysicalEvidenceCatalog(
         ArtifactRef::Bind(pending_summary.path(), "physical-summary-v1"));
-  const auto backup = lease->generation / "publication-backup";
-  fs::create_directories(backup);
   Stop();
   PublishArtifactGroup(
       {{pending_summary.path(), lease->root / "physical-summary.json"},
        {pending_report.path(),
         lease->root / "multi-fpga-physical-flow-report.json"}},
-      backup, sources, [&] { Stop(); });
+      sources, [&] { Stop(); });
   return report;
 }
 } // namespace emuflow::core::physical_flow

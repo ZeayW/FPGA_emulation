@@ -1,3 +1,4 @@
+from tests.pin_contract_fixture import validate_pin_plan
 from tests.phase3_store_fixture import write_assignment_index_fixture, write_current_assignment_fixture
 from tests.native_split_fixture import NativeSplitFixture
 from tests.native_route_fixture import route_system_native
@@ -45,16 +46,12 @@ def _indexed_split_schedule(root,value):
 from emuflow.transport.split_netlist_storage import (
     SplitNetlistView,
 )
-from emuflow.transport.pin_planning import (
-    CHIMEW_PIN_PLAN_PROVIDER,
-    SIGNAL_POSITION_HINTS_SCHEMA,
-    _assignment_metrics,
-)
-from emuflow.transport.pin_plan_storage import (
-    PIN_PLAN_STORAGE_SCHEMA,
-    read_pin_plan,
-    write_pin_plan_storage,
-)
+from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, SIGNAL_POSITION_HINTS_SCHEMA
+from tests.pin_planning_reference import _assignment_metrics
+from emuflow.transport.pin_plan_storage import PIN_PLAN_STORAGE_SCHEMA, read_pin_plan
+from tests.pin_plan_storage_fixture import write_pin_plan_storage
+from tests.position_hints_storage_fixture import write_position_hints_storage
+from tests.chimew_binding_storage_fixture import write_chimew_binding_storage
 from emuflow.transport.position_hints_storage import (
     POSITION_HINTS_STORAGE_SCHEMA,
     read_position_hints,
@@ -912,9 +909,10 @@ class Phase6Test(unittest.TestCase):
                 )
             write_tdm_schedule_storage(paths["schedule"],schedule)
             plan, binding = self._chimew_certificate(schedule, positions, plan)
-            write_json(paths["plan"], plan)
+            write_pin_plan_storage(paths["plan"], plan)
+            write_position_hints_storage(paths["positions"], positions)
             binding_path = root / "initial-electrical-binding.json"
-            write_json(binding_path, binding)
+            write_chimew_binding_storage(binding_path, binding)
             output = root / "phase6"
             report = run_phase6(
                 paths["ir"], paths["assignment"], paths["schedule"], PLATFORM_PATH, output,
@@ -965,8 +963,8 @@ class Phase6Test(unittest.TestCase):
             )
             chimew_plan_path = root / "chimew-plan.json"
             binding_path = root / "electrical-binding.json"
-            write_json(chimew_plan_path, chimew_plan)
-            write_json(binding_path, binding)
+            write_pin_plan_storage(chimew_plan_path, chimew_plan)
+            write_chimew_binding_storage(binding_path, binding)
             chimew_output = root / "phase6-chimew"
             invalid_output = root / "phase6-chimew-without-binding"
             with self.assertRaisesRegex(ValueError, "electrical_binding_path"):

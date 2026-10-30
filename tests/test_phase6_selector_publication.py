@@ -1,7 +1,5 @@
-from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
 """Late publication failures must preserve every retained Phase 6 typed owner."""
 
-import importlib
 import json
 import os
 from pathlib import Path
@@ -14,60 +12,23 @@ from emuflow.common.errors import ValidationError
 from tests.native_build import emuflow_native
 
 
-KINDS = (
-    "pin_plan",
-    "position_hints",
-    "chimew_binding",
-    "chimew_bank_channel",
-    "chimew_bank_channel_report",
-)
-
-
-MODULES = {
-    'pin_plan': 'emuflow.transport.pin_plan_storage',
-    'position_hints': 'emuflow.transport.position_hints_storage',
-    'chimew_binding': 'emuflow.transport.chimew.chimew_binding_storage',
-    'chimew_bank_channel': 'emuflow.transport.chimew.chimew_bank_channel_storage',
-    'chimew_bank_channel_report': 'tests.chimew_bank_report_fixture',
-}
+# The remaining Python input-selector producer uses the shared Python commit.
+# Native pin/position/binding/report publication is covered by the C++ group
+# failure tests and the native copy tests below.
+KINDS = ("chimew_bank_channel",)
 
 
 def prepare(kind):
-    module = importlib.import_module(MODULES[kind])
-    if kind == "pin_plan":
-        from tests.test_pin_plan_storage import _plan
-
-        document = _plan()
-    elif kind == "position_hints":
-        from tests.test_position_hints_storage import _positions
-
-        document = _positions()
-    elif kind == "chimew_binding":
-        document = {
-            "schema": "emuflow.chimew-phase6-electrical-binding/v3",
-            "entries": [],
-        }
-    else:
-        from tests.test_chimew_bank_channel import ChimewBankChannelTest
-
-        case = ChimewBankChannelTest()
-        case.setUp()
-        document = case.document
-        if kind.endswith("_report"):
-            from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
-
-            document = evaluate_chimew_bank_channel_assignment(
-                document, executable=str(emuflow_native())
-            )
-    writer = getattr(module, "write_" + kind + "_storage")
+    assert kind == "chimew_bank_channel"
+    from emuflow.transport.chimew import chimew_bank_channel_storage as module
+    from tests.test_chimew_bank_channel import ChimewBankChannelTest
+    case = ChimewBankChannelTest()
+    case.setUp()
 
     def produce(path, generation=0, sources=()):
-        # A bounded header change leaves algorithm/records untouched but creates
-        # a distinct generation, so a dangling selector cannot hide in reuse.
-        value = {**document, "design": "generation-" + str(generation)}
-        return writer(path, value, source_bindings=sources)
-
-    return module, produce
+        value = {**case.document,"design":"generation-"+str(generation)}
+        return module.write_chimew_bank_channel_storage(path,value,source_bindings=sources)
+    return module,produce
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -231,3 +192,34 @@ def test_failed_validated_reader_close_keeps_both_generations_and_recovery(tmp_p
     backups = list(tmp_path.glob("*.previous"))
     assert len(backups) == 1 and backups[0].read_bytes() == previous
     assert json.loads(selector.read_text())["artifact"] == new.name
+
+
+@pytest.mark.parametrize("kind", ["pin_plan","position_hints","chimew_binding"])
+def test_native_owner_copy_failure_preserves_the_committed_selector_and_payload(tmp_path,kind):
+    from emuflow.transport.pin_artifacts_native import copy_pin_artifact
+    if kind == "pin_plan":
+        from tests.pin_plan_storage_fixture import write_pin_plan_storage as writer
+        from tests.test_pin_plan_storage import _plan
+        document,schema = _plan(),"pin-plan-store-v1"
+    elif kind == "position_hints":
+        from tests.position_hints_storage_fixture import write_position_hints_storage as writer
+        from tests.test_position_hints_storage import _positions
+        document,schema = _positions(),"position-hints-store-v1"
+    else:
+        from tests.chimew_binding_storage_fixture import write_chimew_binding_storage as writer
+        document,schema = {"schema":"emuflow.chimew-phase6-electrical-binding/v3","entries":[]},"chimew-binding-store-v1"
+    first=writer(tmp_path/"first.json",{**document,"design":"first"})
+    target=tmp_path/"copy.json"
+    copy_pin_artifact(first.manifest_path,schema,target)
+    previous=target.read_bytes()
+    old_payload=target.with_name(json.loads(previous)["artifact"])
+    old_bytes=old_payload.read_bytes()
+    second=writer(tmp_path/"second.json",{**document,"design":"second"})
+    manifest=json.loads(second.manifest_path.read_text())
+    collision=target.with_name(target.stem+"."+manifest["store_sha256"]+".sqlite")
+    collision.write_bytes(old_bytes)
+    with pytest.raises(ValidationError,match="payload collision"):
+        copy_pin_artifact(second.manifest_path,schema,target)
+    assert target.read_bytes()==previous and old_payload.read_bytes()==old_bytes
+    assert collision.read_bytes()==old_bytes
+    assert not list(tmp_path.glob(".artifact-backup-*"))

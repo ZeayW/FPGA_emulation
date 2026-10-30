@@ -1,5 +1,5 @@
 """Bounded pin-contract records for tests; no grouping/placement optimizer."""
-from emuflow.transport.pin_planning import (
+from tests.pin_planning_reference import (
     CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA, _assignment_metrics, _baseline_assignment,
 )
 
@@ -23,6 +23,6 @@ def make_pin_plan_fixture(schedule, platform, positions, *, assignments=None,
                     for entry in sorted(schedule["entries"], key=lambda e: e["id"])],
     }
     if output_path is not None:
-        from emuflow.transport.pin_plan_storage import write_pin_plan_storage
+        from tests.pin_plan_storage_fixture import write_pin_plan_storage
         return write_pin_plan_storage(output_path, plan)
     return plan

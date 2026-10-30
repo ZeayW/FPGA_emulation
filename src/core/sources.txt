@@ -129,3 +129,5 @@ physical/flow/controller.cpp
 physical/flow/compile_request.cpp
 
 transport/chimew/qualification.cpp
+scheduling/schedule_view.cpp
+transport/chimew/pin_artifacts.cpp

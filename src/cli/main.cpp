@@ -15,6 +15,7 @@
 #include "transport/chimew/lookahead.hpp"
 #include "transport/chimew/bank_store.hpp"
 #include "transport/chimew/qualification.hpp"
+#include "transport/chimew/pin_artifacts.hpp"
 #include "board/wiring.hpp"
 #include "flow/preflight.hpp"
 #include "physical/placement_lowering.hpp"
@@ -108,6 +109,10 @@ constexpr const char* kUsage =
     "  phase6 copy-bank-report SELECTOR REPORT\n"
     "  phase6 audit-bank-assignment INPUT_SELECTOR REPORT_SELECTOR SUMMARY\n"
     "  phase6 qualify-chimew-chain REQUEST CERTIFICATE\n"
+    "  phase6 build-pin-artifacts REQUEST OUTPUT_DIR\n"
+    "  phase6 validate-pin-artifacts REQUEST SUMMARY\n"
+    "  phase6 audit-electrical-map REQUEST SUMMARY\n"
+    "  phase6 copy-pin-artifact STORE_SCHEMA SELECTOR TARGET\n"
     "  phase6 prepare-chimew-lookahead REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-signals REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-geometry REQUEST OUTPUT_DIR\n"
@@ -226,6 +231,31 @@ bool SamePath(const std::string& a, const std::string& b) {
   std::error_code error;
   return std::filesystem::equivalent(a,b,error) ||
       std::filesystem::weakly_canonical(a) == std::filesystem::weakly_canonical(b);
+}
+void CheckPinReceipt(const std::string& report,const std::string& source,const std::string& output,bool request) {
+  if(report.empty())return;
+  if(SamePath(report,source)||SamePath(report,output))
+    throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a pin artifact");
+  using D=emuflow::core::BoundedJson;
+  auto input=emuflow::core::ArtifactRef::Bind(source,"physical-input-document-v1");
+  D doc(D::Read(input));
+  std::vector<std::pair<std::string,std::string>> paths;
+  if(request) {
+    for(const auto& pair:D(doc.Token("sources")).Fields()) {
+      D row(pair.second);paths.emplace_back(row.Text("path"),row.Text("schema"));
+    }
+  } else paths.emplace_back(source,"physical-input-document-v1");
+  for(const auto& item:paths) {
+    const auto& path=item.first;
+    if(SamePath(report,path))
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a pin input");
+    auto ref=emuflow::core::ArtifactRef::Bind(path,"physical-input-document-v1");
+    if(item.second=="fixed-wiring-csv-v1"||ref.generation().bytes>8*1024*1024)continue;
+    std::string member;
+    emuflow::core::VisitJsonObjectTokens(D::Read(ref),[&](const auto& key,const auto& token){if(key=="artifact")member=emuflow::core::DecodeJsonString(token);});
+    if(!member.empty()&&std::filesystem::path(member).filename()==member&&SamePath(report,(std::filesystem::path(path).parent_path()/member).string()))
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a pin payload");
+  }
 }
 int RunTool(const std::string& input, const std::string& output) {
   // Reject aliases before launching an engine, not after it has had side effects.
@@ -355,6 +385,23 @@ int Dispatch(int argc, char** argv, const std::string& report) {
       result.stage="phase6.assign-bank-store";result.error=error.code();result.message=error.what();
       return Finish(std::move(result),report);
     }
+  }
+  if(argc==6 && std::string(argv[1])=="phase6" && std::string(argv[2])=="copy-pin-artifact") {
+    ToolSignals signals;
+    const std::string kind=argv[3];
+    if(kind!="pin-plan-store-v1" && kind!="position-hints-store-v1" && kind!="chimew-binding-store-v1")
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"unknown pin artifact kind");
+    CheckPinReceipt(report,argv[4],argv[5],false);
+    const auto selector_schema=kind=="pin-plan-store-v1"?"pin-plan-selector-v1":kind=="position-hints-store-v1"?"position-hints-selector-v1":"chimew-binding-selector-v1";
+    return Finish(emuflow::core::CopyPinArtifact(emuflow::core::ArtifactRef::Bind(argv[4],selector_schema),kind,argv[5],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase6" && (std::string(argv[2])=="build-pin-artifacts" || std::string(argv[2])=="validate-pin-artifacts" || std::string(argv[2])=="audit-electrical-map")) {
+    ToolSignals signals;
+    const std::string command=argv[2];
+    CheckPinReceipt(report,argv[3],argv[4],true);
+    const auto schema=command=="build-pin-artifacts"?"chimew-pin-artifacts-input-v1":command=="validate-pin-artifacts"?"chimew-pin-validation-input-v1":"chimew-electrical-validation-input-v1";
+    const auto input=emuflow::core::ArtifactRef::Bind(argv[3],schema);
+    return Finish(command=="build-pin-artifacts"?emuflow::core::BuildChimewPinArtifacts(input,argv[4],&tool_cancelled):command=="validate-pin-artifacts"?emuflow::core::ValidateChimewPinArtifacts(input,argv[4],&tool_cancelled):emuflow::core::AuditChimewElectricalMap(input,argv[4],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="qualify-chimew-chain") {
     ToolSignals signals;

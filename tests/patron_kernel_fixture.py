@@ -6,7 +6,6 @@ then lend the resulting columns to independent production audit consumers.
 """
 from array import array
 import json
-import mmap
 import os
 from pathlib import Path
 import struct
@@ -14,7 +13,7 @@ import tempfile
 from types import SimpleNamespace
 
 from emuflow.common.errors import ValidationError
-from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn
+from tests.native_column_fixture import read_fixture_columns, _ClusterScratch, _ColumnOwner, _MappedColumn
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import native_file_generation, resolve_native_executable
 from emuflow.storage.store_publication import StoreSource, require_store_sources_unchanged
@@ -129,7 +128,7 @@ def run_pressure_kernel(value, initial, *, max_moves=0):
         fields = ('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
         sources = tuple(StoreSource(Path(row['path']),row['schema'],tuple(row['generation'][key] for key in fields)) for row in operation['outputs'])
         require_store_sources_unchanged(sources)
-        with output.open('rb') as stream: data = mmap.mmap(stream.fileno(),0,access=mmap.ACCESS_READ)
+        data = read_fixture_columns(output)
         # Trusted kernel output is projected here; malformed data is tested via native audit-decision.
         offset = 20+struct.unpack_from('<I',data,16)[0]
         before, after = struct.unpack_from('<8d',data,offset), struct.unpack_from('<8d',data,offset+64)

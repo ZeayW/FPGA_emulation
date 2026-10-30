@@ -825,7 +825,7 @@ StageResult RunRoutedOpensta(const ArtifactRef &request,
              {staged_summary.path(), summary},
              {staged_log.path(), log},
              {staged_report.path(), report_path}},
-            work.root, refs, [&] {
+            refs, [&] {
               published = {
                   ArtifactRef::Bind(report_path.string(),
                                     "routed-opensta-stage-report-v1"),

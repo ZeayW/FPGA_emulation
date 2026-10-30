@@ -5,15 +5,10 @@ from unittest import mock
 
 import pytest
 
-import emuflow.transport.pin_plan_storage as pin_storage
+import tests.pin_plan_storage_fixture as pin_storage
 from emuflow.common.errors import ValidationError
-from emuflow.transport.pin_plan_storage import (
-    PIN_PLAN_STORAGE_SCHEMA,
-    PinPlanEntrySequence,
-    PinPlanView,
-    read_pin_plan,
-    write_pin_plan_storage,
-)
+from emuflow.transport.pin_plan_storage import PIN_PLAN_STORAGE_SCHEMA, PinPlanEntrySequence, PinPlanView, read_pin_plan
+from tests.pin_plan_storage_fixture import write_pin_plan_storage
 from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA
 
 
@@ -151,5 +146,5 @@ def test_pin_plan_manifest_record_seal_is_bound_to_store(tmp_path):
         selector["entries"]["sha256"],
     )
     path.write_text(json.dumps(selector), encoding="utf-8")
-    with pytest.raises(ValidationError, match="metadata disagrees"):
+    with pytest.raises(ValidationError, match="record seal differs"):
         read_pin_plan(path)

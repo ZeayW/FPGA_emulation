@@ -4,14 +4,10 @@ import shutil
 
 import pytest
 
-import emuflow.transport.position_hints_storage as position_storage
+import tests.position_hints_storage_fixture as position_storage
 from emuflow.common.errors import ValidationError
-from emuflow.transport.position_hints_storage import (
-    POSITION_HINTS_STORAGE_SCHEMA,
-    PositionHintsView,
-    read_position_hints,
-    write_position_hints_storage,
-)
+from emuflow.transport.position_hints_storage import POSITION_HINTS_STORAGE_SCHEMA, PositionHintsView, read_position_hints
+from tests.position_hints_storage_fixture import write_position_hints_storage
 
 
 def _positions():
@@ -49,7 +45,8 @@ def test_position_hints_indexed_round_trip_order_and_relocation(tmp_path):
     expected = _positions()
     legacy_path = tmp_path / "legacy.json"
     legacy_path.write_text(json.dumps(expected), encoding="utf-8")
-    assert read_position_hints(legacy_path) == expected
+    with pytest.raises(ValidationError):
+        read_position_hints(legacy_path)
     path = tmp_path / "position_hints.json"
     view = write_position_hints_storage(path, expected)
 
@@ -104,7 +101,7 @@ def test_position_hints_streaming_metrics_and_negative_seals(tmp_path):
     selector = json.loads(selector_path.read_text(encoding="utf-8"))
     selector["header"]["design"] = "different"
     selector_path.write_text(json.dumps(selector), encoding="utf-8")
-    with pytest.raises(ValidationError, match="logical seal"):
+    with pytest.raises(ValidationError, match="header differs"):
         read_position_hints(selector_path)
 
     path = tmp_path / "tampered.json"
@@ -154,5 +151,5 @@ def test_position_hints_manifest_record_seal_is_bound_to_store(tmp_path):
         selector["entries"]["sha256"],
     )
     path.write_text(json.dumps(selector), encoding="utf-8")
-    with pytest.raises(ValidationError, match="metadata disagrees"):
+    with pytest.raises(ValidationError, match="record seal differs"):
         read_position_hints(path)

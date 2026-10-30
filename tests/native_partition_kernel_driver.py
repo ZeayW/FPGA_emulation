@@ -5,14 +5,13 @@ columns. They contain no partition/search policy or alternate stage flow.
 """
 import json
 import math
-import mmap
 import os
 from pathlib import Path
 import struct
 import tempfile
 
 from emuflow.common.errors import ValidationError
-from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn
+from tests.native_column_fixture import read_fixture_columns, _ClusterScratch, _ColumnOwner, _MappedColumn
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import resolve_native_executable
 from emuflow.storage.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
@@ -39,8 +38,7 @@ def _owner(path, records, parts, source, primary, scratch):
     from tests.partition_views import ClusterOwners as _PackedClusterAssignment
     if len(records) > 65536:
         raise ValidationError('kernel fixture exceeds cluster bound')
-    with path.open('rb') as stream:
-        data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+    data = read_fixture_columns(path)
     mapping = _ColumnOwner(data, scratch)
     assert struct.unpack_from('<QIQQ', data) == (0x315450494E415045, 1, len(records), len(records.source_cluster_indices))
     value = object.__new__(_PackedClusterAssignment)
