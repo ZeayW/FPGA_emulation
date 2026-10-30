@@ -178,6 +178,51 @@ def test_native_compile_executes_whole_frontend_without_starting_its_python_adap
     assert not list(root.glob('.native-frontend*request'))
 
 
+def test_native_compile_preserves_engine_failure_with_many_source_bindings(native,tmp_path):
+    from emuflow.flow.native_compile import _request
+    from tests.test_compile_preflight_native import request_options
+
+    options=request_options(tmp_path)
+    sources=[]
+    for index in range(350):
+        path=tmp_path/(f'source_{index:04d}_'+('x'*160)+'.v')
+        path.write_text('// Controlled source binding for the native error contract.\n')
+        sources.append(path)
+    options['sources']=sources
+    marker='SOURCE_ENGINE_FAILURE_MUST_REACH_THE_NATIVE_CONTROLLER'
+    engine=tmp_path/'failing-yosys'
+    engine.write_text('#!'+sys.executable+'\nimport sys\nprint('+repr(json.dumps(source()))+')\n'
+                      'print('+repr(marker)+',file=sys.stderr)\nsys.exit(17)\n')
+    engine.chmod(0o700)
+    options['yosys']=str(engine)
+    value,_=_request((),options)
+    request_path=tmp_path/'compile-request.json'
+    request_path.write_text(json.dumps(value))
+
+    result=subprocess.run([native,'compile',str(request_path)],capture_output=True,text=True,timeout=60)
+    assert result.returncode!=0
+    output=tmp_path/'native'
+    control=json.loads((output/'native-compile-result.json').read_text())
+    assert [(row['stage'],row['status']) for row in control['stages']]==[
+        ('preflight','pass'),('frontend','fail')]
+    assert marker in control['operation']['error']['message']
+    assert marker in result.stderr
+    assert not (output/'frontend/phase1').exists()
+    assert not (output/'timing').exists()
+
+    # The bounded diagnostic must preserve the cause without dropping the
+    # producer's complete source-generation evidence or changing its schema.
+    producer=tmp_path/'producer-failure.json'
+    failed=subprocess.run([native,'--report',str(producer),'phase1','run',
+                           str(output/'frontend/native-frontend-request.bin')],
+                          capture_output=True,text=True,timeout=60)
+    assert failed.returncode!=0 and len(failed.stderr.encode())>32768
+    evidence=json.loads(producer.read_text())
+    assert evidence['schema']=='emuflow.native-stage-result/v1'
+    assert evidence['status']=='fail' and marker in evidence['error']['message']
+    assert set(map(str,sources))<={row['path'] for row in evidence['inputs']}
+
+
 def test_detached_stdout_writer_is_rejected_without_hanging_the_owner(native,tmp_path):
     path,root,program,_=request(tmp_path)
     pidfile=tmp_path/'detached.pid'

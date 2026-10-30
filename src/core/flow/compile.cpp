@@ -883,9 +883,15 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       const auto step = RunExternalTool(tool,cancelled,step_inputs);
       result.steps.push_back({stage,step.operation.ok(),native_physical?"native-multi-fpga-physical-v1":native_phase6?(native_chimew?"native-chimew-phase6-v1":"native-baseline-phase6-v1"):native_phase4?"native-phase4-v1":native_phase5?"native-exact-phase5-v1":native_phase3?"native-phase3-v1":native_phase2?"native-phase2-v1":native_frontend?(frontend_inputs?"native-frontend-input-v1":"native-rtl-frontend-v1"):"native-stage-v1",step.wall_seconds,step.user_cpu_seconds,
                              step.system_cpu_seconds,step.maximum_process_rss_kib});
-      if (!step.operation.ok())
+      if (!step.operation.ok()) {
+        // A failed native phase emits its error before the source bindings.
+        // A large binding list can fill the tail and hide the actual cause.
+        const auto diagnostic = step.diagnostic_bytes > step.diagnostic_tail.size()
+            ? step.diagnostic_head + "\n[diagnostic tail]\n" + step.diagnostic_tail
+            : step.diagnostic_tail;
         throw StageError(ErrorCode::kExecutionFailed,"native compile " + std::string(stage) + ": " +
-                         step.operation.message + "\n" + step.diagnostic_tail);
+                         step.operation.message + "\n" + diagnostic);
+      }
       struct Acceptance { bool& passed;bool accepted=false;~Acceptance(){if(!accepted)passed=false;} } acceptance{result.steps.back().passed};
       if(native_physical) {
         ControlJson producer((temporary/"native-result.json").string());auto summary=ArtifactRef::Bind(physical_report,"physical-flow-report-v1");

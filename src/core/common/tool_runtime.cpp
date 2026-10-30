@@ -113,6 +113,10 @@ struct Child {
 };
 void AppendTail(ToolResult& result, std::vector<char>& ring, std::size_t& cursor,
                 const char* bytes, std::size_t count) {
+  constexpr std::size_t head_limit = 16384;
+  if (result.diagnostic_head.size() < head_limit)
+    result.diagnostic_head.append(
+        bytes, std::min(count, head_limit - result.diagnostic_head.size()));
   for (std::size_t i = 0; i < count; ++i) {
     ring[cursor] = bytes[i]; cursor = (cursor + 1) % ring.size();
   }

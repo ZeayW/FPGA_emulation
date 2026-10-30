@@ -27,7 +27,9 @@ struct ToolResult {
   StageResult operation;
   int return_code = -1, spawn_errno = 0, cancelled_signal = 0;
   bool started = false, timed_out = false;
-  std::string diagnostic_tail;
+  // Native failure envelopes put their cause before input-generation metadata.
+  // Retain a bounded prefix as well as the configured diagnostic tail.
+  std::string diagnostic_head, diagnostic_tail;
   std::uint64_t diagnostic_bytes = 0;
   double wall_seconds = 0, user_cpu_seconds = 0, system_cpu_seconds = 0;
   std::uint64_t maximum_process_rss_kib = 0;
