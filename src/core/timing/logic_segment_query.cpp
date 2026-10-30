@@ -75,6 +75,15 @@ class QueryPlan {
      "CREATE UNIQUE INDEX temp.local_incoming_id ON local_incoming(net_id);");
    ProjectExactQueryRecords(sources[2],descriptor,request.fpga,db,cancelled);
    Check(Scalar(db,"SELECT count(*) FROM assignment.parts WHERE fpga="+JsonSql(request.fpga))==1,"assignment FPGA absent");
+   local_part=Scalar(db,"SELECT part_index FROM assignment.parts WHERE fpga="+JsonSql(request.fpga));
+   // This invocation owns only a compact coordinate index. Hop payloads and
+   // entry identities remain authoritative in the read-only ScheduleStore.
+   db.Execute("CREATE TEMP TABLE query_hops(seq INTEGER PRIMARY KEY,net INTEGER NOT NULL,source INTEGER NOT NULL,sink INTEGER NOT NULL);"
+     "INSERT INTO query_hops SELECT s.seq,n.number,a.part_index,b.part_index FROM schedule.schedule_entries s "
+     "JOIN exact_query_nodes n ON n.net=s.net JOIN assignment.parts a ON a.fpga=s.source_fpga JOIN assignment.parts b ON b.fpga=s.sink_fpga;"
+     "CREATE INDEX temp.query_hops_tx ON query_hops(net,source,seq);"
+     "CREATE INDEX temp.query_hops_rx ON query_hops(net,sink,seq);");
+   Check(Scalar(db,"SELECT count(*) FROM query_hops")==Scalar(db,"SELECT count(*) FROM schedule.schedule_entries"),"schedule query hop scope disagrees");
  }
  // The resolver deliberately encapsulates its source. Namespace checks borrow
  // a separate bounded metadata reader, never a merged graph.
@@ -92,7 +101,19 @@ class QueryPlan {
  }
  PhysicalEndpoint Driver(const std::string& net){auto row=db.Prepare("SELECT c.id,p.name,e.bit FROM original.net_records n JOIN original.endpoint_records e ON e.net_seq=n.seq AND e.role=0 LEFT JOIN original.cell_records c ON c.seq=e.instance_seq JOIN original.pin_names p ON p.seq=e.port_seq WHERE n.id=? ORDER BY e.ordinal");row.BindText(1,net);Check(row.Step(),"cut net lacks driver");PhysicalEndpoint result;if(!row.IsNull(0))result.instance=row.TypedText(0);result.port=row.TypedText(1);result.bit=row.TypedInteger(2);Check(!row.Step(),"cut net has multiple drivers");return result;}
  std::string Exact(const std::string& role,const std::optional<std::string>& source,const std::optional<std::string>& target,const std::optional<PhysicalEndpoint>& capture={}){
-   auto row=db.Prepare("SELECT s.number,c.kind,c.endpoint,c.port,c.bit FROM exact_query_segments s LEFT JOIN exact_query_nodes a ON a.number=s.source LEFT JOIN exact_query_nodes b ON b.number=s.target AND s.kind!=2 LEFT JOIN exact_query_captures c ON c.number=s.target AND s.kind=2 WHERE s.kind=? AND a.net IS ? AND b.net IS ? ORDER BY s.number");row.BindInteger(1,role=="launch"?0:role=="transition"?1:2);if(source)row.BindText(2,*source);else row.BindNull(2);if(target)row.BindText(3,*target);else row.BindNull(3);
+   // Resolve names in this exact artifact's namespace before selecting segments.
+   // Filtering names through outer joins otherwise scans every semantic segment
+   // for each original member, even when the segment relation has an index.
+   const auto node=[&](const std::optional<std::string>& net)->std::optional<I>{
+     if(!net)return std::nullopt;
+     auto found=db.Prepare("SELECT number FROM exact_query_nodes WHERE net=?");found.BindText(1,*net);
+     Check(found.Step(),"original path segment absent from Static Exact contract");const auto number=found.TypedInteger(0);
+     Check(!found.Step(),"semantic identity mapping ambiguous");return number;
+   };
+   const auto first=node(source),last=node(target);const bool capture_role=role=="capture";
+   auto row=db.Prepare("SELECT s.number,c.kind,c.endpoint,c.port,c.bit FROM exact_query_segments s LEFT JOIN exact_query_captures c ON c.number=s.target AND s.kind=2 WHERE s.kind=? AND s.source IS ?"+std::string(capture_role?"":" AND s.target IS ?")+" ORDER BY s.number");
+   row.BindInteger(1,role=="launch"?0:role=="transition"?1:2);if(first)row.BindInteger(2,*first);else row.BindNull(2);
+   if(!capture_role){if(last)row.BindInteger(3,*last);else row.BindNull(3);}
    std::optional<I> selected;
    while(row.Step()){
      if(capture){if(row.IsNull(1))continue;const auto endpoint=capture->instance?*capture->instance:"top:"+capture->port+"["+std::to_string(capture->bit)+"]";
@@ -124,37 +145,39 @@ class QueryPlan {
    });
  }
  void Launches(const std::string& net){
+   // Drive recursion from its frontier and validation from the selected cone;
+   // reordering either join around the full owner repeats a graph scan per cut.
    db.Execute("DELETE FROM cone;DELETE FROM launches;");auto populate=db.Prepare(R"SQL(INSERT INTO cone WITH RECURSIVE walk(net_seq) AS (
  SELECT seq FROM original.net_records WHERE id=?1 UNION
- SELECT input.net_seq FROM walk w JOIN original.net_records n ON n.seq=w.net_seq
- JOIN original.endpoint_records driver ON driver.net_seq=w.net_seq AND driver.role=0
- JOIN original.cell_records cell ON cell.seq=driver.instance_seq
- JOIN assignment.copies own ON own.source_instance_seq=cell.seq AND own.is_replica=0
- JOIN assignment.parts part ON part.part_index=own.part_index AND part.fpga=?2
- JOIN original.endpoint_records input ON input.instance_seq=cell.seq AND input.role=1
+ SELECT input.net_seq FROM walk w CROSS JOIN original.net_records n ON n.seq=w.net_seq
+ CROSS JOIN original.endpoint_records driver ON driver.net_seq=w.net_seq AND driver.role=0
+ CROSS JOIN original.cell_records cell ON cell.seq=driver.instance_seq
+ CROSS JOIN assignment.copies own ON own.source_instance_seq=cell.seq AND own.is_replica=0
+ CROSS JOIN assignment.parts part ON part.part_index=own.part_index AND part.fpga=?2
+ CROSS JOIN original.endpoint_records input ON input.instance_seq=cell.seq AND input.role=1
  WHERE (n.id=?1 OR NOT EXISTS(SELECT 1 FROM local_incoming i WHERE i.net_id=n.id))
  AND NOT EXISTS(SELECT 1 FROM original.instance_resources r WHERE r.instance_seq=cell.seq AND r.resource IN ('ff','bram','bram18k','uram288') AND r.amount!=0)
  ) SELECT net_seq FROM walk)SQL");populate.BindText(1,net);populate.BindText(2,request.fpga);populate.Execute();
-   auto foreign=db.Prepare("SELECT 1 FROM cone w JOIN original.net_records n ON n.seq=w.net_seq JOIN original.endpoint_records d ON d.net_seq=w.net_seq AND d.role=0 JOIN original.cell_records c ON c.seq=d.instance_seq LEFT JOIN assignment.copies a ON a.source_instance_seq=c.seq AND a.is_replica=0 LEFT JOIN assignment.parts p ON p.part_index=a.part_index WHERE (n.id=? OR NOT EXISTS(SELECT 1 FROM local_incoming i WHERE i.net_id=n.id)) AND (p.fpga IS NULL OR p.fpga!=?) LIMIT 1");foreign.BindText(1,net);foreign.BindText(2,request.fpga);Check(!foreign.Step(),"launch cone crosses undeclared partition boundary");
-   auto insert=db.Prepare("INSERT OR IGNORE INTO launches SELECT coalesce(c.id,''),pin.name,d.bit FROM cone w JOIN original.net_records n ON n.seq=w.net_seq JOIN original.endpoint_records d ON d.net_seq=w.net_seq AND d.role=0 LEFT JOIN original.cell_records c ON c.seq=d.instance_seq JOIN original.pin_names pin ON pin.seq=d.port_seq WHERE (n.id=? OR NOT EXISTS(SELECT 1 FROM local_incoming i WHERE i.net_id=n.id)) AND (d.instance_seq IS NULL OR EXISTS(SELECT 1 FROM original.instance_resources r WHERE r.instance_seq=c.seq AND r.resource IN ('ff','bram','bram18k','uram288') AND r.amount!=0))");insert.BindText(1,net);insert.Execute();
+   auto foreign=db.Prepare("SELECT 1 FROM cone w CROSS JOIN original.net_records n ON n.seq=w.net_seq CROSS JOIN original.endpoint_records d ON d.net_seq=w.net_seq AND d.role=0 CROSS JOIN original.cell_records c ON c.seq=d.instance_seq LEFT JOIN assignment.copies a ON a.source_instance_seq=c.seq AND a.is_replica=0 LEFT JOIN assignment.parts p ON p.part_index=a.part_index WHERE (n.id=? OR NOT EXISTS(SELECT 1 FROM local_incoming i WHERE i.net_id=n.id)) AND (p.fpga IS NULL OR p.fpga!=?) LIMIT 1");foreign.BindText(1,net);foreign.BindText(2,request.fpga);Check(!foreign.Step(),"launch cone crosses undeclared partition boundary");
+   auto insert=db.Prepare("INSERT OR IGNORE INTO launches SELECT coalesce(c.id,''),pin.name,d.bit FROM cone w CROSS JOIN original.net_records n ON n.seq=w.net_seq CROSS JOIN original.endpoint_records d ON d.net_seq=w.net_seq AND d.role=0 LEFT JOIN original.cell_records c ON c.seq=d.instance_seq CROSS JOIN original.pin_names pin ON pin.seq=d.port_seq WHERE (n.id=? OR NOT EXISTS(SELECT 1 FROM local_incoming i WHERE i.net_id=n.id)) AND (d.instance_seq IS NULL OR EXISTS(SELECT 1 FROM original.instance_resources r WHERE r.instance_seq=c.seq AND r.resource IN ('ff','bram','bram18k','uram288') AND r.amount!=0))");insert.BindText(1,net);insert.Execute();
  }
  void Semantics(){
-   auto rows=db.Prepare("SELECT s.number,s.kind,s.constant,a.net,b.net,c.kind,c.endpoint,c.port,c.bit FROM exact_query_segments s LEFT JOIN exact_query_nodes a ON a.number=s.source LEFT JOIN exact_query_nodes b ON b.number=s.target AND s.kind!=2 LEFT JOIN exact_query_captures c ON c.number=s.target AND s.kind=2 ORDER BY s.number");
+   auto rows=db.Prepare("SELECT s.number,s.kind,s.constant,a.net,b.net,c.kind,c.endpoint,c.port,c.bit,s.source,s.target FROM exact_query_segments s LEFT JOIN exact_query_nodes a ON a.number=s.source LEFT JOIN exact_query_nodes b ON b.number=s.target AND s.kind!=2 LEFT JOIN exact_query_captures c ON c.number=s.target AND s.kind=2 ORDER BY s.number");
    while(rows.Step()){Stop(cancelled);const auto exact=Segment(rows.TypedInteger(0));const auto kind=rows.TypedInteger(1);const std::string role=kind==0?"launch":kind==1?"transition":"capture";
      const auto emit=[&](const PhysicalEndpoint& start,const PhysicalEndpoint& end,const std::optional<std::string>& tx,I ordinal,const std::optional<std::string>& anchor){const auto first=objects.Resolve(start),last=objects.Resolve(end);const auto key=exact+std::string(1,'\0')+first.name+std::string(1,'\0')+last.name+std::string(1,'\0')+std::to_string(ordinal),hash=Digest(key).substr(0,24);Add("static_exact_"+hash+"_"+role,role,"static-exact-contract:"+exact,"static-exact-contract:"+exact+":"+hash,ordinal,tx,start,end,exact,anchor,true);};
-     if(kind==0 || kind==1){const auto target=rows.TypedText(4);auto txs=db.Prepare("SELECT entry_id FROM schedule.schedule_entries WHERE net=? AND source_fpga=? ORDER BY seq");txs.BindText(1,target);txs.BindText(2,request.fpga);bool found=false;I ordinal=0;
-       if(kind==0){Launches(target);auto launches=db.Prepare("SELECT instance,port,bit FROM launches ORDER BY instance,port,bit");while(launches.Step()){Stop(cancelled);PhysicalEndpoint start;if(!launches.TypedText(0).empty())start.instance=launches.TypedText(0);start.port=launches.TypedText(1);start.bit=launches.TypedInteger(2);while(txs.Step()){found=true;const auto tx="__emuflow_tx_"+txs.TypedText(0);emit(start,Boundary(tx,"tx"),tx,ordinal++,request.provider=="vivado"?std::optional<std::string>(target):std::nullopt);}txs.Reset();txs.BindText(1,target);txs.BindText(2,request.fpga);}Check(ordinal>0 || rows.TypedInteger(2)==1,"nonconstant launch semantic has no architectural source");}
-       else {const auto rx=Arrival(rows.TypedText(3));while(txs.Step()){found=true;const auto tx="__emuflow_tx_"+txs.TypedText(0);emit(Boundary(rx,"rx"),Boundary(tx,"tx"),tx,ordinal++,request.provider=="vivado"?std::optional<std::string>(target):std::nullopt);}}
+     if(kind==0 || kind==1){const auto target=rows.TypedText(4);auto txs=db.Prepare("SELECT s.entry_id FROM query_hops h JOIN schedule.schedule_entries s ON s.seq=h.seq WHERE h.net=? AND h.source=? ORDER BY h.seq");txs.BindInteger(1,rows.TypedInteger(10));txs.BindInteger(2,local_part);bool found=false;I ordinal=0;
+       if(kind==0){Launches(target);auto launches=db.Prepare("SELECT instance,port,bit FROM launches ORDER BY instance,port,bit");while(launches.Step()){Stop(cancelled);PhysicalEndpoint start;if(!launches.TypedText(0).empty())start.instance=launches.TypedText(0);start.port=launches.TypedText(1);start.bit=launches.TypedInteger(2);while(txs.Step()){found=true;const auto tx="__emuflow_tx_"+txs.TypedText(0);emit(start,Boundary(tx,"tx"),tx,ordinal++,request.provider=="vivado"?std::optional<std::string>(target):std::nullopt);}txs.Reset();txs.BindInteger(1,rows.TypedInteger(10));txs.BindInteger(2,local_part);}Check(ordinal>0 || rows.TypedInteger(2)==1,"nonconstant launch semantic has no architectural source");}
+       else {const auto rx=Arrival(rows.TypedInteger(9));while(txs.Step()){found=true;const auto tx="__emuflow_tx_"+txs.TypedText(0);emit(Boundary(rx,"rx"),Boundary(tx,"tx"),tx,ordinal++,request.provider=="vivado"?std::optional<std::string>(target):std::nullopt);}}
        Check(found || (kind==0 && rows.TypedInteger(2)==1),"semantic cut has no local scheduled TX");
-     }else{Check(!rows.IsNull(5),"capture semantic lacks capture owner");PhysicalEndpoint end;if(rows.TypedInteger(5)==0){const auto text=rows.TypedText(6);const auto bracket=text.rfind('[');Check(text.rfind("top:",0)==0 && bracket!=std::string::npos && text.back()==']',"top capture identity invalid");end.port=text.substr(4,bracket-4);end.bit=BoundedJson::IntegerToken(text.substr(bracket+1,text.size()-bracket-2));}else{end.instance=rows.TypedText(6);Check(objects.IsArchitecturalState(*end.instance),"capture target is not architectural state");end.port=rows.TypedText(7);end.bit=rows.TypedInteger(8);}emit(Boundary(Arrival(rows.TypedText(3)),"rx"),end,std::nullopt,0,std::nullopt);}
+     }else{Check(!rows.IsNull(5),"capture semantic lacks capture owner");PhysicalEndpoint end;if(rows.TypedInteger(5)==0){const auto text=rows.TypedText(6);const auto bracket=text.rfind('[');Check(text.rfind("top:",0)==0 && bracket!=std::string::npos && text.back()==']',"top capture identity invalid");end.port=text.substr(4,bracket-4);end.bit=BoundedJson::IntegerToken(text.substr(bracket+1,text.size()-bracket-2));}else{end.instance=rows.TypedText(6);Check(objects.IsArchitecturalState(*end.instance),"capture target is not architectural state");end.port=rows.TypedText(7);end.bit=rows.TypedInteger(8);}emit(Boundary(Arrival(rows.TypedInteger(9)),"rx"),end,std::nullopt,0,std::nullopt);}
    }
  }
- std::string Arrival(const std::string& net){auto row=db.Prepare("SELECT entry_id FROM schedule.schedule_entries WHERE net=? AND sink_fpga=? ORDER BY seq");row.BindText(1,net);row.BindText(2,request.fpga);Check(row.Step(),"semantic cut has no RX");const auto result="__emuflow_rx_"+row.TypedText(0);Check(!row.Step(),"semantic cut has ambiguous RX");return result;}
+ std::string Arrival(I net){auto row=db.Prepare("SELECT s.entry_id FROM query_hops h JOIN schedule.schedule_entries s ON s.seq=h.seq WHERE h.net=? AND h.sink=? ORDER BY h.seq");row.BindInteger(1,net);row.BindInteger(2,local_part);Check(row.Step(),"semantic cut has no RX");const auto result="__emuflow_rx_"+row.TypedText(0);Check(!row.Step(),"semantic cut has ambiguous RX");return result;}
  void Generate(){Members();Semantics();objects.RequireUnchanged();}
  I exact_members=0;
  std::string semantic_sha;
  private:
- SqliteDatabase& db;const std::vector<ArtifactRef>& sources;const Request& request;PhysicalQueryObjects objects;const volatile std::sig_atomic_t* cancelled;std::unique_ptr<SqliteStore> merged;
+ SqliteDatabase& db;const std::vector<ArtifactRef>& sources;const Request& request;PhysicalQueryObjects objects;const volatile std::sig_atomic_t* cancelled;std::unique_ptr<SqliteStore> merged;I local_part=0;
 };
 
 void InstallRows(SqliteDatabase& db){

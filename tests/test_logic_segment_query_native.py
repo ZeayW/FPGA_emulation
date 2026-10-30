@@ -161,7 +161,7 @@ def test_changed_source_rejects_new_generation_without_replacing_previous_output
     prepared.close()
 
 
-@pytest.mark.parametrize('damage',['crc','truncated','generation','schedule-row','boundary-peer'])
+@pytest.mark.parametrize('damage',['crc','truncated','generation','schedule-row','boundary-peer','fanin-owner'])
 def test_native_direct_request_rejects_corruption_before_publication(tmp_path,damage):
     import subprocess
     from emuflow_tools.timing.logic_segment_query_native import _write_inputs
@@ -179,6 +179,15 @@ def test_native_direct_request_rejects_corruption_before_publication(tmp_path,da
             with sqlite3.connect(refs[4].path) as db:db.execute('UPDATE schedule_entries SET lane=lane+100 WHERE seq=0')
         elif damage=='boundary-peer':
             with sqlite3.connect(refs[7].path) as db:db.execute("UPDATE endpoints SET peer='foreign'")
+        elif damage=='fanin-owner':
+            # A local cut's combinational driver belongs to another partition.
+            # Its representative path still has valid architectural endpoints;
+            # complete cone validation must reject this undeclared boundary.
+            with sqlite3.connect(refs[0].path) as db:
+                cell=db.execute("SELECT seq FROM cell_records WHERE id='l0'").fetchone()[0]
+            with sqlite3.connect(refs[1].path) as db:
+                owner=db.execute("SELECT part_index FROM parts WHERE fpga='fpga1'").fetchone()[0]
+                db.execute('UPDATE copies SET part_index=? WHERE source_instance_seq=? AND is_replica=0',(owner,cell))
         # Rebind current source generations while retaining the original
         # logical seals. Independent native audits must still reject bad rows.
         writer=CheckedRequestWriter(request)
@@ -195,5 +204,8 @@ def test_native_direct_request_rejects_corruption_before_publication(tmp_path,da
     completed=subprocess.run([str(emuflow_native()),'physical','query-logic-segments',*(str(ref.path) for ref in refs),str(output)],capture_output=True,text=True)
     assert completed.returncode!=0
     assert not output.exists() and not list(tmp_path.glob('.logic-query-*'))
-    assert any(word in completed.stderr+completed.stdout for word in ('seal','generation','CRC','request','physical evidence'))
+    if damage=='fanin-owner':
+        assert 'launch cone crosses undeclared partition boundary' in completed.stderr+completed.stdout
+    else:
+        assert any(word in completed.stderr+completed.stdout for word in ('seal','generation','CRC','request','physical evidence'))
     prepared.close()

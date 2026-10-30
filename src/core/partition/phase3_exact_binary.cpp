@@ -305,6 +305,7 @@ void ProjectExactQueryRecords(const ArtifactRef& artifact,const std::string& des
       if(kind){const auto port=reader.String();std::uint64_t bit=0;if(m.version==1)bit=reader.Read<std::uint32_t>();else{const auto bytes=reader.Read<std::uint32_t>();Check(bytes>0 && bytes<=8,"physical capture bit exceeds supported endpoint coordinate");for(unsigned n=0;n<bytes;++n){const auto value=reader.Read<unsigned char>();Check(n || bytes==1 || value,"capture bit is not canonical");bit=(bit<<8)|value;}}Check(bit<=INT64_MAX,"physical capture bit exceeds supported endpoint coordinate");put.BindText(5,port);put.BindInteger(6,bit);}else{put.BindNull(5);put.BindNull(6);}put.Execute();
     }reader.Finish();
   }
+  db.Execute("CREATE INDEX temp.exact_query_segment_lookup ON exact_query_segments(kind,source,target)");
   auto missing=db.Prepare("SELECT 1 FROM exact_query_segments s LEFT JOIN exact_query_captures c ON c.number=s.target WHERE s.kind=2 AND (c.number IS NULL OR c.net!=s.source) LIMIT 1");Check(!missing.Step(),"query capture consumer ownership disagrees");artifact.RequireUnchanged();
 }
 
