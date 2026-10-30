@@ -29,6 +29,16 @@ jobs:
             swig \
             tcl-dev
 
+      - name: Install regression dependencies
+        run: |
+          python3 -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python3 -m pip install -e '.[test]'
+
+      - name: Build and verify the Python distribution
+        run: |
+          python3 -m pip wheel --no-deps --wheel-dir build/wheels .
+          python3 tests/check_python_distribution.py . build/wheels/emuflow-*.whl
+
       - name: Reject opaque providers and incomplete source trees
         run: python3 scripts/check_source_complete.py .
 
@@ -39,7 +49,7 @@ jobs:
           -DBUILD_TESTING=ON
           -DEMUFLOW_BUILD_YOSYS=OFF
           -DEMUFLOW_BUILD_CUDD=OFF
-          -DEMUFLOW_BUILD_REPART=OFF
+          -DEMUFLOW_BUILD_FPGA_INTERCHANGE=OFF
           -DEMUFLOW_BUILD_OPENROAD=OFF
           -DEMUFLOW_BUILD_OPENSTA=OFF
           -DEMUFLOW_BUILD_OPENPARF=OFF

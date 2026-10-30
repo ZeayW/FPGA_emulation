@@ -14,6 +14,9 @@ authors = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+test = ["pytest>=8,<9", "jsonschema>=4,<5", "numpy>=1.24,<3", "torch>=2,<3"]
+
 [project.scripts]
 emuflow = "emuflow.flow.cli:main"
 
@@ -24,7 +27,7 @@ package-dir = {"" = "src/python"}
 where = ["src/python"]
 
 [tool.setuptools.package-data]
-emuflow = ["data/schema/*.sql", "data/schema/*.tcl", "data/rapidwright/*.json", "data/partition/*.json", "data/openparf/*.json", "data/designs/*.json", "data/designs/*.v", "data/platforms/*.json", "data/io/*.json"]
+emuflow = ["data/flow/*.json", "data/schema/*.sql", "data/schema/*.tcl", "data/rapidwright/*.json", "data/partition/*.json", "data/openparf/*.json", "data/designs/*.json", "data/designs/*.v", "data/platforms/*.json", "data/io/*.json"]
 
 [tool.setuptools.data-files]
 "share/emuflow/platforms" = ["platforms/virtual/*.wires.csv"]

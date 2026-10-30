@@ -940,13 +940,15 @@ if(BUILD_TESTING)
   add_test(
     NAME emuflow_python_tests
     COMMAND
-      "${Python3_EXECUTABLE}" -m unittest discover
-      -s "${CMAKE_SOURCE_DIR}/tests"
-      -v
+      "${Python3_EXECUTABLE}" -m pytest -q
+      -W error::pytest.PytestUnraisableExceptionWarning
+      "${CMAKE_SOURCE_DIR}/tests"
   )
   set_tests_properties(
     emuflow_python_tests
     PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      TIMEOUT 14400
       ENVIRONMENT
         "PYTHONPATH=${CMAKE_SOURCE_DIR}/src/python:${CMAKE_SOURCE_DIR}:${CMAKE_SOURCE_DIR}/engines/openparf:${CMAKE_SOURCE_DIR}/tools;EMUFLOW_NATIVE_ROOT=${EMUFLOW_INSTALL_ROOT};EMUFLOW_TEST_BUILD_ROOT=${CMAKE_BINARY_DIR}"
   )

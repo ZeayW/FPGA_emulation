@@ -13,23 +13,47 @@ explicit, and keep the normal flow practical on large designs.
 - Update README when the project entry points or scope change. Detailed
   commands and contracts belong in the user and architecture documentation,
   not a running development diary.
-- Local assistant/editor configuration is not part of the public project.
-  Keep project-independent contribution and correctness requirements here.
 
 ## Building and testing
 
-The supported complete build is the root `release` preset:
+Create an isolated environment for regression dependencies:
 
 ```bash
-cmake --preset release
+python3 -m venv .venv-tests
+. .venv-tests/bin/activate
+```
+
+For Linux CPU tests, install the CPU PyTorch wheel before the test extra:
+`python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu`.
+CI uses Python 3.12 and this CPU configuration.
+
+Then install the test extra:
+
+```bash
+python -m pip install -e '.[test]'
+```
+
+The complete build is the root `release` preset. Use the test environment's
+interpreter for CMake so CTest can run the same dependencies:
+
+```bash
+cmake --preset release -DPython3_EXECUTABLE="$(command -v python)"
 cmake --build --preset release --parallel 2
 ctest --preset release
 ```
 
-For Python regression tests, use the same supported environment as the flow:
+CTest runs the complete pytest suite, including the unittest classes. To run
+only the Python regression entry directly:
 
 ```bash
-PYTHONPATH=src/python:engines/openparf python3 -m pytest -q
+python -m pytest -q -W error::pytest.PytestUnraisableExceptionWarning
+```
+
+Verify the distributable package independently of the source checkout:
+
+```bash
+python -m pip wheel --no-deps --wheel-dir build/wheels .
+python tests/check_python_distribution.py . build/wheels/emuflow-*.whl
 ```
 
 The source audit checks that implementation sources and provenance are present:
@@ -47,8 +71,8 @@ they do not require repeating synthesis or physical implementation.
 ## APIs, artifacts, and defaults
 
 A current producer has one documented default across CLI, API, and configuration
-entry points. Older algorithms must be explicit named options; do not infer
-historical behavior from omitted parameters.
+entry points. Expose maintained algorithms and remove replaced implementations
+and selectors. Do not infer historical behavior from omitted parameters.
 
 Keep source/device, instance, net, route, schedule-entry, and original-path
 identities consistent between phases. Introduce a new schema or optional field
