@@ -83,6 +83,13 @@ include(cmake/TorchExtension.cmake)
 set(Boost_NO_BOOST_CMAKE TRUE)
 find_package(Boost 1.55.0 REQUIRED)
 message(STATUS "Boost_INCLUDE_DIRS = ${Boost_INCLUDE_DIRS}")
+# GCC 14 already supplies numeric_limits<__float128>. Older Boost versions
+# redefine it through their optional quadmath support; OpenPARF does not use
+# that type. Keep source builds compatible without caller-supplied flags.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+   CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
+  add_compile_definitions(BOOST_CSTDFLOAT_NO_LIBQUADMATH_SUPPORT)
+endif()
 find_package(BISON 3.4 REQUIRED)
 find_package(FLEX REQUIRED)
 
