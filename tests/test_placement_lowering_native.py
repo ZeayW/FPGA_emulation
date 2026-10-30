@@ -215,10 +215,17 @@ def test_removed_graph_lowering_interfaces_are_not_exposed():
         'run_placement_ir_lowering_from_value',
     ))
     parser = _build_parser()
-    args = parser.parse_args(['lower-placement-ir', '--split', 'split.sqlite',
-        '--fpga', 'fpga0', '--transport', 'transport.json',
-        '--transport-ir', 'transport.sqlite', '--output', 'placement.sqlite'])
-    assert args.split == Path('split.sqlite') and args.fpga == 'fpga0'
+    import inspect
+    contract = inspect.signature(lowering.run_placement_ir_lowering_from_split).bind(
+        Path('split.sqlite'), 'fpga0', Path('transport.json'),
+        Path('transport.sqlite'), Path('placement.sqlite'),
+    )
+    assert contract.arguments['split_path'] == Path('split.sqlite')
+    assert contract.arguments['fpga'] == 'fpga0'
+    with pytest.raises(SystemExit):
+        parser.parse_args(['lower-placement-ir', '--split', 'split.sqlite',
+            '--fpga', 'fpga0', '--transport', 'transport.json',
+            '--transport-ir', 'transport.sqlite', '--output', 'placement.sqlite'])
     with pytest.raises(SystemExit):
         parser.parse_args(['lower-placement-ir', '--netlist', 'netlist.json',
             '--transport', 'transport.json', '--transport-ir', 'transport.sqlite',

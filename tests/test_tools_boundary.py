@@ -21,8 +21,13 @@ def test_runtime_imports_without_optional_tools_on_search_path(tmp_path):
     code = """import importlib.util, sys
 sys.path.insert(0, sys.argv[1])
 assert importlib.util.find_spec('emuflow_tools') is None
-import emuflow.flow.cli, emuflow.transport.phase6, emuflow.transport.phase6_native, emuflow.timing.opensta
+import emuflow.flow.cli, emuflow.flow.native_compile, emuflow.transport.phase6_oracle
 assert 'emuflow_tools' not in sys.modules
+for name in ('partition.phase3', 'partition.phase3_native', 'routing.phase4', 'routing.phase4_native',
+             'scheduling.phase5', 'scheduling.phase5_native', 'transport.phase6', 'transport.phase6_native',
+             'timing.phase7c', 'flow.multi_fpga_physical_flow', 'flow.multi_fpga_flow',
+             'timing.opensta', 'flow.designs.nvdla', 'flow.designs.nvdla_memory'):
+    assert importlib.util.find_spec('emuflow.' + name) is None, name
 """
     result = subprocess.run([sys.executable, "-I", "-c", code, str(ROOT / "src/python")],
                             cwd=tmp_path, capture_output=True, text=True)
@@ -40,6 +45,7 @@ def test_core_has_no_tool_package_imports():
 
 @pytest.mark.parametrize("command", [
     ["contest", "--help"], ["benchmark", "--help"],
+    ["pin-plan", "chimew-run", "--help"], ["schedule", "validate", "--help"],
     ["platform", "arm-mps4-materialize", "--help"],
     ["multi-fpga", "bsp", "--help"], ["multi-fpga", "board-implement", "--help"],
     ["multi-fpga", "board-timing", "--help"], ["phy-provider", "--help"],

@@ -322,7 +322,7 @@ def write_tdm_schedule_storage(manifest_path: Path, schedule) -> dict[str, Any]:
     from emuflow.scheduling.tdm import NativeExactScheduleRequest
 
     if isinstance(schedule, NativeExactScheduleRequest):
-        from emuflow.scheduling.phase5_native import run_native_phase5
+        from emuflow_tools.stage_clients.schedule_native import run_native_phase5
         if manifest_path.name != "schedule.json":
             raise ValidationError("native Phase 5 owns schedule.json")
         run_native_phase5(schedule, manifest_path.parent)

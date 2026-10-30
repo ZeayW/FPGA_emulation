@@ -19,7 +19,7 @@ from tests.partition_balance_fixture import validate_cluster_assignment_balance
 from tests.native_partition_facts import (build_partition_assignment, build_clusters, normalize_partition_constraints, validate_partition_artifacts, validate_partition_artifacts_online)
 from tests.partition_reference import assign_clusters
 from emuflow.partition.partition_ir import load_partition_ir
-from emuflow.partition.phase3 import run_phase3, validate_phase3_indexed
+from emuflow_tools.stage_clients.partition import run_phase3, validate_phase3_indexed
 from emuflow.partition.phase3_assignment_index import (validate_phase3_assignment_index)
 from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.phase3_exact_fixture import indexed_exact_manifest

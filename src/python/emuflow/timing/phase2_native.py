@@ -9,7 +9,7 @@ import tempfile
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable
-from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT, _runtime_data_path
+from emuflow.timing.engine_runtime import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT, _runtime_data_path
 from emuflow.common.paths import DATA_ROOT
 from emuflow.storage.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
 from emuflow.common.tool_runtime import NativeToolProcess

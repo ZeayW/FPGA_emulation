@@ -27,7 +27,6 @@ from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
     read_chimew_bank_channel_report,
 )
 from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
-from emuflow.flow.cli import main
 from tests.chimew_grouping_fixture import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
@@ -37,6 +36,7 @@ from emuflow.transport.chimew.chimew_qualification import (
     CHIMEW_QUALIFICATION_PROVIDER,
     canonical_sha256,
     validate_chimew_qualification_seal,
+    qualify_chimew_artifact_chain,
 )
 from emuflow.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER, CHIMEW_ELECTRICAL_MAP_SCHEMA
 from tests.pin_contract_fixture import validate_chimew_phase6_binding
@@ -298,7 +298,7 @@ class ChimewQualificationTest(unittest.TestCase):
         self.assertEqual(validation["status"], "pass")
         self.assertEqual(validation["signals"], 2)
 
-    def test_cli_materializes_the_same_certificate(self) -> None:
+    def test_native_artifact_client_materializes_the_same_certificate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             documents = {
@@ -328,25 +328,14 @@ class ChimewQualificationTest(unittest.TestCase):
                 else:
                     write_json(paths[label], document)
             output = root / "qualification.json"
-            arguments = ["pin-plan", "chimew-qualify"]
-            for option in (
-                "schedule",
-                "crossings",
-                "initial",
-                "positions",
-                "refined",
-                "rudy-input",
-                "rudy-report",
-                "assignment-input",
-                "assignment-report",
-            ):
-                cli_name = {
-                    "initial": "initial-grouping",
-                    "refined": "refined-grouping",
-                }.get(option, option)
-                arguments.extend([f"--{cli_name}", str(paths[option])])
-            arguments.extend(["--output", str(output)])
-            self.assertEqual(main(arguments), 0)
+            report = qualify_chimew_artifact_chain({
+                "schedule": paths["schedule"], "crossings": paths["crossings"],
+                "initial_grouping": paths["initial"], "positions": paths["positions"],
+                "refined_grouping": paths["refined"], "rudy_input": paths["rudy-input"],
+                "rudy_report": paths["rudy-report"], "bank_channel_input": paths["assignment-input"],
+                "bank_channel_report": paths["assignment-report"],
+            }, output)
+            self.assertEqual(report["status"], "pass")
             self.assertEqual(read_json(output), self._build())
 
     def test_tampering_and_cross_run_mixing_are_rejected(self) -> None:
@@ -400,7 +389,7 @@ class ChimewQualificationTest(unittest.TestCase):
                 self.bank_report,
             )
 
-    def test_cli_runs_the_complete_phase6_pipeline_without_reoptimizing_report(self) -> None:
+    def test_native_client_runs_the_complete_phase6_pipeline_without_reoptimizing_report(self) -> None:
         platform = {
             "schema": "emuflow.boarddb/v1",
             "platform": {
@@ -537,25 +526,16 @@ class ChimewQualificationTest(unittest.TestCase):
             paths["electrical-map"] = root / "electrical-map.json"
             write_json(paths["electrical-map"], electrical)
             output = root / "pipeline"
-            arguments = ["pin-plan", "chimew-run"]
-            for option in (
-                "schedule",
-                "platform",
-                "crossings",
-                "positions",
-                "rudy-input",
-                "assignment-input",
-                "electrical-map",
-            ):
-                arguments.extend([f"--{option}", str(paths[option])])
-            for option in ("grouper", "refiner", "rudy", "assigner"):
-                arguments.extend([f"--{option}", self.executables[option]])
-            for label, source in source_paths.items():
-                arguments.extend(
-                    [f"--{label.replace('_', '-')}-source", str(source)]
+            def run_pipeline(destination, *, bind_sources=True):
+                return run_chimew_phase6_pipeline(
+                    schedule_path=paths["schedule"], platform_path=paths["platform"],
+                    crossings_path=paths["crossings"], positions_path=paths["positions"],
+                    rudy_input_path=paths["rudy-input"], bank_channel_input_path=paths["assignment-input"],
+                    electrical_map_path=paths["electrical-map"], output_dir=destination,
+                    source_paths=source_paths if bind_sources else None,
+                    **{key: self.executables[key] for key in ("grouper", "refiner", "rudy", "assigner")},
                 )
-            arguments.extend(["--out", str(output)])
-            self.assertEqual(main(arguments), 0)
+            self.assertEqual(run_pipeline(output)["status"], "pass")
             report = read_json(output / "pipeline_report.json")
             self.assertEqual(
                 report["provider"], CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER
@@ -570,7 +550,7 @@ class ChimewQualificationTest(unittest.TestCase):
                     ]["path"]
                 ).is_file()
             )
-            self.assertEqual(main(["pin-plan", "chimew-validate", str(output)]), 0)
+            self.assertEqual(validate_chimew_phase6_pipeline(output)["status"], "pass")
             validation = validate_chimew_phase6_pipeline(output)
             self.assertEqual(validation["artifact_hashes_verified"], 31)
             self.assertEqual(
@@ -1029,9 +1009,7 @@ class ChimewQualificationTest(unittest.TestCase):
                 entry.pop("tdm_ratio")
             write_tdm_schedule_storage(paths["schedule"], direct_lane)
             direct_output = root / "direct-lane-pipeline"
-            direct_arguments = list(arguments[:-2])
-            direct_arguments.extend(["--out", str(direct_output)])
-            self.assertEqual(main(direct_arguments), 0)
+            self.assertEqual(run_pipeline(direct_output)["status"], "pass")
             direct_report = read_json(direct_output / "pipeline_report.json")
             self.assertEqual(direct_report["status"], "pass")
             self.assertEqual(
@@ -1065,21 +1043,7 @@ class ChimewQualificationTest(unittest.TestCase):
                 validate_chimew_phase6_pipeline(downgraded_output)
 
             legacy_output = root / "legacy-pipeline"
-            legacy_arguments = ["pin-plan", "chimew-run"]
-            for option in (
-                "schedule",
-                "platform",
-                "crossings",
-                "positions",
-                "rudy-input",
-                "assignment-input",
-                "electrical-map",
-            ):
-                legacy_arguments.extend([f"--{option}", str(paths[option])])
-            for option in ("grouper", "refiner", "rudy", "assigner"):
-                legacy_arguments.extend([f"--{option}", self.executables[option]])
-            legacy_arguments.extend(["--out", str(legacy_output)])
-            self.assertEqual(main(legacy_arguments), 0)
+            self.assertEqual(run_pipeline(legacy_output, bind_sources=False)["status"], "pass")
             legacy_report = read_json(legacy_output / "pipeline_report.json")
             self.assertEqual(
                 validate_chimew_phase6_pipeline(legacy_output)[

@@ -51,8 +51,8 @@ def _unpack(value, depth=0):
             if (path.is_symlink() or native_file_generation(path) != expected
                     or path.stat().st_size > 256 * 1024):
                 raise EmuFlowError("native phase report generation changed")
-            from emuflow.scheduling.phase5 import validate_phase5_generation
-            from emuflow.flow.multi_fpga_flow import _stage_summary
+            from emuflow_tools.stage_clients.schedule import validate_phase5_generation
+            from emuflow_tools.flow_validation import _stage_summary
 
             report = validate_phase5_generation(path, managed_root_sealed=True)["report"]
             if native_file_generation(path) != expected:
@@ -98,7 +98,7 @@ def _unpack(value, depth=0):
                 raise EmuFlowError("native partition report identity disagrees")
             if native_file_generation(path) != generation:
                 raise EmuFlowError("native partition report generation changed")
-            from emuflow.flow.multi_fpga_flow import _stage_summary
+            from emuflow_tools.flow_validation import _stage_summary
             return _stage_summary('partition', report)
         if kind == "route-report":
             if (type(body) is not dict or set(body)!={"schema","path","generation"}
@@ -115,7 +115,7 @@ def _unpack(value, depth=0):
                 raise EmuFlowError('native route report identity disagrees')
             if native_file_generation(path)!=generation:
                 raise EmuFlowError('native route report generation changed')
-            from emuflow.flow.multi_fpga_flow import _stage_summary
+            from emuflow_tools.flow_validation import _stage_summary
             return _stage_summary('system_route',report)
         if kind == "split-report":
             if (type(body) is not dict or set(body)!={"schema","path","generation"}
@@ -132,7 +132,7 @@ def _unpack(value, depth=0):
                 raise EmuFlowError('native split report identity disagrees')
             if native_file_generation(path)!=generation:
                 raise EmuFlowError('native split report generation changed')
-            from emuflow.flow.multi_fpga_flow import _stage_summary
+            from emuflow_tools.flow_validation import _stage_summary
             return _stage_summary('split',report)
         if kind == "frontend-report":
             if (type(body) is not dict or set(body) != {"schema", "path", "generation"}

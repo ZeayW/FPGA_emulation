@@ -10,7 +10,7 @@ from emuflow.common.io import file_sha256
 from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable
 from emuflow.common.tool_runtime import NativeToolProcess
 from emuflow.physical.handoff import _small
-from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT, _runtime_data_path
+from emuflow.timing.engine_runtime import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT, _runtime_data_path
 
 XILINX_ROUTED_OPENSTA_SCHEMA = 'emuflow.xilinx-routed-opensta-summary/v1'
 _FIELDS = ('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')

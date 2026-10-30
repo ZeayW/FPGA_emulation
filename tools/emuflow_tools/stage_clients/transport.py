@@ -6,7 +6,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-from emuflow.validation.equivalence import exhaustively_verify_static_exact_partition_equivalence, simulate_partition_equivalence, simulate_static_exact_partition_equivalence
+from emuflow.validation.equivalence import simulate_partition_equivalence
+from emuflow.transport.phase6_oracle import _static_exact_equivalence_evidence
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
 from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
@@ -26,116 +27,6 @@ from emuflow.transport.transport_storage import read_lane_map, read_transport, r
 PHASE6_REPORT_SCHEMA = "emuflow.phase6-report/v1"
 
 
-def _static_exact_equivalence_evidence(
-    ir: EmuIR,
-    assignment: Mapping[str, Any],
-    schedule: Mapping[str, Any],
-    *,
-    cycles: int,
-    seed: int,
-    clock_periods: Optional[Mapping[str, float]],
-) -> Dict[str, Any]:
-    random_traces = [
-        simulate_static_exact_partition_equivalence(
-            ir,
-            assignment,
-            schedule,
-            cycles=cycles,
-            seed=seed + offset,
-            clock_periods=clock_periods,
-        )
-        for offset in range(3)
-    ]
-    exhaustive = None
-    exhaustive_skip = None
-    try:
-        exhaustive = exhaustively_verify_static_exact_partition_equivalence(
-            ir,
-            assignment,
-            schedule,
-            max_variables=12,
-            clock_periods=clock_periods,
-        )
-    except ValidationError as error:
-        message = str(error)
-        if (
-            "variable limit exceeded" not in message
-            and "does not support memory state" not in message
-        ):
-            raise
-        exhaustive_skip = {
-            "status": "not-run",
-            "reason": message,
-            "qualification": "large-model-boundary-not-a-proof",
-        }
-    evidence = {
-        "status": "pass",
-        "provider": "static-exact-event-driven-macro-cycle-equivalence-v1",
-        "semantic_contract_sha256": schedule[
-            "semantic_contract_sha256"
-        ],
-        "random_traces": random_traces,
-        "random_trace_count": len(random_traces),
-        "random_macro_cycles": sum(item["cycles"] for item in random_traces),
-        "cycles": sum(item["cycles"] for item in random_traces),
-        "compared_state_bits": sum(
-            item["compared_state_bits"] for item in random_traces
-        ),
-        "compared_output_bits": sum(
-            item["compared_output_bits"] for item in random_traces
-        ),
-        "source_full_evaluations": sum(
-            item["source_full_evaluations"] for item in random_traces
-        ),
-        "reference_full_evaluations": sum(
-            item["reference_full_evaluations"] for item in random_traces
-        ),
-        "initialization_full_evaluations": sum(
-            item["initialization_full_evaluations"]
-            for item in random_traces
-        ),
-        "partition_full_evaluations": sum(
-            item["partition_full_evaluations"] for item in random_traces
-        ),
-        "incremental_combinational_cell_evaluations": sum(
-            item["incremental_combinational_cell_evaluations"]
-            for item in random_traces
-        ),
-        "shadow_pin_updates": sum(
-            item["shadow_pin_updates"] for item in random_traces
-        ),
-        "mismatches": 0,
-        "trace_sha256": hashlib.sha256(
-            json.dumps(
-                [item["trace_sha256"] for item in random_traces],
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest(),
-        "assumptions": [
-            "one-commit macro-step semantics",
-            "reset is deasserted during each checked macro-step",
-            "transport shadows begin unavailable and must be produced in-frame",
-        ],
-    }
-    if exhaustive is not None:
-        evidence.update(
-            {
-                "qualification": (
-                    "exhaustive-small-model-proof-plus-random-traces"
-                ),
-                "exhaustive_macro_step": exhaustive,
-            }
-        )
-    else:
-        evidence.update(
-            {
-                "qualification": (
-                    "multi-seed-random-trace-validation-not-proof"
-                ),
-                "exhaustive_macro_step": exhaustive_skip,
-            }
-        )
-    return evidence
 
 
 def _virtual_board_artifact_paths(platform: Platform) -> Dict[str, Any]:
@@ -241,7 +132,7 @@ def run_phase6(
     if pin_plan is not None and electrical_binding_path is None:
         raise ValueError("electrical_binding_path is required with a Chimew pin plan")
     electrical_binding = read_chimew_binding(electrical_binding_path) if electrical_binding_path is not None else None
-    from emuflow.transport.phase6_native import run_native_phase6
+    from emuflow_tools.stage_clients.transport_native import run_native_phase6
     from emuflow.scheduling.tdm import is_sampled_virtual_wire_schedule
 
     runtime = build_virtual_runtime(schedule, platform, clock_periods)

@@ -8,7 +8,7 @@ from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json, write_json
-from emuflow.flow.multi_fpga_flow import _checked_flow_member
+from emuflow_tools.flow_validation import _checked_flow_member
 from tests.frontend_input_fixture import input_request, write_timing, write_report
 from tests.native_build import emuflow_native
 import subprocess

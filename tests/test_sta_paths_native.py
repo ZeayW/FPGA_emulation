@@ -13,7 +13,7 @@ import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.timing.indexed_timing import IndexedTimingView
 from emuflow.common.io import file_sha256
-from emuflow.timing.opensta import OPENSTA_PROVIDER, run_opensta_path_database
+from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER, run_opensta_path_database
 from emuflow.timing.sta import (STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming,
                          iter_sta_path_database_paths, validate_sta_path_database)
 from tests.yosys_reference import import_yosys_json

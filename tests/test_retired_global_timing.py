@@ -5,14 +5,14 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import EmuFlowError
-from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
 from emuflow.flow.native_compile import _request
-from emuflow.timing.phase7c import run_phase7c
+from emuflow_tools.stage_clients.timing_replay import run_phase7c
 
 
 @pytest.mark.parametrize("entry", ["phase7c", "compile", "native-request"])
 def test_python_engine_rejected_before_input_or_frontend(tmp_path, entry):
-    with patch("emuflow.timing.phase7c.read_tdm_schedule", side_effect=AssertionError("schedule opened")), patch(
+    with patch("emuflow_tools.stage_clients.timing_replay.read_tdm_schedule", side_effect=AssertionError("schedule opened")), patch(
         "emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")
     ), pytest.raises(EmuFlowError, match="only the OpenSTA"):
         if entry == "phase7c":

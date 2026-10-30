@@ -15,7 +15,7 @@ from emuflow.common.io import file_sha256, read_json
 from emuflow.partition.partition import (PARTITION_ASSIGNMENT_SCHEMA)
 from tests.native_partition_facts import (build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
-from emuflow.routing.phase4 import run_phase4
+from emuflow_tools.stage_clients.routing import run_phase4
 from emuflow.platform.platform import Platform
 from emuflow.routing.routing import SYSTEM_ROUTES_SCHEMA, normalize_route_constraints
 from tests.routing_validation_reference import demands_from_assignment, validate_system_routes

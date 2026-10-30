@@ -11,7 +11,7 @@ from tests.cross_layer_facts import coverage_contract_facts as build_cross_layer
 from emuflow.common.errors import ValidationError
 from tests.physical_coverage_fixture import build_cross_layer_physical_binding, validate_cross_layer_physical_binding
 from emuflow.partition.combinational_cut import semantic_contract_sha256
-from emuflow.scheduling.phase5 import validate_phase5
+from emuflow_tools.stage_clients.schedule import validate_phase5
 from emuflow.scheduling.phase5_timing_native import project_native_schedule_timing
 from emuflow.platform.platform import Platform
 from emuflow.routing.routing import normalize_route_constraints
@@ -343,15 +343,15 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             platform_path.write_text(
                 json.dumps(fixture.platform.to_dict()), encoding="utf-8"
             )
-            from emuflow.scheduling.phase5_native import run_native_phase5
+            from emuflow_tools.stage_clients.schedule_native import run_native_phase5
             from emuflow.scheduling.tdm import build_native_exact_schedule_request
             from tests.native_build import emuflow_native
             producer = build_native_exact_schedule_request(indexed_routes, fixture.platform)
-            with mock.patch("emuflow.scheduling.phase5_native.resolve_native_executable", return_value=str(emuflow_native())):
+            with mock.patch("emuflow_tools.stage_clients.schedule_native.resolve_native_executable", return_value=str(emuflow_native())):
                 run_native_phase5(producer, root)
             with (
                 mock.patch(
-                    "emuflow.scheduling.phase5._load_phase3_semantics",
+                    "emuflow_tools.stage_clients.schedule._load_phase3_semantics",
                     return_value=(indexed_routes, routes["semantic_contract"]),
                 ),
                 mock.patch.object(

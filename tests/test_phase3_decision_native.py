@@ -192,7 +192,7 @@ def test_production_phase3_uses_native_decision_before_final_transaction(decisio
     args, initial, _, _ = decision
     ir, platform, _, constraints, manifest, routes = args
     import json
-    from emuflow.partition.phase3 import run_phase3
+    from emuflow_tools.stage_clients.partition import run_phase3
     board, limits, routing = (tmp_path/name for name in ('board.json', 'constraints.json', 'routing.json'))
     board.write_text(json.dumps(platform.to_dict()))
     limits.write_text(json.dumps(constraints))

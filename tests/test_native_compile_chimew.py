@@ -65,7 +65,7 @@ def test_device_control_rejects_changed_source_and_invalid_device_facts(case, mu
 @pytest.mark.parametrize("fixed_case",[2,4],indirect=True)
 def test_native_preflight_reaches_the_same_chimew_checks_for_both_backends(case,tmp_path,request):
     from tests.chimew_admission_fixture import admitted
-    from emuflow.flow import multi_fpga_flow as flow
+    from emuflow_tools import flow_validation as flow
     backend=request.node.callspec.params['case']
     _source,state=admitted(case,tmp_path/'admission',backend)
     value=json.loads(state.read_text())
@@ -131,7 +131,7 @@ def test_native_chimew_controller_rejects_changed_admission_before_any_arm(case,
 
 def test_retired_stage_adapter_and_python_chimew_bodies_are_absent():
     from importlib.util import find_spec
-    from emuflow.flow import multi_fpga_flow as flow
+    from emuflow_tools import flow_validation as flow
     assert find_spec('emuflow.flow.native_compile_adapter') is None
     for name in ('_CompileContext','_compile_chimew_admission','_compile_split','_compile_physical','_run_selected_physical'):
         assert not hasattr(flow,name)

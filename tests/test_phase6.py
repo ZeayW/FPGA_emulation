@@ -35,7 +35,7 @@ from emuflow.transport.netlist import (
 )
 from tests.native_partition_facts import (build_partition_assignment, build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
-from emuflow.transport.phase6 import run_phase6, validate_phase6
+from emuflow_tools.stage_clients.transport import run_phase6, validate_phase6
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 
 def _indexed_split_schedule(root,value):
@@ -578,7 +578,7 @@ class Phase6Test(unittest.TestCase):
             write_assignment_index_fixture(assignment_path,large,assignment)
             write_tdm_schedule_storage(schedule_path, self.schedule)
             with mock.patch(
-                "emuflow.transport.phase6.EmuIR.load",
+                "emuflow_tools.stage_clients.transport.EmuIR.load",
                 side_effect=AssertionError(
                     "large Phase 6 must not materialize the EmuIR graph"
                 ),
@@ -700,7 +700,7 @@ class Phase6Test(unittest.TestCase):
                 return read_json(Path(path))
 
             with mock.patch(
-                "emuflow.transport.phase6.read_json", side_effect=read_without_schedule
+                "emuflow_tools.stage_clients.transport.read_json", side_effect=read_without_schedule
             ):
                 reused = validate_phase6(
                     ir_path,
@@ -980,8 +980,8 @@ class Phase6Test(unittest.TestCase):
                 )
             self.assertFalse((invalid_output / "pin_plan.json").exists())
             self.assertFalse(list(invalid_output.glob("pin_plan.*.sqlite")))
-            from emuflow.transport import phase6 as stage_host
-            from emuflow.transport import phase6_native as native_host
+            from emuflow_tools.stage_clients import transport as stage_host
+            from emuflow_tools.stage_clients import transport_native as native_host
             from emuflow.scheduling.tdm_schedule_storage import TypedScheduleEntrySequence
             from emuflow.transport.pin_plan_storage import PinPlanEntrySequence
             from emuflow.transport.position_hints_storage import PositionHintEntrySequence
@@ -1019,7 +1019,7 @@ class Phase6Test(unittest.TestCase):
             # The complete compiler constructs the same pinned stage directly
             # from typed owners, without the Python stage request producer.
             from tests.native_build import native_pipeline_api_test
-            from emuflow.transport.phase6_native import prepare_compile_policy
+            from emuflow_tools.stage_clients.transport_native import prepare_compile_policy
             periods = {clock["id"]: 1.0 for clock in self.ir.value["clocks"]}
             policy = prepare_compile_policy(root / "compile-policy", paths["ir"],
                 PLATFORM_PATH, clock_periods=periods, equivalence_cycles=4)

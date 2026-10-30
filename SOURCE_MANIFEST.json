@@ -148,7 +148,7 @@
       "stage": "R0 / Phase 3/4/5 cross-stage timing projection",
       "source_paths": [
         "src/python/emuflow/timing/sta.py",
-        "src/python/emuflow/timing/opensta.py",
+        "src/python/emuflow/timing/engine_runtime.py",
         "engines/openroad/src/sta",
         "engines/cudd",
         "scripts/opensta/export_timing_path_database.tcl",
@@ -174,8 +174,8 @@
         "src/core/routing/global_router.cpp",
         "src/core/routing/phase4.cpp",
         "src/core/routing/route_seal.cpp",
-        "src/python/emuflow/routing/phase4.py",
-        "src/python/emuflow/routing/phase4_native.py"
+        "tools/emuflow_tools/stage_clients/routing.py",
+        "tools/emuflow_tools/stage_clients/routing_native.py"
       ],
       "build_targets": [
         "emuflow_native"
@@ -191,7 +191,7 @@
       "source_paths": [
         "src/core/scheduling/exact_scheduler.cpp",
         "src/python/emuflow/scheduling/tdm.py",
-        "src/python/emuflow/scheduling/phase5.py",
+        "tools/emuflow_tools/stage_clients/schedule.py",
         "src/python/emuflow/scheduling/tdm_schedule_storage.py",
         "src/core/scheduling/phase5.cpp",
         "src/core/scheduling/schedule_store.cpp",
@@ -213,7 +213,7 @@
       "source_paths": [
         "src/python/emuflow/transport/pin_planning.py",
         "src/python/emuflow/transport/netlist.py",
-        "src/python/emuflow/transport/phase6.py",
+        "tools/emuflow_tools/stage_clients/transport.py",
         "src/core/physical/transport/synthesis.cpp",
         "src/core/physical/transport/fanout.cpp",
         "schemas/signal-position-hints-v1.schema.json",
@@ -263,7 +263,7 @@
       "stage": "Phase 7 / two Xilinx physical backends",
       "source_paths": [
         "src/python/emuflow/physical/physical_backend.py",
-        "src/python/emuflow/flow/multi_fpga_physical_flow.py",
+        "tools/emuflow_tools/stage_clients/physical.py",
         "schemas/physical-backend-v1.schema.json",
         "schemas/physical-partition-result-v1.schema.json"
       ],

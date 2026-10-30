@@ -291,7 +291,7 @@ adapter.
 | Component | Relationship to upstream work | Implementation entry point |
 | --- | --- | --- |
 | Yosys / ABC synthesis | Direct upstream tool execution; EmuFlow mapping profiles and import | [native frontend](../src/core/frontend/frontend.cpp) |
-| OpenSTA path extraction | Direct STA-engine integration; EmuFlow path contract | [opensta.py](../src/python/emuflow/timing/opensta.py) |
+| OpenSTA path extraction | Native input generation, engine execution and typed path import | [phase2.cpp](../src/core/timing/phase2.cpp) |
 | TritonPart | Upstream initializer integration; shared assignment/legality contracts | [partition.py](../src/python/emuflow/partition/partition.py) |
 | PATRON | EmuFlow path-aware K-way refinement initialized by TritonPart; not an external paper implementation | [patron_refiner.cpp](../src/core/partition/patron_refiner.cpp) |
 | Static Exact semantic analysis | EmuFlow structural dependency/capture traversal with a Python reference and native large-design implementation | [static_exact_analyzer.cpp](../src/core/partition/static_exact_analyzer.cpp) |
@@ -301,7 +301,7 @@ adapter.
 | Chimew position refinement | Paper Section 3.3.2 with explicitly documented implementation choices | [position_refiner.cpp](../src/core/transport/chimew/position_refiner.cpp) |
 | Chimew bank/channel assignment | Paper Section 3.4 two-stage min-cost-flow kernel | [chimew_bank_channel_assigner.cpp](../src/core/transport/chimew/bank_channel_assigner.cpp) |
 | Chimew integration | Native baseline physical/timing comparison, placed lookahead, pipeline publication and independent electrical/slot qualification | [chimew.cpp](../src/core/flow/chimew.cpp), [pipeline.cpp](../src/core/transport/chimew/pipeline.cpp) |
-| Split netlists and transport | EmuFlow runtime implementation and validation | [phase6.py](../src/python/emuflow/transport/phase6.py) |
+| Split netlists and transport | EmuFlow runtime implementation and validation | [phase6.py](../tools/emuflow_tools/stage_clients/transport.py) |
 | OpenPARF/RWRoute / Vivado | Physical-tool integrations selected by backend and device contract | [physical_backend.py](../src/python/emuflow/physical/physical_backend.py) |
 | RapidWright / RWRoute | Device-resource, site/BEL, and native routing integration | [rapidwright_provider.py](../src/python/emuflow/physical/rapidwright/rapidwright_provider.py) |
 | Global OpenSTA | EmuFlow timing-model exporter and upstream STA execution | [global_sta.py](../src/python/emuflow/timing/global_sta.py) |

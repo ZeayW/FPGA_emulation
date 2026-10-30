@@ -38,7 +38,6 @@ from emuflow.transport.chimew.chimew_qualification import (
     CHIMEW_QUALIFICATION_SCHEMA,
     canonical_sha256,
 )
-from emuflow.flow.cli import main
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json, write_json
 from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER
@@ -965,28 +964,12 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     hashlib.sha256((root / "out" / name).read_bytes()).hexdigest(),
                     name,
                 )
-            self.assertEqual(
-                main(
-                    [
-                        "pin-plan",
-                        "chimew-build",
-                        "--schedule",
-                        str(paths["schedule"]),
-                        "--platform",
-                        str(paths["platform"]),
-                        "--assignment-input",
-                        str(paths["assignment"]),
-                        "--electrical-map",
-                        str(paths["electrical"]),
-                        "--assigner",
-                        str(self.executable),
-                        "--out",
-                        str(root / "cli-out"),
-                    ]
-                ),
-                0,
+            repeated = run_chimew_phase6_adapter(
+                paths["schedule"], paths["platform"], paths["assignment"],
+                paths["electrical"], root / "repeated-out", executable=str(self.executable),
             )
-            self.assertTrue((root / "cli-out" / "adapter_report.json").is_file())
+            self.assertEqual(repeated["status"], "pass")
+            self.assertTrue((root / "repeated-out" / "adapter_report.json").is_file())
 
     def test_adapter_bundle_commit_preserves_previous_generation_on_failure(
         self,

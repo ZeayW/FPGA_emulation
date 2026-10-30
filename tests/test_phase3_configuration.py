@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.native_tools import resolve_native_executable
-from emuflow.partition.phase3_native import _configuration_value, write_request
+from emuflow_tools.stage_clients.partition_native import _configuration_value, write_request
 from tests.phase3_configuration_reference import write_request as reference_request
 from tests.test_phase3_pressure_native import inputs
 from tests.test_phase3_native_stage import options

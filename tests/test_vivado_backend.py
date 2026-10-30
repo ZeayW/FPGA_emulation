@@ -121,8 +121,8 @@ class VivadoBackendTest(unittest.TestCase):
         from contextlib import redirect_stderr
         from io import StringIO
         from emuflow.flow.cli import _build_parser
-        from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-        from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
+        from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
+        from emuflow_tools.stage_clients.physical import run_multi_fpga_physical_flow
         from emuflow.flow.native_compile import _request
         from tests.preflight_reference import _initial_context
 

@@ -26,7 +26,7 @@ def run_phase4(
     """Invoke the single native stage using artifact references and bounded policy."""
     if provider not in (None, GLOBAL_CANDIDATE_PROVIDER):
         raise ValueError(f"unsupported Phase 4 routing provider {provider!r}")
-    from emuflow.routing.phase4_native import run_native_phase4
+    from emuflow_tools.stage_clients.routing_native import run_native_phase4
     return run_native_phase4(assignment_path, platform_path, output_dir,
         timing_paths=timing_paths_path, constraints_path=constraints_path,
         frame_slots=frame_slots, max_iterations=max_iterations,
@@ -40,5 +40,5 @@ def validate_phase4(
     routes_path: Path,
     timing_paths_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    from emuflow.routing.phase4_native import validate_native_phase4
+    from emuflow_tools.stage_clients.routing_native import validate_native_phase4
     return validate_native_phase4(assignment_path, platform_path, routes_path, timing_paths_path)

@@ -21,7 +21,7 @@ from emuflow.common.tool_runtime import NativeToolProcess
 
 
 def pressure_kernel_inputs(ir, platform, clusters, constraints, timing, routes, *, timing_database_path):
-    from emuflow.partition.phase3_native import write_request
+    from emuflow_tools.stage_clients.partition_native import write_request
     records = clusters['clusters']
     if getattr(records, 'native_artifact', None) is None:
         raise ValidationError('native primary artifact reference is unavailable')

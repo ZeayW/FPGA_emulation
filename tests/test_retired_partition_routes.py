@@ -7,8 +7,8 @@ import pytest
 
 from emuflow.flow.cli import _build_parser
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.partition.phase3 import run_phase3
+from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
+from emuflow_tools.stage_clients.partition import run_phase3
 
 
 @pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart", "greedy"])
@@ -48,7 +48,7 @@ def test_chimew_and_fixed_binding_entry_remain_available():
         "multi-fpga", "compile", "design.v", "--out", "out", "--phase6-provider", "chimew",
     ])
     assert args.phase6_provider == "chimew"
-    from emuflow.transport.phase6 import run_phase6
+    from emuflow_tools.stage_clients.transport import run_phase6
     from emuflow.transport.chimew.chimew_phase6 import run_chimew_phase6_adapter
     assert callable(run_phase6) and callable(run_chimew_phase6_adapter)
 

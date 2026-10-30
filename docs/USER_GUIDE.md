@@ -50,7 +50,7 @@ or other reproducible input settings. Start from
 [`examples/designs/design.example.json`](../examples/designs/design.example.json):
 
 ```bash
-emuflow design prepare design.json --out design.run.json
+emuflow-tools design prepare design.json --out design.run.json
 emuflow run design.run.json --backend rapidwright --out runs/design
 ```
 
@@ -133,10 +133,11 @@ Use `emuflow multi-fpga compile --help` for the complete advanced option list.
 
 ## Validate a completed run
 
-Validate all published artifacts after the flow completes:
+Validate all published artifacts after the flow completes: Install the
+[optional tools](../tools/README.md) for independent audits and input preparation.
 
 ```bash
-emuflow multi-fpga validate --flow runs/counter --require-physical
+emuflow-tools validate-flow --flow runs/counter --require-physical
 ```
 
 Without `--require-physical`, validation accepts an upstream-only flow. Keep the
@@ -151,7 +152,7 @@ The run directory contains stage outputs and these top-level results:
 - `runtime/phase7c_report.json` contains global timing-stage results;
 - `runtime/qor_report.json` contains final quality-of-result evidence.
 
-A complete run must pass `emuflow multi-fpga validate --require-physical`.
+A complete run must pass `emuflow-tools validate-flow --require-physical`.
 Per-FPGA timing reports describe local implementation. The Phase 7C report
 combines physical measurements with scheduled cross-FPGA communication events.
 See [validation requirements](VALIDATION.md) for the acceptance checks and
@@ -213,8 +214,8 @@ physical flow.
 Check the installed tools and device data:
 
 ```bash
-emuflow environment check --backend rapidwright
-emuflow environment check --backend vivado
+emuflow-tools environment check --backend rapidwright
+emuflow-tools environment check --backend vivado
 emuflow-native check-runtime
 ```
 

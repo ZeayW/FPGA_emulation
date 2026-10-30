@@ -6,15 +6,15 @@ import pytest
 
 from emuflow.flow.cli import _build_parser
 from emuflow.common.errors import ValidationError
-from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
 from emuflow.flow.native_compile import _request
 from emuflow.partition.partition import (DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION)
-from emuflow.partition.phase3 import run_phase3
-from emuflow.partition.phase3_native import _configuration_value
+from emuflow_tools.stage_clients.partition import run_phase3
+from emuflow_tools.stage_clients.partition_native import _configuration_value
 
 
 @pytest.mark.parametrize("command", [
-    ["phase3", "--ir", "ir", "--platform", "board", "--out", "out"],
+    ["multi-fpga", "compile", "--prepared-frontend", "frontend", "--platform", "board", "--out", "out"],
     ["multi-fpga", "compile", "design.v", "--out", "out"],
 ])
 def test_cli_default_and_explicit_cut_do_not_choose_different_versions(command):

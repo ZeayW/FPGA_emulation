@@ -8,8 +8,8 @@ import pytest
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
-from emuflow.partition.phase3 import run_phase3, validate_phase3_indexed
-from emuflow.partition.phase3_native import run as native_run
+from emuflow_tools.stage_clients.partition import run_phase3, validate_phase3_indexed
+from emuflow_tools.stage_clients.partition_native import run as native_run
 from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.test_phase3_pressure_native import inputs
 
@@ -55,9 +55,12 @@ def test_native_phase3_runs_complete_stage_with_independent_record_validation(in
     # independently of the producer's cluster selection and timing decision.
     assert validate_phase3_indexed(ir.path, board, actual/'phase3_report.json', actual/'assignment.sqlite')['status'] == 'pass'
     from emuflow.flow.cli import main
-    assert main(['partition', 'validate', str(actual/'assignment.sqlite'),
-                 '--phase3-report', str(actual/'phase3_report.json'),
-                 '--ir', str(ir.path), '--platform', str(board)]) == 0
+    # The independent positive record validation above remains mandatory.
+    # Production exposes complete compile only; its old audit CLI is retired.
+    with pytest.raises(SystemExit):
+        main(['partition', 'validate', str(actual/'assignment.sqlite'),
+              '--phase3-report', str(actual/'phase3_report.json'),
+              '--ir', str(ir.path), '--platform', str(board)])
     with assignment_view(actual/'assignment.json') as generated:
         assert len(generated['instance_assignment']) == len(inputs[0][0].value['instances'])
 
@@ -65,7 +68,7 @@ def test_native_phase3_runs_complete_stage_with_independent_record_validation(in
 @pytest.mark.parametrize('damage', ['version', 'generation', 'capacity', 'timing-seal', 'solution', 'existing'])
 def test_complete_stage_rejects_invalid_sources_without_publishing(inputs, tmp_path, damage):
     import subprocess
-    from emuflow.partition.phase3_native import write_request
+    from emuflow_tools.stage_clients.partition_native import write_request
     from emuflow.common.native_tools import native_file_generation, resolve_native_executable
     ir, board, config = options(inputs, tmp_path)
     request = write_request(tmp_path/'configuration', ir.path, board, **config)
@@ -97,7 +100,7 @@ def test_complete_stage_rejects_invalid_sources_without_publishing(inputs, tmp_p
 
 
 def test_public_compact_api_uses_complete_native_stage_without_python_phase_bodies(inputs, tmp_path):
-    from emuflow.partition.phase3 import run_phase3 as public
+    from emuflow_tools.stage_clients.partition import run_phase3 as public
     ir, board, config = options(inputs, tmp_path)
     import emuflow.partition.partition as partition
     for name in ('build_clusters', 'build_partition_assignment', 'validate_partition_artifacts_online'):
@@ -154,7 +157,7 @@ def test_complete_stage_keeps_search_deadline_and_reaps_native_child(inputs, tmp
     import os
     import subprocess
     import sys
-    from emuflow.partition.phase3_native import write_request
+    from emuflow_tools.stage_clients.partition_native import write_request
     from emuflow.common.native_tools import native_file_generation, resolve_native_executable
     ir, board, config = options(inputs, tmp_path)
     pid_file = tmp_path/'native-child.pid'

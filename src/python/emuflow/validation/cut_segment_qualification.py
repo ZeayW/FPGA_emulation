@@ -9,7 +9,7 @@ from emuflow.common.paths import DATA_ROOT
 from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable
 from emuflow.common.tool_runtime import NativeToolProcess
 from emuflow.storage.store_publication import bind_store_source, require_store_sources_unchanged
-from emuflow.timing.opensta import DEFAULT_TIMING_MODEL
+from emuflow.timing.engine_runtime import DEFAULT_TIMING_MODEL
 
 CUT_SEGMENT_INDEXED_QUALIFICATION_SCHEMA = 'emuflow.cut-segment-timing-qualification/v2'
 CUT_SEGMENT_QUALIFICATION_PROVIDER = 'emuir-structural-cut-segment-qualification-v1'

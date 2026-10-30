@@ -220,7 +220,7 @@ def run_phase5(
     )
     if schedule is None:
         raise ValidationError("Phase 5 requires the current typed RouteStore and indexed Static Exact contract")
-    from emuflow.scheduling.phase5_native import run_native_phase5
+    from emuflow_tools.stage_clients.schedule_native import run_native_phase5
 
     return run_native_phase5(schedule, output_dir)
 

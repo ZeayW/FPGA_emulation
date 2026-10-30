@@ -13,7 +13,7 @@ import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256
 from emuflow.timing.indexed_timing import IndexedTimingView
-from emuflow.timing.opensta import validate_timing_model_coverage
+from emuflow_tools.stage_clients.opensta import validate_timing_model_coverage
 from tests.routed_opensta_stage_reference import RoutedTimingModel
 from tests.routed_opensta_reference import build_xilinx_routed_opensta_indexed_inputs
 from tests.test_xilinx_opensta import _indexed_routed_fixture
@@ -78,7 +78,7 @@ def test_empty_endpoint_population_is_an_explicit_zero_delay_model(tmp_path):
 
 
 def test_indexed_runner_keeps_native_coverage_bounded_in_its_final_report(tmp_path):
-    from emuflow.timing.opensta import run_opensta_path_database
+    from emuflow_tools.stage_clients.opensta import run_opensta_path_database
     mapped, timing, output = fixture(tmp_path)
     model, _ = stage(mapped, timing, output)
 
@@ -90,10 +90,10 @@ def test_indexed_runner_keeps_native_coverage_bounded_in_its_final_report(tmp_pa
         Path(environment["EMUFLOW_STA_OUTPUT"]).write_text("\t".join(fields)+"\n"+"\t".join(row)+"\n")
         return subprocess.CompletedProcess(argv, 0, stdout="test engine")
 
-    with patch("emuflow.timing.opensta.resolve_native_executable", return_value="test-sta"), \
-         patch("emuflow.timing.opensta.require_opensta_engine", return_value={"version": "test"}), \
-         patch("emuflow.timing.opensta.run_with_bounded_output", side_effect=engine), \
-         patch("emuflow.timing.opensta._sealed_string_set_summary", side_effect=AssertionError("expanded model summary")), \
+    with patch("emuflow_tools.stage_clients.opensta.resolve_native_executable", return_value="test-sta"), \
+         patch("emuflow_tools.stage_clients.opensta.require_opensta_engine", return_value={"version": "test"}), \
+         patch("emuflow_tools.stage_clients.opensta.run_with_bounded_output", side_effect=engine), \
+         patch("emuflow_tools.stage_clients.opensta._sealed_string_set_summary", side_effect=AssertionError("expanded model summary")), \
          patch.object(type(model["cells"]), "items", side_effect=AssertionError("expanded model")):
         report = run_opensta_path_database(output, tmp_path/"paths.json", clocks={"clk": 10},
                                           _timing_model=model)
@@ -204,7 +204,7 @@ def test_borrowed_model_rejects_replacement_and_wrong_graph(tmp_path):
 
 
 def test_bound_model_cannot_fall_back_to_inline_graph_loading(tmp_path):
-    from emuflow.timing.opensta import run_opensta_path_database
+    from emuflow_tools.stage_clients.opensta import run_opensta_path_database
     mapped, timing, output = fixture(tmp_path)
     model, _ = stage(mapped, timing, output)
     from emuflow.ir.ir import EmuIR
@@ -216,18 +216,26 @@ def test_bound_model_cannot_fall_back_to_inline_graph_loading(tmp_path):
         run_opensta_path_database(legacy, tmp_path / "paths.json", _timing_model=model)
 
 
-def test_current_opensta_cli_uses_the_typed_source(tmp_path):
+def test_optional_routed_opensta_client_uses_typed_sources_and_old_cli_is_retired(tmp_path):
     from emuflow.flow.cli import main
-    args = ["arch", "run-xilinx-opensta", "--mapped-index", str(tmp_path / "mapped.sqlite"),
-            "--routed-timing", str(tmp_path / "timing.json"), "--output", str(tmp_path / "paths.json"),
-            "--summary", str(tmp_path / "summary.json"), "--clock-period", "clk=10"]
-    with patch("emuflow.flow.cli.run_xilinx_routed_opensta", return_value={"status": "pass"}) as run:
-        assert main(args) == 0
-    assert run.call_args.args[:2] == (tmp_path / "mapped.sqlite", tmp_path / "timing.json")
-    with pytest.raises(SystemExit):
-        main(["arch", "run-xilinx-opensta", "--mapped-json", "retired.json", "--routed-timing", "t.json", "--output", "p.json", "--summary", "s.json", "--clock-period", "clk=10"])
-
-
+    from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta
+    mapped, timing, _ = fixture(tmp_path)
+    output, summary = tmp_path / "paths.json", tmp_path / "summary.json"
+    with patch("emuflow.timing.xilinx_opensta._invoke", return_value={"status": "pass"}) as run:
+        assert run_xilinx_routed_opensta(mapped, timing, output, summary, clocks={"clk": 10.0}, executable=__import__("sys").executable) == {"status": "pass"}
+    assert run.call_args.args[0] == "run"
+    sources = {role: path for role, path, _ in run.call_args.args[1]}
+    assert sources["mapped"] == mapped
+    assert sources["timing"] == timing
+    assert run.call_args.args[2]["clocks"] == {"clk": 10.0}
+    for input_name in ("--mapped-index", "--mapped-json"):
+        with pytest.raises(SystemExit):
+            main(["arch", "run-xilinx-opensta", input_name, str(mapped),
+                  "--routed-timing", str(timing), "--output", str(output),
+                  "--summary", str(summary), "--clock-period", "clk=10"])
+    with pytest.raises(TypeError, match="mapped_json"):
+        run_xilinx_routed_opensta(mapped_json=mapped, timing_path=timing,
+                                 output_path=output, summary_path=summary, clocks={"clk": 10.0})
 
 
 def test_direct_twenty_thousand_unique_delays_keep_python_bounded(tmp_path):

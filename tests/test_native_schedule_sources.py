@@ -80,7 +80,7 @@ def test_producer_rejects_source_and_report_aliases_before_writing(tmp_path, mon
     case, routes = _case(tmp_path, False, False)
     install_runtime(tmp_path, monkeypatch)
     producer = build_native_exact_schedule_request(routes, case.platform)
-    from emuflow.scheduling.phase5_native import _write_inputs
+    from emuflow_tools.stage_clients.schedule_native import _write_inputs
     request_root = tmp_path / 'request'
     request_root.mkdir()
     inputs = _write_inputs(producer, request_root)

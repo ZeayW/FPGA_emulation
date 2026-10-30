@@ -6,8 +6,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.scheduling.phase5 import validate_phase5_generation
-from emuflow.scheduling.phase5_native import run_native_phase5
+from emuflow_tools.stage_clients.schedule import validate_phase5_generation
+from emuflow_tools.stage_clients.schedule_native import run_native_phase5
 from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from tests.native_schedule_case import _case
@@ -54,7 +54,7 @@ def test_whole_native_stage_matches_reference_and_has_one_production_owner(tmp_p
 
 @pytest.mark.parametrize("damage", ["crc", "version", "truncated", "trailing", "missing-route", "replaced-source"])
 def test_stage_request_rejection_keeps_prior_complete_generation(tmp_path, monkeypatch, damage):
-    from emuflow.scheduling import phase5_native
+    from emuflow_tools.stage_clients import schedule_native as phase5_native
     from emuflow.common.native_protocol import CheckedRequestWriter
 
     case, routes, producer = current_case(tmp_path)

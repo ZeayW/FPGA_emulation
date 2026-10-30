@@ -71,7 +71,7 @@ def run_phase3(
         raise ValidationError('Phase 3 requires the unified native executable')
     if not is_emuir_sqlite(Path(ir_path)) or not is_compact_emuir(Path(ir_path)):
         raise ValidationError('Phase 3 requires compact EmuIR storage; the Python graph route is retired')
-    from emuflow.partition.phase3_native import run
+    from emuflow_tools.stage_clients.partition_native import run
     options = dict(constraints_path=constraints_path, seed=seed, min_used_fpgas=min_used_fpgas,
         balance_tolerance=balance_tolerance, provider=provider, openroad=openroad,
         tritonpart_solution=tritonpart_solution, net_weights_path=net_weights_path,

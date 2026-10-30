@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 from emuflow.flow.benchmark_inputs import BenchmarkRun
 from emuflow.common.io import write_json
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
-from emuflow.flow.designs.nvdla_memory import (
+from emuflow_tools.designs.nvdla_memory import (
     BLACKBOX_MEMORY_POLICY,
     MEMORY_POLICIES,
     PHYSICAL_MEMORY_POLICY,
@@ -27,10 +27,7 @@ from emuflow.flow.designs.nvdla_memory import (
 )
 
 
-from emuflow.common.paths import DATA_ROOT
-
-CATALOG_PATH = DATA_ROOT / "designs/nvdla-catalog.json"
-COMPAT_PATH = DATA_ROOT / "designs/nvdla_compat.v"
+from emuflow.flow.designs.nvdla_contract import CATALOG_PATH, COMPAT_PATH, _catalog_entry
 PREPARATION_SCHEMA = "emuflow.nvdla-preparation/v1"
 GENERATOR_ID = "nvdla-shared-frontend-v2"
 DEFINES = [
@@ -121,14 +118,6 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _catalog_entry(catalog_path: Path) -> Dict[str, Any]:
-    value = json.loads(catalog_path.read_text(encoding="utf-8"))
-    if value.get("schema") != "emuflow.rtl-catalog/v1":
-        raise ValueError("RTL catalog schema is invalid")
-    matches = [item for item in value.get("designs", []) if item.get("id") == "nvdla"]
-    if len(matches) != 1:
-        raise ValueError("RTL catalog must contain exactly one NVDLA entry")
-    return matches[0]
 
 
 def _validate_pinned_source(

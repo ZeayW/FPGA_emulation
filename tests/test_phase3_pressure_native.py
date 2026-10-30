@@ -12,7 +12,7 @@ import pytest
 
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.io import read_json, write_json
-from emuflow.timing.opensta import OPENSTA_PROVIDER
+from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
 from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters, build_partition_assignment)
 from emuflow.partition.partition_ir import load_partition_ir
@@ -241,7 +241,7 @@ def test_native_model_summary_schema(inputs,tmp_path):
 
 @pytest.mark.parametrize("explicit_unified", [False, True])
 def test_phase3_production_selects_native_model_and_keeps_independent_validation(inputs,tmp_path,explicit_unified):
-    from emuflow.partition.phase3 import run_phase3
+    from emuflow_tools.stage_clients.partition import run_phase3
     args,initial,timing=inputs
     platform=tmp_path/'platform.json'; write_json(platform,args[1].to_dict())
     routes=tmp_path/'routes.json'; write_json(routes,args[5])

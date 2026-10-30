@@ -18,7 +18,7 @@ from emuflow.validation.cut_segment_qualification import (
 )
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.io import read_json, write_json
-from emuflow.timing.opensta import (
+from emuflow_tools.stage_clients.opensta import (
     DEFAULT_TIMING_MODEL,
     classify_through_net_timing_endpoints,
     load_timing_model,

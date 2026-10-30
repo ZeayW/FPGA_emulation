@@ -111,10 +111,11 @@ emuflow run examples/rtl/counter.v --top counter --clock clk=10 \
 
 ## Check a completed result
 
-After a run finishes, validate its published result:
+After a run finishes, validate its published result: Install the
+[optional tools](../tools/README.md) for independent audits and input preparation.
 
 ```bash
-emuflow multi-fpga validate --flow runs/counter --require-physical
+emuflow-tools validate-flow --flow runs/counter --require-physical
 ```
 
 This command checks placement, routing, timing and the completed physical result.
@@ -126,7 +127,7 @@ explicit input/output timing groups or additional compile options can use
 [the design configuration template](../examples/designs/design.example.json):
 
 ```bash
-emuflow design prepare design.json --out design.run.json
+emuflow-tools design prepare design.json --out design.run.json
 emuflow run design.run.json --backend rapidwright --out runs/design
 ```
 

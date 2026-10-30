@@ -1,7 +1,7 @@
-"""Public compile request API and independent published-flow validation.
+"""Independent audits of published complete-flow artifacts.
 
-Stage order, execution, Chimew comparison and publication belong to the native
-controller. This module submits configuration and validates published results.
+Production stage execution, Chimew comparison and publication belong to the
+native controller. These checks reopen the original published artifact owners.
 """
 
 from __future__ import annotations
@@ -14,19 +14,19 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
-from emuflow.flow.multi_fpga_physical_flow import validate_multi_fpga_physical_report
-from emuflow.partition.phase3 import validate_phase3_indexed
-from emuflow.routing.phase4 import validate_phase4
-from emuflow.scheduling.phase5 import validate_phase5
-from emuflow.transport.phase6 import validate_phase6
-from emuflow.timing.phase7c import run_phase7c
+from emuflow_tools.stage_clients.physical import validate_multi_fpga_physical_report
+from emuflow_tools.stage_clients.partition import validate_phase3_indexed
+from emuflow_tools.stage_clients.routing import validate_phase4
+from emuflow_tools.stage_clients.schedule import validate_phase5
+from emuflow_tools.stage_clients.transport import validate_phase6
+from emuflow_tools.stage_clients.timing_replay import run_phase7c
 from emuflow.physical.physical_summary_storage import read_physical_summary
 from emuflow.partition.partition import CUT_MODE_STATIC_EXACT
 from emuflow.platform.platform import Platform
 from emuflow.transport.runtime import validate_virtual_runtime
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.routing.phase4 import GLOBAL_CANDIDATE_PROVIDER
+from emuflow_tools.stage_clients.routing import GLOBAL_CANDIDATE_PROVIDER
 
 MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v2"
 MULTI_FPGA_FLOW_PROVIDER = (
@@ -884,103 +884,3 @@ def validate_multi_fpga_flow_bundle(
         ),
         "physical_required": require_physical,
     }
-
-from emuflow.flow.compile_options import COMPILE_DEFAULTS
-
-
-def run_multi_fpga_flow(
-    platform_path: Path = COMPILE_DEFAULTS['platform_path'],
-    output_dir: Optional[Path] = COMPILE_DEFAULTS['output_dir'],
-    *,
-    sources: Iterable[Path] = COMPILE_DEFAULTS['sources'],
-    include_dirs: Iterable[Path] = COMPILE_DEFAULTS['include_dirs'],
-    defines: Iterable[str] = COMPILE_DEFAULTS['defines'],
-    source_checksums: Optional[Dict[str, str]] = COMPILE_DEFAULTS['source_checksums'],
-    top: Optional[str] = COMPILE_DEFAULTS['top'],
-    clocks: Iterable[str] = COMPILE_DEFAULTS['clocks'],
-    yosys_json: Optional[Path] = COMPILE_DEFAULTS['yosys_json'],
-    prepared_frontend: Optional[Path] = COMPILE_DEFAULTS['prepared_frontend'],
-    prepared_timing: Optional[Path] = COMPILE_DEFAULTS['prepared_timing'],
-    yosys: Optional[str] = COMPILE_DEFAULTS['yosys'],
-    mapping_profile: str = COMPILE_DEFAULTS['mapping_profile'],
-    xilinx_mapping_strategy: Optional[str] = COMPILE_DEFAULTS['xilinx_mapping_strategy'],
-    partition_constraints: Optional[Path] = COMPILE_DEFAULTS['partition_constraints'],
-    partition_provider: str = COMPILE_DEFAULTS['partition_provider'],
-    seed: int = COMPILE_DEFAULTS['seed'],
-    min_used_fpgas: Optional[int] = COMPILE_DEFAULTS['min_used_fpgas'],
-    balance_tolerance: Optional[float] = COMPILE_DEFAULTS['balance_tolerance'],
-    openroad: Optional[str] = COMPILE_DEFAULTS['openroad'],
-    tritonpart_solution: Optional[Path] = COMPILE_DEFAULTS['tritonpart_solution'],
-    patron_refiner: Optional[str] = COMPILE_DEFAULTS['patron_refiner'],
-    patron_max_moves: Optional[int] = COMPILE_DEFAULTS['patron_max_moves'],
-    patron_algorithm_version: int = COMPILE_DEFAULTS['patron_algorithm_version'],
-    partition_timeout_seconds: int = COMPILE_DEFAULTS['partition_timeout_seconds'],
-    partition_seed_attempts: int = COMPILE_DEFAULTS['partition_seed_attempts'],
-    partition_num_initial_solutions: int = COMPILE_DEFAULTS['partition_num_initial_solutions'],
-    partition_num_best_initial_solutions: int = COMPILE_DEFAULTS['partition_num_best_initial_solutions'],
-    partition_repair_min_used_fpgas: bool = COMPILE_DEFAULTS['partition_repair_min_used_fpgas'],
-    cut_mode: str = COMPILE_DEFAULTS['cut_mode'],
-    max_cross_fpga_dependency_depth: int = (
-        COMPILE_DEFAULTS['max_cross_fpga_dependency_depth']
-    ),
-    static_exact_candidate_policy: str = COMPILE_DEFAULTS['static_exact_candidate_policy'],
-    timing_driven: bool = COMPILE_DEFAULTS['timing_driven'],
-    clock_periods: Optional[Dict[str, float]] = COMPILE_DEFAULTS['clock_periods'],
-    timing_io: Optional[Mapping[str, Any]] = COMPILE_DEFAULTS['timing_io'],
-    timing_model: Path = COMPILE_DEFAULTS['timing_model'],
-    architecture_timing_db: Optional[Path] = COMPILE_DEFAULTS['architecture_timing_db'],
-    opensta: Optional[str] = COMPILE_DEFAULTS['opensta'],
-    sta_max_paths: int = COMPILE_DEFAULTS['sta_max_paths'],
-    timing_criticality_scale: float = COMPILE_DEFAULTS['timing_criticality_scale'],
-    timing_criticality_exponent: float = COMPILE_DEFAULTS['timing_criticality_exponent'],
-    route_constraints: Optional[Path] = COMPILE_DEFAULTS['route_constraints'],
-    board_link_timing_db: Optional[Path] = COMPILE_DEFAULTS['board_link_timing_db'],
-    transport_cost_db: Optional[Path] = COMPILE_DEFAULTS['transport_cost_db'],
-    timing_paths: Optional[Path] = COMPILE_DEFAULTS['timing_paths'],
-    router: Optional[str] = COMPILE_DEFAULTS['router'],
-    route_provider: Optional[str] = COMPILE_DEFAULTS['route_provider'],
-    route_candidate_workers: int = COMPILE_DEFAULTS['route_candidate_workers'],
-    frame_slots: Optional[int] = COMPILE_DEFAULTS['frame_slots'],
-    optimize_frame_slots: bool = COMPILE_DEFAULTS['optimize_frame_slots'],
-    route_max_iterations: Optional[int] = COMPILE_DEFAULTS['route_max_iterations'],
-    tdm_provider: Optional[str] = COMPILE_DEFAULTS['tdm_provider'],
-
-    simulation_frames: int = COMPILE_DEFAULTS['simulation_frames'],
-    equivalence_cycles: int = COMPILE_DEFAULTS['equivalence_cycles'],
-    equivalence_seed: int = COMPILE_DEFAULTS['equivalence_seed'],
-    phase6_provider: str = COMPILE_DEFAULTS['phase6_provider'],
-    phase6_chimew_region_count: int = COMPILE_DEFAULTS['phase6_chimew_region_count'],
-    phase6_chimew_grouper: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_grouper'],
-    phase6_chimew_refiner: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_refiner'],
-    phase6_chimew_rudy: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_rudy'],
-    phase6_chimew_assigner: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_assigner'],
-    physical: bool = COMPILE_DEFAULTS['physical'],
-    physical_backend: str = COMPILE_DEFAULTS['physical_backend'],
-    physical_architecture: Optional[Path] = COMPILE_DEFAULTS['physical_architecture'],
-    physical_openparf_install: Optional[Path] = COMPILE_DEFAULTS['physical_openparf_install'],
-    physical_openparf_python: Optional[Path] = COMPILE_DEFAULTS['physical_openparf_python'],
-    physical_seed: int = COMPILE_DEFAULTS['physical_seed'],
-    physical_vivado: Optional[str] = COMPILE_DEFAULTS['physical_vivado'],
-    physical_vivado_place_directive: str = COMPILE_DEFAULTS['physical_vivado_place_directive'],
-    physical_vivado_route_directive: str = COMPILE_DEFAULTS['physical_vivado_route_directive'],
-    physical_rapidwright_jar: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_jar'],
-    physical_rapidwright_java: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_java'],
-    physical_rapidwright_java_source: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_java_source'],
-    physical_rapidwright_device_data: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_device_data'],
-    physical_rapidwright_timing_data: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_timing_data'],
-    physical_rapidwright_opensta: Optional[str] = COMPILE_DEFAULTS['physical_rapidwright_opensta'],
-    physical_rapidwright_native_constraints: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_native_constraints'],
-    physical_rapidwright_provider_manifest: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_provider_manifest'],
-    physical_workers: int = COMPILE_DEFAULTS['physical_workers'],
-    global_sta_executable: Optional[str] = COMPILE_DEFAULTS['global_sta_executable'],
-    global_timing_engine: str = COMPILE_DEFAULTS['global_timing_engine'],
-) -> Dict[str, Any]:
-    """Submit a bounded request to the sole native production controller.
-
-    The native controller owns all stages, Chimew comparison and final report
-    publication. This API only encodes bounded options and reads summaries.
-    """
-    options = locals()
-    from emuflow.flow.native_compile import run_native_multi_fpga_flow
-
-    return run_native_multi_fpga_flow(**options)

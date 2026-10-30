@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.transport.phase6_native import prepare_compile_policy
+from emuflow_tools.stage_clients.transport_native import prepare_compile_policy
 from emuflow.transport.runtime import build_virtual_runtime
 from emuflow.common.errors import ValidationError
 from emuflow.common.native_tools import native_file_generation

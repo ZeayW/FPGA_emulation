@@ -19,7 +19,7 @@ from emuflow.storage.store_publication import (
 )
 from emuflow.common.io import file_sha256, read_json, write_json
 from emuflow.ir.ir import EmuIR
-from emuflow.timing.opensta import (
+from emuflow_tools.stage_clients.opensta import (
     DEFAULT_TIMING_MODEL,
     load_timing_model,
     require_opensta_engine,

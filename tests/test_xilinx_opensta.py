@@ -11,7 +11,7 @@ import pytest
 import tests.routed_opensta_reference as xilinx_opensta
 import tests.routed_timing_adapter as xilinx_timing
 from emuflow.common.errors import ValidationError
-from emuflow.timing.opensta import render_opensta_liberty
+from emuflow_tools.stage_clients.opensta import render_opensta_liberty
 from emuflow.timing.xilinx_opensta import (
     run_xilinx_routed_opensta,
 )

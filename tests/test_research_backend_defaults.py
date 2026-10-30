@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from emuflow.flow.cli import _build_parser, _dispatch
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
+from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
+from emuflow_tools.stage_clients.physical import run_multi_fpga_physical_flow
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,28 +18,18 @@ XILINX_PROFILE = "xilinx-ultrascaleplus-open-v1"
 
 
 class ResearchBackendDefaultsTest(unittest.TestCase):
-    def test_cli_defaults_reach_compile_and_physical_dispatch(self):
-        cases = [
-            (
-                ["multi-fpga", "compile", "design.v", "--platform", "board.json", "--out", "out"],
-                "run_multi_fpga_flow",
-                {"physical_backend": "rapidwright", "mapping_profile": XILINX_PROFILE},
-            ),
-            (
-                ["multi-fpga", "physical", "--split", "split", "--platform", "board.json",
-                 "--schedule", "schedule.json", "--out", "out"],
-                "run_multi_fpga_physical_flow",
-                {"backend": "rapidwright"},
-            ),
-        ]
-        for command, target, expected in cases:
-            with self.subTest(command=command[:2]), patch(
-                "emuflow.flow.cli." + target, return_value={"status": "pass", "summary": {"status": "pass"}}
+    def test_cli_defaults_reach_the_native_complete_flow_controller(self):
+        base = ["multi-fpga", "compile", "design.v", "--platform", "board.json", "--out", "out"]
+        for flags, backend in (([], "rapidwright"), (["--physical-backend", "vivado"], "vivado")):
+            with self.subTest(backend=backend), patch(
+                "emuflow.flow.native_compile.run_native_multi_fpga_flow",
+                return_value={"status": "pass"},
             ) as run, patch("emuflow.flow.cli._print_json"):
-                args = _build_parser().parse_args(command)
-                self.assertEqual(_dispatch(args), 0)
-                for name, value in expected.items():
-                    self.assertEqual(run.call_args.kwargs[name], value)
+                self.assertEqual(_dispatch(_build_parser().parse_args(base + flags)), 0)
+                self.assertEqual(run.call_args.kwargs["physical_backend"], backend)
+                self.assertEqual(run.call_args.kwargs["mapping_profile"], XILINX_PROFILE)
+        with self.assertRaises(SystemExit):
+            _build_parser().parse_args(["multi-fpga", "physical", "--split", "split"])
 
     def test_retired_vtr_profile_and_synthesis_command_are_rejected(self):
         from contextlib import redirect_stderr
@@ -75,7 +65,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 _build_parser().parse_args(command)
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.flow.multi_fpga_physical_flow._small",
+            "emuflow_tools.stage_clients.physical._source",
             side_effect=AssertionError("artifact read before backend rejection"),
         ):
             root = Path(temporary)
@@ -96,17 +86,24 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         self.assertEqual(set(descriptor["properties"]["id"]["enum"]), set(PHYSICAL_BACKENDS))
         self.assertEqual(set(result["properties"]["identity"]["properties"]["backend"]["enum"]), set(PHYSICAL_BACKENDS))
 
-    def test_explicit_physical_worker_selection_reaches_dispatch(self):
-        args = _build_parser().parse_args([
-            "multi-fpga", "physical", "--split", "split", "--platform", "board.json",
-            "--schedule", "schedule.json", "--out", "worker",
-            "--fpga", "fpga2", "--fpga", "fpga1",
-        ])
-        with patch(
-            "emuflow.flow.cli.run_multi_fpga_physical_flow", return_value={"summary": {}}
-        ) as run, patch("emuflow.flow.cli._print_json"):
-            self.assertEqual(_dispatch(args), 0)
-        self.assertEqual(run.call_args.kwargs["fpga_ids"], ["fpga2", "fpga1"])
+    def test_optional_physical_client_preserves_selected_fpga_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "split").mkdir()
+            for path in (root / "split/manifest.json", root / "board.json", root / "schedule.json"):
+                path.write_text("{}")
+            with patch("emuflow_tools.stage_clients.physical._backend_sources", return_value=([], {})), patch(
+                "emuflow_tools.stage_clients.physical._invoke", return_value={"summary": {}},
+            ) as run:
+                run_multi_fpga_physical_flow(
+                    root / "split", root / "board.json", root / "schedule.json", root / "physical",
+                    backend="vivado", fpga_ids=["fpga2", "fpga1"], workers=2,
+                )
+            request = run.call_args.args[0]
+            self.assertEqual(request["selected_fpgas"], ["fpga2", "fpga1"])
+            self.assertEqual(request["workers"], 2)
+            self.assertEqual(request["backend"], "vivado")
+            self.assertFalse((root / "physical").exists())
 
     def test_python_api_defaults_match_cli(self):
         for function, parameter, expected in [
@@ -118,10 +115,13 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                 self.assertEqual(inspect.signature(function).parameters[parameter].default, expected)
 
     def test_compile_submits_xilinx_policy_without_profile_override(self):
-        with patch("emuflow.flow.native_compile.run_native_multi_fpga_flow", return_value={"status": "pass"}) as controller:
-            run_multi_fpga_flow(output_dir=Path("out"), sources=[ROOT / "examples/rtl/counter.v"], top="counter", clocks=["clk"], clock_periods={"clk": 10.0})
-        self.assertEqual(controller.call_args.kwargs["mapping_profile"], XILINX_PROFILE)
-        self.assertEqual(controller.call_args.kwargs["sources"], [ROOT / "examples/rtl/counter.v"])
+        from emuflow.flow.native_compile import _request
+        request, _ = _request((), {
+            "output_dir": Path("out"), "sources": [ROOT / "examples/rtl/counter.v"],
+            "top": "counter", "clocks": ["clk"], "clock_periods": {"clk": 10.0},
+        })
+        self.assertEqual(request["options"]["mapping_profile"], XILINX_PROFILE)
+        self.assertEqual(request["options"]["sources"], [str(ROOT / "examples/rtl/counter.v")])
 
     def test_retired_generic_upstream_is_rejected_before_any_work(self):
         from contextlib import redirect_stderr
@@ -149,7 +149,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
 
     def test_default_physical_requires_rapidwright_inputs_without_fallback(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.flow.multi_fpga_physical_flow._invoke"
+            "emuflow_tools.stage_clients.physical._invoke"
         ) as vpr:
             root = Path(temporary)
             with self.assertRaisesRegex(ValidationError, "openparf-native requires source-sealed"):

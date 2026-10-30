@@ -15,7 +15,7 @@ from emuflow.physical.openparf.openparf import _runtime_location
 from emuflow.physical.openparf import openparf_native_driver
 from emuflow.physical.rapidwright.xilinx_rwroute import RAPIDWRIGHT_TIMING_CONTRACT
 from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
-from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT, _runtime_data_path
+from emuflow.timing.engine_runtime import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT, _runtime_data_path
 
 _FIELDS=('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
 

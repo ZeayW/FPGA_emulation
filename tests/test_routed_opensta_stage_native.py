@@ -28,7 +28,7 @@ def run(root,**kwargs):
 
 def test_complete_stage_uses_native_graph_model_import_and_validation(tmp_path):
     options,trace=run(tmp_path)
-    from emuflow.timing import opensta
+    from emuflow_tools.stage_clients import opensta
     with (mock.patch.object(opensta,'run_opensta_path_database',side_effect=AssertionError('Python OpenSTA coordinator')),
           mock.patch.object(opensta,'render_opensta_liberty',side_effect=AssertionError('Python Liberty writer'))):
         check=run_xilinx_routed_opensta(**options)
@@ -55,7 +55,7 @@ def test_complete_stage_uses_native_graph_model_import_and_validation(tmp_path):
 def test_native_liberty_matches_the_independent_current_model(tmp_path):
     options,trace=run(tmp_path);run_xilinx_routed_opensta(**options)
     from tests.routed_opensta_reference import build_xilinx_routed_opensta_indexed_inputs
-    from emuflow.timing.opensta import render_opensta_liberty
+    from emuflow_tools.stage_clients.opensta import render_opensta_liberty
     model,_=build_xilinx_routed_opensta_indexed_inputs(options['mapped_path'],options['timing_path'],tmp_path/'reference.sqlite',clocks=options['clocks'])
     event=[json.loads(r) for r in trace.read_text().splitlines() if json.loads(r)['kind']=='paths'][0]
     assert event['inputs']['EMUFLOW_STA_LIBERTY']==render_opensta_liberty(model.base_model)
@@ -114,7 +114,7 @@ def test_native_model_preserves_hardblock_and_clock_policies(tmp_path,inverted):
     options['timing_path'].write_text(json.dumps(timing))
     run_xilinx_routed_opensta(**options)
     from tests.routed_opensta_reference import build_xilinx_routed_opensta_indexed_inputs
-    from emuflow.timing.opensta import render_opensta_liberty
+    from emuflow_tools.stage_clients.opensta import render_opensta_liberty
     model,_=build_xilinx_routed_opensta_indexed_inputs(options['mapped_path'],options['timing_path'],tmp_path/'reference.sqlite',clocks=options['clocks'])
     event=[json.loads(r) for r in trace.read_text().splitlines() if json.loads(r)['kind']=='paths'][0]
     assert event['inputs']['EMUFLOW_STA_LIBERTY']==render_opensta_liberty(model.base_model)

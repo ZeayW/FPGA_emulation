@@ -12,7 +12,7 @@ from emuflow.common.io import read_json, write_json
 from emuflow.platform.platform import Platform
 from emuflow.physical.physical_summary_storage import read_physical_summary
 from emuflow.partition.phase3_storage import read_phase3_assignment_view
-from emuflow.scheduling.phase5 import validate_phase5_generation
+from emuflow_tools.stage_clients.schedule import validate_phase5_generation
 from emuflow.timing.qor_storage import write_qor_report
 from emuflow.routing.routing import semantic_contract_for_routes
 from emuflow.routing.system_route_storage import pretty_system_routes_sha256, read_system_routes

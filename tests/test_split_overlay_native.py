@@ -9,7 +9,7 @@ import pytest
 
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.native_tools import native_file_generation
-from emuflow.scheduling.phase5_native import run_native_phase5
+from emuflow_tools.stage_clients.schedule_native import run_native_phase5
 from emuflow.transport.split_netlist_storage import SplitNetlistView,validate_split_netlists_sqlite
 from emuflow.transport.split_overlay import build_native_split,bind_split_sources
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule

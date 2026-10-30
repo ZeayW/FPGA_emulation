@@ -5,13 +5,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from emuflow.ir.emuir_compact import write_compact_emuir
-from emuflow.scheduling.phase5_native import run_native_phase5
+from emuflow_tools.stage_clients.schedule_native import run_native_phase5
 from emuflow.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
-from emuflow.timing.opensta import OPENSTA_PROVIDER
+from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
 from emuflow.transport.split_overlay import build_native_split
 from emuflow.transport.transport_storage import write_transport_storage
 from emuflow.physical.lowering import run_placement_ir_lowering_from_split

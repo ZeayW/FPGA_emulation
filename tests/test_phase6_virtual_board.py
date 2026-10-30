@@ -20,7 +20,7 @@ from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.io import read_json, write_json
 from tests.native_partition_facts import (build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
-from emuflow.transport.phase6 import run_phase6, validate_phase6
+from emuflow_tools.stage_clients.transport import run_phase6, validate_phase6
 from emuflow.platform.platform import Platform
 from emuflow.routing.routing import normalize_route_constraints
 from tests.schedule_reference import build_tdm_schedule

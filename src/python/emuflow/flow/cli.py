@@ -1,10 +1,25 @@
 from __future__ import annotations
-
 import argparse
 import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
+from emuflow.common.errors import EmuFlowError
+from emuflow.frontend.clocks import parse_clock_definitions
+from emuflow.frontend.policy import VALID_XILINX_MAPPING_STRATEGIES
+from emuflow.flow.benchmark_inputs import BenchmarkRun
+from emuflow.flow.compile_options import COMPILE_DEFAULTS
+from emuflow.flow import native_compile
+from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2, STATIC_EXACT_DEFAULT_CANDIDATE_POLICY, STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
+
+DEFAULT_PLATFORM_PATH = COMPILE_DEFAULTS['platform_path']
+DEFAULT_TIMING_MODEL = COMPILE_DEFAULTS['timing_model']
+DEFAULT_PARTITION_CUT_MODE = COMPILE_DEFAULTS['cut_mode']
+DEFAULT_PATRON_ALGORITHM_VERSION = COMPILE_DEFAULTS['patron_algorithm_version']
+XILINX_ULTRASCALEPLUS_OPEN_PROFILE = COMPILE_DEFAULTS['mapping_profile']
+GLOBAL_CANDIDATE_PROVIDER = 'timing-aware-global-candidate-v1'
+TDM_EXACT_DEPENDENCY_PROVIDER = 'deterministic-dependency-earliest-slot-v1'
+
 
 class _Python38BooleanOptionalAction(argparse.Action):
     """Python 3.8 equivalent of :class:`argparse.BooleanOptionalAction`."""
@@ -26,195 +41,65 @@ class _Python38BooleanOptionalAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, not option_string.startswith("--no-"))
 
-_BooleanOptionalAction = getattr(
-    argparse, "BooleanOptionalAction", _Python38BooleanOptionalAction
-)
+_BooleanOptionalAction = getattr(argparse, "BooleanOptionalAction", _Python38BooleanOptionalAction)
 
-from emuflow.timing.sta_projection import project_sta_path_database
-from emuflow.partition.partition import DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION
-
-from emuflow.platform.architecture import ArchitectureDB
-from emuflow.flow.benchmark_inputs import BenchmarkRun
-from emuflow.platform.board_link_timing import build_board_link_timing_model, validate_board_link_timing
-from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH, DEFAULT_WIRES_PER_BANK, materialize_research_platform
-from emuflow.transport.chimew.chimew_phase6 import run_chimew_phase6_adapter
-from emuflow.transport.chimew.chimew_bank_channel_storage import read_chimew_bank_channel_input
-from emuflow.transport.chimew.chimew_bank_channel_report_storage import read_chimew_bank_channel_report
-from emuflow.transport.chimew.chimew_pipeline import run_chimew_phase6_pipeline, validate_chimew_phase6_pipeline
-from emuflow.transport.chimew.chimew_qualification import qualify_chimew_artifact_chain
-from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2, STATIC_EXACT_DEFAULT_CANDIDATE_POLICY, STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
-from emuflow.physical.rapidwright.rapidwright_provider import load_rapidwright_provider_manifest, run_rapidwright_device_import, validate_rapidwright_architecture, validate_rapidwright_provider_manifest
-from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input, run_rwroute, validate_xilinx_route_db
-from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta, validate_xilinx_routed_opensta_summary
-from emuflow.timing.xilinx_preplacement_timing import build_xilinx_preplacement_timing_db, validate_xilinx_preplacement_timing_db
-from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
-from emuflow.common.errors import EmuFlowError
-from emuflow.platform.fpga_interchange import check_ir_architecture_capacity, run_fpga_interchange_architecture_import, validate_fpga_interchange_architecture
-from emuflow.common.io import read_json, write_json
-from emuflow.ir.ir import EmuIR
-from emuflow.physical.lowering import run_placement_ir_lowering_from_split
-from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow, validate_multi_fpga_flow_bundle
-from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
-from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, parse_clock_definitions, run_opensta_path_database
-from emuflow.partition.phase3 import run_phase3, validate_phase3_indexed
-from emuflow.routing.phase4 import run_phase4, validate_phase4
-from emuflow.scheduling.phase5 import run_phase5, validate_phase5
-from emuflow.transport.phase6 import run_phase6, validate_phase6
-from emuflow.timing.phase7c import run_phase7c
-from emuflow.physical.physical_regions import run_physical_region_merge, run_physical_region_rebind, validate_fpga_interchange_architecture_regions
-from emuflow.platform.platform import Platform
-from emuflow.transport.pin_planning import validate_pin_plan
-from emuflow.transport.pin_plan_storage import read_pin_plan
-from emuflow.transport.position_hints_storage import read_position_hints
-
-from emuflow.frontend.policy import VALID_XILINX_MAPPING_STRATEGIES
-from emuflow.timing.sta import derive_partition_net_weights, validate_sta_path_database
-from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
-from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.routing.phase4 import GLOBAL_CANDIDATE_PROVIDER
-from emuflow.frontend.verilog import emit_mapped_verilog
 
 def _print_json(value: Dict[str, Any]) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
-
-def _keyed_paths(values: Sequence[str], option: str) -> Dict[str, Path]:
-    result: Dict[str, Path] = {}
-    for value in values:
-        key, separator, raw_path = value.partition("=")
-        if not separator or not key or not raw_path:
-            raise ValueError(f"{option}: expected KEY=PATH, got {value!r}")
-        if key in result:
-            raise ValueError(f"{option}: duplicate key {key!r}")
-        result[key] = Path(raw_path)
-    return result
-
-def _keyed_values(values: Sequence[str], option: str) -> Dict[str, str]:
-    result: Dict[str, str] = {}
-    for value in values:
-        key, separator, item = value.partition("=")
-        if not separator or not key or not item:
-            raise ValueError(f"{option}: expected KEY=VALUE, got {value!r}")
-        if key in result:
-            raise ValueError(f"{option}: duplicate key {key!r}")
-        result[key] = item
-    return result
-
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="emuflow",
         description="Open multi-FPGA emulation flow frontend",
     )
+
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    environment = subparsers.add_parser(
-        "environment", help="inspect the installation-owned runtime"
-    )
-    environment_commands = environment.add_subparsers(dest="environment_command", required=True)
-    check_environment = environment_commands.add_parser(
-        "check", help="check the installed tools and device data"
-    )
-    check_environment.add_argument(
-        "profile", type=Path, nargs="?", help="default: installation runtime"
-    )
-    check_environment.add_argument("--backend", choices=("rapidwright", "vivado"))
-    design = subparsers.add_parser("design", help="prepare reproducible design inputs once")
-    designs = design.add_subparsers(dest="design_command", required=True)
-    prepare_design = designs.add_parser(
-        "prepare", help="prepare RTL from its source, clock and I/O configuration"
-    )
-    prepare_design.add_argument("config", type=Path)
-    prepare_design.add_argument("--out", type=Path, required=True)
-    nvdla = designs.add_parser("prepare-nvdla", help="prepare pinned NV_nvdla and complete physical memory models")
-    nvdla.add_argument("--source-root", type=Path, required=True)
-    nvdla.add_argument("--platform", type=Path, default=DEFAULT_PLATFORM_PATH)
-    nvdla.add_argument("--out", type=Path, required=True)
     run = subparsers.add_parser(
         "run", help="run RTL through the complete Phase 1–7/7C flow"
     )
+
     run.add_argument(
         "inputs", nargs="+", type=Path, help="RTL sources, or one prepared .run.json"
     )
+
     run.add_argument("--top", help="RTL top module")
+
     run.add_argument(
         "--clock", action="append", default=[], metavar="NAME=NS",
         help="clock port and period in ns; repeat for multiple clocks",
     )
+
     run.add_argument("--include-dir", action="append", default=[], type=Path)
+
     run.add_argument("--define", action="append", default=[])
+
     run.add_argument("--platform", type=Path, default=DEFAULT_PLATFORM_PATH)
+
     run.add_argument(
         "--phase6-provider", choices=("baseline", "chimew"), default="baseline"
     )
+
     run.add_argument(
         "--backend",
         choices=("rapidwright", "vivado"),
         default="rapidwright",
         help="physical implementation route (default: rapidwright)",
     )
+
     run.add_argument("--out", type=Path, help="default: runs/TOP")
+
     run.add_argument("--check", action="store_true", help="check input/configuration inventory without executing the design")
-
-    platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
-    platform_subparsers = platform_parser.add_subparsers(
-        dest="platform_command", required=True
-    )
-    platform_validate = platform_subparsers.add_parser(
-        "validate", help="validate and summarize a BoardDB"
-    )
-    platform_validate.add_argument("path", type=Path)
-    platform_validate.add_argument("--normalized-out", type=Path)
-    platform_utilization = platform_subparsers.add_parser(
-        "derive-utilization-profile",
-        help="derive a BoardDB with a uniform per-FPGA utilization limit",
-    )
-    platform_utilization.add_argument("--input", type=Path, required=True)
-    platform_utilization.add_argument(
-        "--output", "-o", type=Path, required=True
-    )
-    platform_utilization.add_argument(
-        "--utilization-limit", type=float, required=True
-    )
-    platform_utilization.add_argument("--name", required=True)
-    platform_research = platform_subparsers.add_parser(
-        "research-model", help="materialize the shared-bank research platform"
-    )
-    platform_research.add_argument("--fpga-count", type=int, choices=(2, 4), default=4)
-    platform_research.add_argument(
-        "--wires-per-bank", type=int, default=DEFAULT_WIRES_PER_BANK,
-        help="differential data pairs per HP bank (default: 20; two pins per pair)",
-    )
-    platform_research.add_argument("--output", "-o", type=Path, required=True)
-    platform_link_model = platform_subparsers.add_parser(
-        "link-timing-model",
-        help="materialize explicit directed link-delay bounds from BoardDB",
-    )
-    platform_link_model.add_argument("--platform", type=Path, required=True)
-    platform_link_model.add_argument("--output", "-o", type=Path, required=True)
-    platform_link_validate = platform_subparsers.add_parser(
-        "link-timing-validate",
-        help="validate a characterized or measured BoardLinkTimingDB",
-    )
-    platform_link_validate.add_argument("--platform", type=Path, required=True)
-    platform_link_validate.add_argument("--input", type=Path, required=True)
-
-
-
-    ir_parser = subparsers.add_parser("ir", help="EmuIR operations")
-    ir_subparsers = ir_parser.add_subparsers(dest="ir_command", required=True)
-    ir_validate = ir_subparsers.add_parser("validate", help="validate an EmuIR")
-    ir_validate.add_argument("path", type=Path)
-    ir_stats = ir_subparsers.add_parser("stats", help="show EmuIR statistics")
-    ir_stats.add_argument("path", type=Path)
-
 
     multi_fpga = subparsers.add_parser(
         "multi-fpga",
         help="board-independent multi-FPGA compilation",
     )
+
     multi_fpga_subparsers = multi_fpga.add_subparsers(
         dest="multi_fpga_command", required=True
     )
+
     multi_fpga_compile = multi_fpga_subparsers.add_parser(
         "compile",
         help=(
@@ -222,18 +107,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "and per-FPGA split generation"
         ),
     )
-    multi_fpga_validate = multi_fpga_subparsers.add_parser(
-        "validate",
-        help="rehash and independently replay a complete flow directory",
-    )
-    multi_fpga_validate.add_argument("--flow", type=Path, required=True)
-    multi_fpga_validate.add_argument(
-        "--minimum-combinational-cut-nets", type=int, default=0
-    )
-    multi_fpga_validate.add_argument(
-        "--require-physical", action="store_true"
-    )
+
     multi_fpga_compile.add_argument("sources", nargs="*", type=Path)
+
     multi_fpga_compile.add_argument(
         "--benchmark-run",
         type=Path,
@@ -243,26 +119,36 @@ def _build_parser() -> argparse.ArgumentParser:
             "holdout contract"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--source-root",
         type=Path,
         help="source root used to resolve --benchmark-run",
     )
+
     multi_fpga_compile.add_argument("--top")
+
     multi_fpga_compile.add_argument("--prepared-frontend", type=Path, help="completed indexed Phase 1 boundary; skips synthesis")
+
     multi_fpga_compile.add_argument("--prepared-timing", type=Path, help="validated indexed Phase 2 boundary; requires --prepared-frontend")
+
     multi_fpga_compile.add_argument("--clock", action="append", default=[])
+
     multi_fpga_compile.add_argument(
         "--yosys-json",
         type=Path,
         help="use existing Yosys JSON instead of synthesizing RTL",
     )
+
     multi_fpga_compile.add_argument(
         "--platform", type=Path, default=DEFAULT_PLATFORM_PATH,
         help="BoardDB (default: bundled four-XCVU19P shared-bank research model)",
     )
+
     multi_fpga_compile.add_argument("--out", type=Path, required=True)
+
     multi_fpga_compile.add_argument("--yosys")
+
     multi_fpga_compile.add_argument(
         "--include-dir",
         action="append",
@@ -270,12 +156,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Verilog include directory passed to the selected Yosys frontend",
     )
+
     multi_fpga_compile.add_argument(
         "--define",
         action="append",
         default=[],
         help="Verilog preprocessor NAME or NAME=VALUE (repeatable)",
     )
+
     multi_fpga_compile.add_argument(
         "--mapping-profile",
         choices=(
@@ -286,12 +174,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "Xilinx UltraScale+ primitive mapping; the only supported compile profile"
         ),
     )
+
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)
+
     multi_fpga_compile.add_argument(
         "--xilinx-mapping-strategy",
         choices=sorted(VALID_XILINX_MAPPING_STRATEGIES),
         help="Explicit native Xilinx mapper A/B selection; defaults to hierarchical ABC9",
     )
+
     multi_fpga_compile.add_argument(
         "--partition-provider",
         choices=(
@@ -300,15 +191,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         default="patron",
     )
+
     multi_fpga_compile.add_argument("--seed", type=int, default=0)
+
     multi_fpga_compile.add_argument("--min-used-fpgas", type=int)
+
     multi_fpga_compile.add_argument(
         "--balance-tolerance", type=float,
         help=("Relative tolerance for configured balance_dimensions (default: "
               "cells, LUT, and FF); omitted dimensions impose only device "
               "capacity limits"),
     )
+
     multi_fpga_compile.add_argument("--openroad")
+
     multi_fpga_compile.add_argument(
         "--tritonpart-solution",
         type=Path,
@@ -317,26 +213,34 @@ def _build_parser() -> argparse.ArgumentParser:
             "resuming Phase 3 after a validated provider boundary"
         ),
     )
+
     multi_fpga_compile.add_argument("--patron-refiner")
+
     multi_fpga_compile.add_argument("--patron-max-moves", type=int)
+
     multi_fpga_compile.add_argument(
         "--patron-algorithm-version",
         type=int,
         choices=(14,),
         default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
+
     multi_fpga_compile.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
     )
+
     multi_fpga_compile.add_argument(
         "--partition-seed-attempts", type=int, default=1
     )
+
     multi_fpga_compile.add_argument(
         "--partition-num-initial-solutions", type=int, default=50
     )
+
     multi_fpga_compile.add_argument(
         "--partition-num-best-initial-solutions", type=int, default=10
     )
+
     multi_fpga_compile.add_argument(
         "--partition-repair-min-used-fpgas",
         action=_BooleanOptionalAction, default=True,
@@ -345,6 +249,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "leaves required FPGAs empty"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--cut-mode",
         choices=("static-exact-combinational",),
@@ -353,6 +258,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "partition boundary semantics; generalized Static Exact is the default"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--max-cross-fpga-dependency-depth",
         type=int,
@@ -362,11 +268,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "depth to schedule feasibility and final timing"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--static-exact-candidate-policy",
         choices=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,),
         default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
+
     multi_fpga_compile.add_argument(
         "--timing-driven",
         action=_BooleanOptionalAction,
@@ -389,11 +297,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "both timing-driven and --no-timing-driven modes"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--timing-model",
         type=Path,
         default=DEFAULT_TIMING_MODEL,
     )
+
     multi_fpga_compile.add_argument(
         "--architecture-timing-db",
         type=Path,
@@ -402,22 +312,28 @@ def _build_parser() -> argparse.ArgumentParser:
             "pre-placement OpenSTA model"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--opensta",
         "--openroad-sta",
         dest="opensta",
         help="explicit OpenSTA executable override",
     )
+
     multi_fpga_compile.add_argument(
         "--sta-max-paths", type=int, default=200000
     )
+
     multi_fpga_compile.add_argument(
         "--timing-criticality-scale", type=float, default=9.0
     )
+
     multi_fpga_compile.add_argument(
         "--timing-criticality-exponent", type=float, default=2.0
     )
+
     multi_fpga_compile.add_argument("--route-constraints", type=Path)
+
     multi_fpga_compile.add_argument(
         "--board-link-timing-db",
         type=Path,
@@ -426,6 +342,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "optimization when enabled and always to final system timing"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--transport-cost-db",
         type=Path,
@@ -434,6 +351,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "and seal its per-FPGA prediction"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--timing-paths",
         type=Path,
@@ -442,7 +360,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "normal compile runs generate a complete TimingPathDB instead"
         ),
     )
+
     multi_fpga_compile.add_argument("--router")
+
     multi_fpga_compile.add_argument(
         "--route-provider",
         choices=(
@@ -453,13 +373,16 @@ def _build_parser() -> argparse.ArgumentParser:
             f"{GLOBAL_CANDIDATE_PROVIDER}"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--route-candidate-workers",
         type=int,
         default=1,
         help="parallel deterministic candidate generators for global routing",
     )
+
     multi_fpga_compile.add_argument("--frame-slots", type=int)
+
     multi_fpga_compile.add_argument(
         "--optimize-frame-slots",
         action="store_true",
@@ -468,7 +391,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "minimum independently feasible route/TDM frame"
         ),
     )
+
     multi_fpga_compile.add_argument("--route-max-iterations", type=int)
+
     multi_fpga_compile.add_argument(
         "--tdm-provider",
         choices=(
@@ -478,11 +403,15 @@ def _build_parser() -> argparse.ArgumentParser:
             f"Phase 5 dependency scheduler (default: {TDM_EXACT_DEPENDENCY_PROVIDER})"
         ),
     )
+
     multi_fpga_compile.add_argument("--simulation-frames", type=int, default=16)
+
     multi_fpga_compile.add_argument("--equivalence-cycles", type=int, default=1)
+
     multi_fpga_compile.add_argument(
         "--equivalence-seed", type=int, default=20260727
     )
+
     multi_fpga_compile.add_argument(
         "--phase6-provider",
         choices=("chimew", "baseline"),
@@ -493,13 +422,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "from the selected RapidWright or Vivado backend"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--phase6-chimew-region-count", type=int, default=4
     )
+
     multi_fpga_compile.add_argument("--phase6-chimew-grouper")
+
     multi_fpga_compile.add_argument("--phase6-chimew-refiner")
+
     multi_fpga_compile.add_argument("--phase6-chimew-rudy")
+
     multi_fpga_compile.add_argument("--phase6-chimew-assigner")
+
     multi_fpga_compile.add_argument(
         "--physical",
         action="store_true",
@@ -508,845 +443,79 @@ def _build_parser() -> argparse.ArgumentParser:
             "backend and the common physical-QoR gate"
         ),
     )
+
     multi_fpga_compile.add_argument(
         "--physical-backend",
         choices=("rapidwright", "vivado"),
         default="rapidwright",
         help="physical/timing provider (default: rapidwright)",
     )
+
     multi_fpga_compile.add_argument("--physical-architecture", type=Path)
+
     multi_fpga_compile.add_argument("--physical-openparf-install", type=Path)
+
     multi_fpga_compile.add_argument("--physical-openparf-python", type=Path)
+
     multi_fpga_compile.add_argument("--physical-seed", type=int, default=1)
+
     multi_fpga_compile.add_argument("--physical-vivado")
 
     multi_fpga_compile.add_argument(
         "--physical-vivado-place-directive", default="Default"
     )
+
     multi_fpga_compile.add_argument(
         "--physical-vivado-route-directive", default="Default"
     )
+
     multi_fpga_compile.add_argument("--physical-rapidwright-jar", type=Path)
+
     multi_fpga_compile.add_argument("--physical-rapidwright-java", type=Path)
+
     multi_fpga_compile.add_argument(
         "--physical-rapidwright-java-source", type=Path
     )
+
     multi_fpga_compile.add_argument(
         "--physical-rapidwright-device-data", type=Path
     )
+
     multi_fpga_compile.add_argument(
         "--physical-rapidwright-timing-data", type=Path
     )
+
     multi_fpga_compile.add_argument("--physical-rapidwright-opensta")
 
     multi_fpga_compile.add_argument(
         "--physical-rapidwright-native-constraints", type=Path,
         help="source-sealed RapidWright native device constraints",
     )
+
     multi_fpga_compile.add_argument(
         "--physical-rapidwright-provider-manifest", type=Path,
         help="provider manifest sealing the native device constraints",
     )
+
     multi_fpga_compile.add_argument(
         "--physical-workers",
         type=int,
         default=1,
         help="run independent per-FPGA physical backends concurrently",
     )
+
     multi_fpga_compile.add_argument(
         "--global-sta-executable",
         help="override the default in-tree OpenSTA executable",
     )
+
     multi_fpga_compile.add_argument("--global-timing-engine", choices=("opensta",),
                                    default="opensta", help="global physical timing engine (default: opensta)")
-    multi_fpga_physical = multi_fpga_subparsers.add_parser(
-        "physical",
-        help=(
-            "implement every Phase-6 partition through the selected backend "
-            "and emit checked common physical timing"
-        ),
-    )
-    multi_fpga_physical.add_argument("--split", type=Path, required=True)
-    multi_fpga_physical.add_argument("--platform", type=Path, required=True)
-    multi_fpga_physical.add_argument("--schedule", type=Path, required=True)
-    multi_fpga_physical.add_argument("--out", type=Path, required=True)
-    multi_fpga_physical.add_argument(
-        "--fpga", dest="fpga_ids", action="append",
-        help=(
-            "implement only this FPGA as an explicit physical worker; repeat "
-            "for more FPGAs; emits partition records, not a whole-design summary"
-        ),
-    )
-    multi_fpga_physical.add_argument(
-        "--original-ir",
-        type=Path,
-        help="original EmuIR used to map routed DUT timing endpoints",
-    )
-    multi_fpga_physical.add_argument(
-        "--assignment",
-        type=Path,
-        help="Phase 3 assignment used to reconstruct DUT timing paths",
-    )
-    multi_fpga_physical.add_argument(
-        "--routes",
-        type=Path,
-        help="Phase 4 routes used to reconstruct DUT timing paths",
-    )
-    multi_fpga_physical.add_argument(
-        "--path-database",
-        type=Path,
-        help="complete pre-partition STA path database for local paths",
-    )
-    multi_fpga_physical.add_argument(
-        "--logic-path-database",
-        type=Path,
-        help=(
-            "through-cut STA path database whose member identities feed "
-            "Phase-4 logic-segment reconstruction"
-        ),
-    )
-    multi_fpga_physical.add_argument(
-        "--backend", choices=("rapidwright", "vivado"), default="rapidwright"
-    )
-    multi_fpga_physical.add_argument("--architecture", type=Path)
-    multi_fpga_physical.add_argument("--yosys")
-    multi_fpga_physical.add_argument("--openparf-install", type=Path)
-    multi_fpga_physical.add_argument("--openparf-python", type=Path)
-    multi_fpga_physical.add_argument("--seed", type=int, default=1)
-    multi_fpga_physical.add_argument("--vivado")
-
-    multi_fpga_physical.add_argument(
-        "--vivado-place-directive", default="Default"
-    )
-    multi_fpga_physical.add_argument(
-        "--vivado-route-directive", default="Default"
-    )
-    multi_fpga_physical.add_argument("--rapidwright-jar", type=Path)
-    multi_fpga_physical.add_argument("--rapidwright-java", type=Path)
-    multi_fpga_physical.add_argument("--rapidwright-java-source", type=Path)
-    multi_fpga_physical.add_argument("--rapidwright-device-data", type=Path)
-    multi_fpga_physical.add_argument("--rapidwright-timing-data", type=Path)
-    multi_fpga_physical.add_argument("--rapidwright-opensta")
-
-    multi_fpga_physical.add_argument(
-        "--rapidwright-native-constraints", type=Path,
-    )
-    multi_fpga_physical.add_argument(
-        "--rapidwright-provider-manifest", type=Path,
-    )
-    multi_fpga_physical.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        help="run independent per-FPGA physical backends concurrently",
-    )
-    multi_fpga_physical.add_argument(
-        "--resume",
-        action="store_true",
-        help=(
-            "reuse only independently validated physical "
-            "checkpoints before continuing OpenPARF and detailed routing"
-        ),
-    )
-    arch_parser = subparsers.add_parser(
-        "arch", help="provider-neutral ArchitectureDB operations"
-    )
-    arch_subparsers = arch_parser.add_subparsers(
-        dest="arch_command", required=True
-    )
-    arch_validate = arch_subparsers.add_parser(
-        "validate", help="validate and summarize an ArchitectureDB"
-    )
-    arch_validate.add_argument("path", type=Path)
-    arch_import = arch_subparsers.add_parser(
-        "import-vivado-tsv", help="import Vivado Site/BEL inventory TSV"
-    )
-    arch_import.add_argument("input", type=Path)
-    arch_import.add_argument("--output", "-o", type=Path, required=True)
-    arch_import_fpgaif = arch_subparsers.add_parser(
-        "import-fpga-interchange",
-        help="import open FPGA Interchange DeviceResources",
-    )
-    arch_import_fpgaif.add_argument("input", type=Path)
-    arch_import_fpgaif.add_argument("--part", required=True)
-    arch_import_fpgaif.add_argument(
-        "--generator",
-        required=True,
-        help="declared producer and version of the DeviceResources input",
-    )
-    arch_import_fpgaif.add_argument(
-        "--output", "-o", type=Path, required=True
-    )
-    arch_import_fpgaif.add_argument(
-        "--native",
-        help="explicit comparison override; defaults to the in-tree build",
-    )
-    arch_import_fpgaif.add_argument("--log", type=Path)
-    arch_import_rapidwright = arch_subparsers.add_parser(
-        "import-rapidwright-device",
-        help="import a RapidWright DeviceResources using a pinned provider manifest",
-    )
-    arch_import_rapidwright.add_argument("input", type=Path)
-    arch_import_rapidwright.add_argument(
-        "--provider-manifest", type=Path, required=True
-    )
-    arch_import_rapidwright.add_argument(
-        "--route-certificate", type=Path, required=True
-    )
-    arch_import_rapidwright.add_argument(
-        "--output", "-o", type=Path, required=True
-    )
-    arch_import_rapidwright.add_argument(
-        "--native",
-        help="explicit comparison override; defaults to the in-tree build",
-    )
-    arch_import_rapidwright.add_argument("--log", type=Path)
-    arch_build_xilinx_preplacement_timing = arch_subparsers.add_parser(
-        "build-xilinx-preplacement-timing",
-        help=(
-            "extract a compact pre-placement TimingDB from pinned "
-            "RapidWright UltraScale+ timing data"
-        ),
-    )
-    arch_build_xilinx_preplacement_timing.add_argument(
-        "--timing-data-dir", type=Path, required=True
-    )
-    arch_build_xilinx_preplacement_timing.add_argument(
-        "--output", "-o", type=Path, required=True
-    )
-    arch_validate_xilinx_preplacement_timing = arch_subparsers.add_parser(
-        "validate-xilinx-preplacement-timing",
-        help="validate a source-sealed RapidWright pre-placement TimingDB",
-    )
-    arch_validate_xilinx_preplacement_timing.add_argument(
-        "path", type=Path
-    )
-    arch_validate_fpgaif = arch_subparsers.add_parser(
-        "validate-fpga-interchange",
-        help="independently validate FPGA Interchange ArchitectureDB metadata",
-    )
-    arch_validate_fpgaif.add_argument("path", type=Path)
-    arch_validate_rapidwright_provider = arch_subparsers.add_parser(
-        "validate-rapidwright-provider",
-        help="validate an exact RapidWright release and device contract",
-    )
-    arch_validate_rapidwright_provider.add_argument("path", type=Path)
-    arch_validate_rapidwright_device = arch_subparsers.add_parser(
-        "validate-rapidwright-device",
-        help="validate an imported device against its RapidWright provider contract",
-    )
-    arch_validate_rapidwright_device.add_argument(
-        "--arch", type=Path, required=True
-    )
-    arch_validate_rapidwright_device.add_argument(
-        "--provider-manifest", type=Path, required=True
-    )
-    arch_validate_rapidwright_device.add_argument(
-        "--require-physical-regions", action="store_true"
-    )
-    arch_validate_physical = arch_subparsers.add_parser(
-        "validate-xilinx-physical", help="independently audit mapped cells and the typed physical handoff"
-    )
-    for field in ("mapped-index", "physical-handoff", "architecture"):
-        arch_validate_physical.add_argument("--" + field, type=Path, required=True)
-    for field in ("native-constraints", "provider-manifest", "constraints"):
-        arch_validate_physical.add_argument("--" + field, type=Path)
-    arch_export_rwroute = arch_subparsers.add_parser(
-        "export-xilinx-rwroute-input",
-        help="export a sealed placed UltraScale+ netlist for RWRoute",
-    )
-    arch_export_rwroute.add_argument("--mapped-index", type=Path, required=True)
-    arch_export_rwroute.add_argument("--physical-handoff", type=Path, required=True)
-    arch_export_rwroute.add_argument("--output", "-o", type=Path, required=True)
-    arch_run_rwroute = arch_subparsers.add_parser(
-        "run-xilinx-rwroute",
-        help="route a sealed placed UltraScale+ design with RapidWright RWRoute",
-    )
-    arch_run_rwroute.add_argument("--input", type=Path, required=True)
-    arch_run_rwroute.add_argument("--output", "-o", type=Path, required=True)
-    arch_run_rwroute.add_argument("--rapidwright-jar", type=Path, required=True)
-    arch_run_rwroute.add_argument("--java", type=Path, required=True)
-    arch_run_rwroute.add_argument("--java-source", type=Path, required=True)
-    arch_run_rwroute.add_argument(
-        "--device-data-root", type=Path, required=True,
-        help="external pinned RapidWright root containing data/parts.db",
-    )
-    arch_run_rwroute.add_argument(
-        "--timing-data-dir", type=Path, required=True,
-        help=(
-            "directory containing the two pinned RapidWright UltraScale+ "
-            "timing-data files"
-        ),
-    )
-    arch_validate_rwroute = arch_subparsers.add_parser(
-        "validate-xilinx-route",
-        help="independently validate a sealed RWRoute route certificate",
-    )
-    arch_validate_rwroute.add_argument("--route", type=Path, required=True)
-    arch_validate_rwroute.add_argument("--mapped-json", type=Path, required=True)
-    arch_validate_rwroute.add_argument("--packed", type=Path, required=True)
-    arch_validate_rwroute.add_argument("--placement", type=Path, required=True)
-    arch_run_xilinx_opensta = arch_subparsers.add_parser(
-        "run-xilinx-opensta",
-        help="run OpenSTA over RapidWright-routed logical endpoints",
-    )
-    arch_run_xilinx_opensta.add_argument("--mapped-index", type=Path, required=True)
-    arch_run_xilinx_opensta.add_argument("--routed-timing", type=Path, required=True)
-    arch_run_xilinx_opensta.add_argument("--output", "-o", type=Path, required=True)
-    arch_run_xilinx_opensta.add_argument("--summary", type=Path, required=True)
-    arch_run_xilinx_opensta.add_argument(
-        "--clock-period", action="append", default=[], required=True,
-        metavar="CLOCK=PERIOD_NS",
-    )
-    arch_run_xilinx_opensta.add_argument("--opensta")
-    arch_run_xilinx_opensta.add_argument("--max-paths", type=int, default=200000)
-    arch_run_xilinx_opensta.add_argument("--log", type=Path)
-    arch_validate_xilinx_opensta = arch_subparsers.add_parser(
-        "validate-xilinx-opensta",
-        help="independently recompute RapidWright/OpenSTA WNS and TNS",
-    )
-    arch_validate_xilinx_opensta.add_argument("--summary", type=Path, required=True)
-    arch_validate_xilinx_opensta.add_argument("--output", type=Path, required=True)
-    arch_validate_xilinx_opensta.add_argument("--mapped-json", type=Path)
-    arch_validate_xilinx_opensta.add_argument("--routed-timing", type=Path)
-    arch_capacity_fpgaif = arch_subparsers.add_parser(
-        "check-capacity",
-        help="check EmuIR primitive support and BEL capacity",
-    )
-    arch_capacity_fpgaif.add_argument("--arch", type=Path, required=True)
-    arch_capacity_fpgaif.add_argument("--ir", type=Path, required=True)
-    arch_merge_regions = arch_subparsers.add_parser(
-        "merge-physical-regions",
-        help="merge a source-qualified physical-region sidecar",
-    )
-    arch_merge_regions.add_argument("--arch", type=Path, required=True)
-    arch_merge_regions.add_argument("--sidecar", type=Path, required=True)
-    arch_merge_regions.add_argument("--output", "-o", type=Path, required=True)
-    arch_rebind_regions = arch_subparsers.add_parser(
-        "rebind-physical-regions",
-        help="rebind a sidecar across physically identical ArchitectureDBs",
-    )
-    arch_rebind_regions.add_argument(
-        "--old-arch", type=Path, required=True
-    )
-    arch_rebind_regions.add_argument(
-        "--new-arch", type=Path, required=True
-    )
-    arch_rebind_regions.add_argument("--sidecar", type=Path, required=True)
-    arch_rebind_regions.add_argument(
-        "--output", "-o", type=Path, required=True
-    )
-    arch_validate_regions = arch_subparsers.add_parser(
-        "validate-physical-regions",
-        help="validate merged SLR, clock-region, and I/O-bank metadata",
-    )
-    arch_validate_regions.add_argument("path", type=Path)
-
-    partition_parser = subparsers.add_parser(
-        "partition", help="multi-FPGA partition artifact operations"
-    )
-    partition_subparsers = partition_parser.add_subparsers(
-        dest="partition_command", required=True
-    )
-    partition_validate = partition_subparsers.add_parser(
-        "validate", help="independently validate Phase 3 partition artifacts"
-    )
-    partition_validate.add_argument(
-        "assignment_index", type=Path, help="current assignment SQLite owner"
-    )
-    partition_validate.add_argument("--phase3-report", type=Path, required=True)
-    partition_validate.add_argument("--ir", type=Path, required=True)
-    partition_validate.add_argument("--platform", type=Path, required=True)
-
-    phase3 = subparsers.add_parser(
-        "phase3",
-        help=(
-            "run multi-FPGA partitioning with the retained "
-            "PATRON v14 generalized Static Exact policy"
-        ),
-    )
-    phase3.add_argument("--ir", type=Path, required=True)
-    phase3.add_argument("--platform", type=Path, required=True)
-    phase3.add_argument("--out", type=Path, required=True)
-    phase3.add_argument("--constraints", type=Path)
-    phase3.add_argument(
-        "--route-constraints",
-        type=Path,
-        help=(
-            "optional system-route constraints; max_route_hops activates "
-            "topology-constrained Phase 3 refinement"
-        ),
-    )
-    phase3.add_argument("--seed", type=int, default=0)
-    phase3.add_argument(
-        "--cut-mode",
-        choices=("static-exact-combinational",),
-        default=DEFAULT_PARTITION_CUT_MODE,
-        help=(
-            "Phase 3 cut legality; generalized Static Exact v2 is the default"
-        ),
-    )
-    phase3.add_argument(
-        "--max-cross-fpga-dependency-depth",
-        type=int,
-        default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
-        help=(
-            "optional Static Exact policy guard; zero (the default) leaves "
-            "depth to schedule feasibility and final timing"
-        ),
-    )
-    phase3.add_argument(
-        "--static-exact-candidate-policy",
-        choices=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,),
-        default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
-    )
-    phase3.add_argument("--min-used-fpgas", type=int)
-    phase3.add_argument(
-        "--balance-tolerance", type=float,
-        help=("Relative tolerance for configured balance_dimensions (default: "
-              "cells, LUT, and FF); omitted dimensions impose only device "
-              "capacity limits"),
-    )
-    phase3.add_argument(
-        "--provider",
-        choices=(
-            "tritonpart",
-            "patron",
-        ),
-        default="patron",
-        help="partition provider (default: patron)",
-    )
-    phase3.add_argument(
-        "--openroad",
-        help=(
-            "explicit comparison override; defaults to the in-tree "
-            "OpenROAD/TritonPart build"
-        ),
-    )
-    phase3.add_argument(
-        "--tritonpart-solution",
-        type=Path,
-        help="import a precomputed TritonPart .part file instead of executing",
-    )
-    phase3.add_argument(
-        "--net-weights",
-        type=Path,
-        help="optional emuflow.partition-net-weights/v2 indexed manifest",
-    )
-    phase3.add_argument(
-        "--tritonpart-timeout-seconds",
-        type=int,
-        default=3600,
-    )
-    phase3.add_argument(
-        "--tritonpart-seed-attempts",
-        type=int,
-        default=1,
-        help=(
-            "evaluate consecutive deterministic seeds and select the "
-            "lowest independently legal weighted-cut objective"
-        ),
-    )
-    phase3.add_argument(
-        "--tritonpart-num-initial-solutions", type=int, default=50
-    )
-    phase3.add_argument(
-        "--tritonpart-num-best-initial-solutions", type=int, default=10
-    )
-    phase3.add_argument(
-        "--tritonpart-repair-min-used-fpgas",
-        action=_BooleanOptionalAction, default=True,
-        help=(
-            "minimally move the smallest legal atomic clusters when the "
-            "provider leaves required partitions empty"
-        ),
-    )
-    phase3.add_argument(
-        "--hop-refiner",
-        help=(
-            "explicit comparison override; defaults to the in-tree C++ "
-            "topology-constrained FM refiner"
-        ),
-    )
-    phase3.add_argument(
-        "--timing-database",
-        type=Path,
-        help="complete TimingPathDB required by --provider patron",
-    )
-    phase3.add_argument("--patron-refiner")
-    phase3.add_argument("--patron-max-moves", type=int)
-    phase3.add_argument(
-        "--patron-algorithm-version",
-        type=int,
-        choices=(14,),
-        default=DEFAULT_PATRON_ALGORITHM_VERSION,
-    )
-
-    sta_parser = subparsers.add_parser(
-        "sta", help="STA path extraction artifact operations"
-    )
-    sta_subparsers = sta_parser.add_subparsers(
-        dest="sta_command", required=True
-    )
-    sta_database_project = sta_subparsers.add_parser(
-        "project-path-database",
-        help="project partition-independent paths onto candidate cut nets",
-    )
-    sta_database_project.add_argument(
-        "--database", type=Path, required=True
-    )
-    sta_database_project.add_argument(
-        "--assignment", type=Path, required=True
-    )
-    sta_database_project.add_argument(
-        "--output", "-o", type=Path, required=True
-    )
-    sta_database_validate = sta_subparsers.add_parser(
-        "validate-path-database",
-        help="independently validate a partition-independent path database",
-    )
-    sta_database_validate.add_argument(
-        "--database", type=Path, required=True
-    )
-    sta_database_validate.add_argument("--ir", type=Path, required=True)
-    sta_weights = sta_subparsers.add_parser(
-        "derive-partition-net-weights",
-        help="derive native indexed hyperedge weights from current OpenSTA paths",
-    )
-    sta_weights.add_argument("--database", type=Path, required=True)
-    sta_weights.add_argument("--ir", type=Path, required=True)
-    sta_weights.add_argument("--output", "-o", type=Path, required=True)
-    sta_weights.add_argument("--criticality-scale", type=float, default=9.0)
-    sta_weights.add_argument(
-        "--criticality-exponent", type=float, default=2.0
-    )
-    sta_opensta = sta_subparsers.add_parser(
-        "run-opensta",
-        help="build indexed TimingPathDB from compact EmuIR v2 with in-tree OpenSTA",
-    )
-    sta_opensta.add_argument("--ir", type=Path, required=True)
-    sta_opensta.add_argument("--output", "-o", type=Path, required=True)
-    sta_opensta.add_argument(
-        "--clock-period",
-        action="append",
-        default=[],
-        metavar="CLOCK=PERIOD_NS",
-    )
-    sta_opensta.add_argument(
-        "--timing-model",
-        type=Path,
-        default=DEFAULT_TIMING_MODEL,
-    )
-    sta_opensta.add_argument(
-        "--architecture-timing-db",
-        type=Path,
-        help=(
-            "current Xilinx Preplacement TimingDB; generates a "
-            "design-specialized pre-placement OpenSTA model"
-        ),
-    )
-    sta_opensta.add_argument(
-        "--opensta",
-        "--openroad",
-        dest="opensta",
-        help="explicit comparison override; defaults to the in-tree build",
-    )
-    sta_opensta.add_argument("--max-paths", type=int, default=200000)
-    sta_opensta.add_argument("--log", type=Path)
-
-    route_parser = subparsers.add_parser(
-        "route", help="board-level system route artifact operations"
-    )
-    route_subparsers = route_parser.add_subparsers(
-        dest="route_command", required=True
-    )
-    route_validate = route_subparsers.add_parser(
-        "validate", help="independently validate Phase 4 system routes"
-    )
-    route_validate.add_argument("routes", type=Path)
-    route_validate.add_argument("--assignment", type=Path, required=True)
-    route_validate.add_argument("--platform", type=Path, required=True)
-    route_validate.add_argument("--timing-paths", type=Path)
-
-    phase4 = subparsers.add_parser(
-        "phase4", help="route partition cut nets over BoardDB links"
-    )
-    phase4.add_argument("--assignment", type=Path, required=True)
-    phase4.add_argument("--platform", type=Path, required=True)
-    phase4.add_argument("--out", type=Path, required=True)
-    phase4.add_argument("--constraints", type=Path)
-    phase4.add_argument("--frame-slots", type=int)
-    phase4.add_argument("--max-iterations", type=int)
-    phase4.add_argument(
-        "--candidate-workers",
-        type=int,
-        default=1,
-        help="parallel global-candidate generators (default: 1)",
-    )
-    phase4.add_argument(
-        "--provider",
-        choices=[
-            GLOBAL_CANDIDATE_PROVIDER,
-        ],
-        default=None,
-        help=(
-            f"system routing provider (default: {GLOBAL_CANDIDATE_PROVIDER})"
-        ),
-    )
-    phase4.add_argument(
-        "--timing-paths",
-        type=Path,
-        help="emuflow.sta-paths/v1 input required by the timing-aware provider",
-    )
-    phase4.add_argument(
-        "--router",
-        help=(
-            "explicit emuflow-native executable; defaults to the selected native installation"
-        ),
-    )
-
-    schedule_parser = subparsers.add_parser(
-        "schedule", help="TDM schedule artifact operations"
-    )
-    schedule_subparsers = schedule_parser.add_subparsers(
-        dest="schedule_command", required=True
-    )
-    schedule_validate = schedule_subparsers.add_parser(
-        "validate", help="independently validate a Phase 5 TDM schedule"
-    )
-    schedule_validate.add_argument("schedule", type=Path)
-    schedule_validate.add_argument("--routes", type=Path, required=True)
-    schedule_validate.add_argument("--platform", type=Path, required=True)
-    schedule_validate.add_argument("--assignment", type=Path)
-
-    phase5 = subparsers.add_parser(
-        "phase5", help="schedule routed bit-hops into TDM lanes and slots"
-    )
-    phase5.add_argument("--routes", type=Path, required=True)
-    phase5.add_argument("--assignment", type=Path)
-    phase5.add_argument("--platform", type=Path, required=True)
-    phase5.add_argument("--out", type=Path, required=True)
-    phase5.add_argument("--simulation-frames", type=int, default=16)
-    phase5.add_argument(
-        "--provider",
-        choices=(
-            TDM_EXACT_DEPENDENCY_PROVIDER,
-        ),
-        default=None,
-        help=(
-            f"Phase 5 dependency scheduler (default: {TDM_EXACT_DEPENDENCY_PROVIDER})"
-        ),
-    )
-
-
-    pin_plan_parser = subparsers.add_parser(
-        "pin-plan",
-        help="Chimew pin planning and independent physical contract checks",
-    )
-    pin_plan_subparsers = pin_plan_parser.add_subparsers(
-        dest="pin_plan_command", required=True
-    )
-    pin_plan_chimew = pin_plan_subparsers.add_parser(
-        "chimew-build",
-        help="bind certified Chimew banks/channels to electrical concrete lanes",
-    )
-    pin_plan_chimew.add_argument("--schedule", type=Path, required=True)
-    pin_plan_chimew.add_argument("--platform", type=Path, required=True)
-    pin_plan_chimew.add_argument("--assignment-input", type=Path, required=True)
-    pin_plan_chimew.add_argument(
-        "--assignment-report",
-        type=Path,
-        help="precomputed certified report (requires --qualification)",
-    )
-    pin_plan_chimew.add_argument("--electrical-map", type=Path, required=True)
-    pin_plan_chimew.add_argument(
-        "--qualification",
-        type=Path,
-        help="complete chimew-qualify certificate (recommended for sign-off)",
-    )
-    pin_plan_chimew.add_argument("--assigner")
-    pin_plan_chimew.add_argument("--region-count", type=int, default=31)
-    pin_plan_chimew.add_argument("--out", type=Path, required=True)
-    pin_plan_chimew_qualify = pin_plan_subparsers.add_parser(
-        "chimew-qualify",
-        help="seal a complete Chimew lookahead/RUDY/assignment artifact chain",
-    )
-    pin_plan_chimew_qualify.add_argument("--schedule", type=Path, required=True)
-    pin_plan_chimew_qualify.add_argument("--crossings", type=Path, required=True)
-    pin_plan_chimew_qualify.add_argument(
-        "--initial-grouping", type=Path, required=True
-    )
-    pin_plan_chimew_qualify.add_argument("--positions", type=Path, required=True)
-    pin_plan_chimew_qualify.add_argument(
-        "--refined-grouping", type=Path, required=True
-    )
-    pin_plan_chimew_qualify.add_argument("--rudy-input", type=Path, required=True)
-    pin_plan_chimew_qualify.add_argument("--rudy-report", type=Path, required=True)
-    pin_plan_chimew_qualify.add_argument(
-        "--assignment-input", type=Path, required=True
-    )
-    pin_plan_chimew_qualify.add_argument(
-        "--assignment-report", type=Path, required=True
-    )
-    pin_plan_chimew_qualify.add_argument("--output", "-o", type=Path, required=True)
-    pin_plan_chimew_run = pin_plan_subparsers.add_parser(
-        "chimew-run",
-        help="run and certify the complete source-qualified Chimew Phase 6 path",
-    )
-    pin_plan_chimew_run.add_argument("--schedule", type=Path, required=True)
-    pin_plan_chimew_run.add_argument("--platform", type=Path, required=True)
-    pin_plan_chimew_run.add_argument("--crossings", type=Path, required=True)
-    pin_plan_chimew_run.add_argument("--positions", type=Path, required=True)
-    pin_plan_chimew_run.add_argument("--rudy-input", type=Path, required=True)
-    pin_plan_chimew_run.add_argument(
-        "--assignment-input", type=Path, required=True
-    )
-    pin_plan_chimew_run.add_argument("--electrical-map", type=Path, required=True)
-    pin_plan_chimew_run.add_argument("--routing-source", type=Path)
-    pin_plan_chimew_run.add_argument("--placement-source", type=Path)
-    pin_plan_chimew_run.add_argument("--netlist-source", type=Path)
-    pin_plan_chimew_run.add_argument("--architecture-source", type=Path)
-    pin_plan_chimew_run.add_argument("--package-pins-source", type=Path)
-    pin_plan_chimew_run.add_argument("--grouper")
-    pin_plan_chimew_run.add_argument("--refiner")
-    pin_plan_chimew_run.add_argument("--rudy")
-    pin_plan_chimew_run.add_argument("--assigner")
-    pin_plan_chimew_run.add_argument("--region-count", type=int, default=31)
-    pin_plan_chimew_run.add_argument("--out", type=Path, required=True)
-    pin_plan_chimew_validate = pin_plan_subparsers.add_parser(
-        "chimew-validate",
-        help="independently validate a frozen Chimew Phase 6 bundle",
-    )
-    pin_plan_chimew_validate.add_argument("bundle", type=Path)
-    pin_plan_validate = pin_plan_subparsers.add_parser(
-        "validate", help="independently validate a pin plan"
-    )
-    pin_plan_validate.add_argument("plan", type=Path)
-    pin_plan_validate.add_argument("--schedule", type=Path, required=True)
-    pin_plan_validate.add_argument("--platform", type=Path, required=True)
-    pin_plan_validate.add_argument("--positions", type=Path, required=True)
-
-    split_parser = subparsers.add_parser(
-        "split", help="per-FPGA netlist split artifact operations"
-    )
-    split_subparsers = split_parser.add_subparsers(
-        dest="split_command", required=True
-    )
-    split_validate = split_subparsers.add_parser(
-        "validate", help="independently validate Phase 6 split artifacts"
-    )
-    split_validate.add_argument("manifest", type=Path)
-    split_validate.add_argument("--ir", type=Path, required=True)
-    split_validate.add_argument("--assignment", type=Path, required=True)
-    split_validate.add_argument("--schedule", type=Path, required=True)
-    split_validate.add_argument("--platform", type=Path, required=True)
-    split_validate.add_argument("--pin-plan", type=Path)
-    split_validate.add_argument("--position-hints", type=Path)
-    split_validate.add_argument("--electrical-binding", type=Path)
-
-    phase6 = subparsers.add_parser(
-        "phase6",
-        help="split EmuIR and bind cut signals to logical TDM lanes",
-    )
-    phase6.add_argument("--ir", type=Path, required=True)
-    phase6.add_argument("--assignment", type=Path, required=True)
-    phase6.add_argument("--schedule", type=Path, required=True)
-    phase6.add_argument("--platform", type=Path, required=True)
-    phase6.add_argument("--out", type=Path, required=True)
-    phase6.add_argument("--pin-plan", type=Path)
-    phase6.add_argument("--position-hints", type=Path)
-    phase6.add_argument("--electrical-binding", type=Path)
-    phase6.add_argument("--transport-cost-db", type=Path)
-    phase6.add_argument("--equivalence-cycles", type=int, default=1)
-    phase6.add_argument("--equivalence-seed", type=int, default=20260727)
-    phase6.add_argument(
-        "--clock-period",
-        action="append",
-        default=[],
-        metavar="CLOCK=PERIOD_NS",
-        help="required for multi-clock Phase 6; repeat once per DUT clock",
-    )
-
-
-
-
-    lower = subparsers.add_parser(
-        "lower-placement-ir",
-        help="lower one indexed split partition with its synthesized transport EmuIR",
-    )
-    lower.add_argument("--split", type=Path, required=True, help="current split SQLite store")
-    lower.add_argument("--fpga", required=True, help="partition selector within the split store")
-    lower.add_argument("--transport", type=Path, required=True)
-    lower.add_argument("--transport-ir", type=Path, required=True)
-    lower.add_argument("--output", "-o", type=Path, required=True)
-    lower.add_argument("--report", type=Path)
-    lower.add_argument(
-        "--boundary-identities",
-        type=Path,
-        help="provider-neutral physical boundary identity database",
-    )
-
-    emit_verilog = subparsers.add_parser(
-        "emit-mapped-verilog",
-        help="emit a structural Xilinx primitive netlist from EmuIR",
-    )
-    emit_verilog.add_argument("--ir", type=Path, required=True)
-    emit_verilog.add_argument("--output", "-o", type=Path, required=True)
-    emit_verilog.add_argument("--report", type=Path)
-
-    phase7c = subparsers.add_parser(
-        "phase7c",
-        help="build and validate the virtual runtime/timing/QoR contract",
-    )
-    phase7c.add_argument("--schedule", type=Path, required=True)
-    phase7c.add_argument("--platform", type=Path, required=True)
-    phase7c.add_argument("--phase3-report", type=Path, required=True)
-    phase7c.add_argument("--phase4-report", type=Path, required=True)
-    phase7c.add_argument("--phase5-report", type=Path, required=True)
-    phase7c.add_argument("--phase6-report", type=Path, required=True)
-    phase7c.add_argument(
-        "--assignment",
-        type=Path,
-        help="Phase 3 assignment required for sampled virtual-wire timing",
-    )
-    phase7c.add_argument("--physical-summary", type=Path)
-    phase7c.add_argument(
-        "--routes",
-        type=Path,
-        help="Phase 4 routes.json required for unified physical timing",
-    )
-    phase7c.add_argument("--simulation-frames", type=int, default=12)
-    phase7c.add_argument("--global-sta-executable", help="override the default in-tree OpenSTA executable")
-    phase7c.add_argument("--global-timing-engine", choices=("opensta",),
-                        default="opensta", help="global physical timing engine (default: opensta)")
-    phase7c.add_argument("--out", type=Path, required=True)
 
     return parser
 
+
 def _dispatch(args: argparse.Namespace) -> int:
-    if args.command == "environment":
-        from emuflow.flow.environment import (
-            load_environment,
-            inspect_environment,
-            probe_environment,
-            resolve_environment_path,
-        )
-        profile_path = resolve_environment_path(args.profile)
-        report = inspect_environment(load_environment(profile_path), args.backend)
-        if report["status"] == "pass":
-            report = probe_environment(load_environment(profile_path), args.backend)
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
-    if args.command == "design":
-        from emuflow.flow.run_config import prepare_design_run, prepare_nvdla_run
-        if args.design_command == "prepare":
-            report = prepare_design_run(args.config, args.out)
-        else:
-            report = prepare_nvdla_run(
-                args.source_root, args.out, platform_path=args.platform
-            )
-        _print_json(report)
-        return 0
     if args.command == "run":
         from emuflow.flow.run_config import execute_run, execute_sources
 
@@ -1383,241 +552,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(report.get("summary", report))
         return 0 if report["status"] == "pass" else 2
 
-
-
-
-    if args.command == "platform":
-        if args.platform_command == "derive-utilization-profile":
-            source = Platform.load(args.input)
-            derived = source.with_utilization_limit(
-                args.utilization_limit, name=args.name
-            )
-            write_json(args.output, derived.to_dict())
-            report = derived.summary()
-            report.update(
-                {
-                    "status": "pass",
-                    "output": str(args.output),
-                    "source_platform": source.name,
-                    "utilization_limit": args.utilization_limit,
-                }
-            )
-            _print_json(report)
-            return 0
-        if args.platform_command == "research-model":
-            _print_json(materialize_research_platform(
-                args.output, fpga_count=args.fpga_count,
-                wires_per_bank=args.wires_per_bank,
-            ))
-            return 0
-        if args.platform_command == "link-timing-model":
-            platform = Platform.load(args.platform)
-            database = build_board_link_timing_model(platform)
-            write_json(args.output, database)
-            report = validate_board_link_timing(database, platform)
-            report["output"] = str(args.output)
-            _print_json(report)
-            return 0
-        if args.platform_command == "link-timing-validate":
-            platform = Platform.load(args.platform)
-            database = read_json(args.input)
-            _print_json(validate_board_link_timing(database, platform))
-            return 0
-        platform = Platform.load(args.path)
-        if args.normalized_out is not None:
-            write_json(args.normalized_out, platform.to_dict())
-        _print_json(platform.summary())
-        return 0
-
-
-
-
-    if args.command == "ir":
-        ir = EmuIR.load(args.path)
-        if args.ir_command == "validate":
-            _print_json(
-                {
-                    "schema": ir.value["schema"],
-                    "design": ir.value["design"]["name"],
-                    "status": "valid",
-                }
-            )
-        else:
-            _print_json(ir.stats())
-        return 0
-
-
-
-    if args.command == "arch":
-        if args.arch_command == "import-vivado-tsv":
-            architecture = ArchitectureDB.from_vivado_tsv(args.input)
-            write_json(args.output, architecture.to_dict())
-            report = architecture.summary()
-        elif args.arch_command == "import-fpga-interchange":
-            report = run_fpga_interchange_architecture_import(
-                input_path=args.input,
-                part=args.part,
-                generator=args.generator,
-                output_path=args.output,
-                executable=args.native,
-                log_path=args.log,
-            )
-        elif args.arch_command == "import-rapidwright-device":
-            report = run_rapidwright_device_import(
-                input_path=args.input,
-                provider_manifest_path=args.provider_manifest,
-                route_certificate_path=args.route_certificate,
-                output_path=args.output,
-                executable=args.native,
-                log_path=args.log,
-            )
-        elif args.arch_command == "validate-fpga-interchange":
-            architecture = ArchitectureDB.load(args.path)
-            report = validate_fpga_interchange_architecture(architecture)
-        elif args.arch_command == "validate-rapidwright-provider":
-            manifest = load_rapidwright_provider_manifest(args.path)
-            report = validate_rapidwright_provider_manifest(manifest)
-        elif args.arch_command == "validate-rapidwright-device":
-            manifest = load_rapidwright_provider_manifest(
-                args.provider_manifest
-            )
-            report = validate_rapidwright_architecture(
-                ArchitectureDB.load(args.arch),
-                manifest,
-                manifest_path=args.provider_manifest,
-                require_physical_regions=args.require_physical_regions,
-            )
-        elif args.arch_command == "validate-xilinx-physical":
-            from emuflow.physical.handoff import audit_physical_handoff
-            report = audit_physical_handoff(
-                args.mapped_index, args.physical_handoff, args.architecture,
-                native_constraints_path=args.native_constraints,
-                provider_manifest_path=args.provider_manifest,
-                constraints_path=args.constraints,
-            )
-        elif args.arch_command == "export-xilinx-rwroute-input":
-            report = export_rwroute_input(
-                args.mapped_index, args.physical_handoff, args.output
-            )
-        elif args.arch_command == "run-xilinx-rwroute":
-            report = run_rwroute(
-                args.input, args.output,
-                rapidwright_jar=args.rapidwright_jar,
-                java=args.java,
-                java_source=args.java_source,
-                device_data_root=args.device_data_root,
-                timing_data_dir=args.timing_data_dir,
-            )
-        elif args.arch_command == "validate-xilinx-route":
-            report = validate_xilinx_route_db(
-                args.route,
-                mapped_path=args.mapped_json,
-                packed_path=args.packed,
-                placement_path=args.placement,
-            )
-        elif args.arch_command == "build-xilinx-preplacement-timing":
-            report = build_xilinx_preplacement_timing_db(
-                args.timing_data_dir, args.output
-            )
-        elif args.arch_command == "validate-xilinx-preplacement-timing":
-            report = validate_xilinx_preplacement_timing_db(args.path)
-        elif args.arch_command == "run-xilinx-opensta":
-            report = run_xilinx_routed_opensta(
-                args.mapped_index,
-                args.routed_timing,
-                args.output,
-                args.summary,
-                clocks=parse_clock_definitions(args.clock_period),
-                executable=args.opensta,
-                max_paths=args.max_paths,
-                log_path=args.log,
-            )
-        elif args.arch_command == "validate-xilinx-opensta":
-            report = validate_xilinx_routed_opensta_summary(
-                args.summary,
-                output_path=args.output,
-                mapped_path=args.mapped_json,
-                timing_path=args.routed_timing,
-            )
-        elif args.arch_command == "check-capacity":
-            architecture = ArchitectureDB.load(args.arch)
-            report = check_ir_architecture_capacity(
-                architecture, EmuIR.load(args.ir)
-            )
-        elif args.arch_command == "merge-physical-regions":
-            report = run_physical_region_merge(
-                architecture_path=args.arch,
-                sidecar_path=args.sidecar,
-                output_path=args.output,
-            )
-        elif args.arch_command == "rebind-physical-regions":
-            report = run_physical_region_rebind(
-                old_architecture_path=args.old_arch,
-                new_architecture_path=args.new_arch,
-                sidecar_path=args.sidecar,
-                output_path=args.output,
-            )
-        elif args.arch_command == "validate-physical-regions":
-            report = validate_fpga_interchange_architecture_regions(
-                ArchitectureDB.load(args.path)
-            )
-        else:
-            architecture = ArchitectureDB.load(args.path)
-            report = architecture.summary()
-        _print_json(report)
-        return 0 if report.get("status", "pass") == "pass" else 2
-
     if args.command == "multi-fpga":
-        if args.multi_fpga_command == "validate":
-            _print_json(
-                validate_multi_fpga_flow_bundle(
-                    args.flow,
-                    minimum_combinational_cut_nets=(
-                        args.minimum_combinational_cut_nets
-                    ),
-                    require_physical=args.require_physical,
-                )
-            )
-            return 0
-
-        if args.multi_fpga_command == "physical":
-            report = run_multi_fpga_physical_flow(
-                split_root=args.split,
-                platform_path=args.platform,
-                schedule_path=args.schedule,
-                output_dir=args.out,
-                backend=args.backend,
-                architecture=args.architecture,
-                yosys=args.yosys,
-                openparf_install=args.openparf_install,
-                openparf_python=args.openparf_python,
-                seed=args.seed,
-                vivado=args.vivado,
-                vivado_place_directive=args.vivado_place_directive,
-                vivado_route_directive=args.vivado_route_directive,
-                rapidwright_jar=args.rapidwright_jar,
-                rapidwright_java=args.rapidwright_java,
-                rapidwright_java_source=args.rapidwright_java_source,
-                rapidwright_device_data=args.rapidwright_device_data,
-                rapidwright_timing_data=args.rapidwright_timing_data,
-                rapidwright_opensta=args.rapidwright_opensta,
-                rapidwright_native_constraints=(
-                    args.rapidwright_native_constraints
-                ),
-                rapidwright_provider_manifest=(
-                    args.rapidwright_provider_manifest
-                ),
-                original_ir_path=args.original_ir,
-                assignment_path=args.assignment,
-                routes_path=args.routes,
-                path_database_path=args.path_database,
-                logic_path_database_path=args.logic_path_database,
-                workers=args.workers,
-                resume=args.resume,
-                fpga_ids=args.fpga_ids,
-            )
-            _print_json(report["summary"])
-            return 0
         if args.benchmark_run is not None:
             if args.source_root is None:
                 raise EmuFlowError("--benchmark-run requires --source-root")
@@ -1679,7 +614,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             mapping_profile = args.mapping_profile or XILINX_ULTRASCALEPLUS_OPEN_PROFILE
             timing_io = None
-        report = run_multi_fpga_flow(
+
+        report = native_compile.run_native_multi_fpga_flow(
             platform_path=args.platform,
             output_dir=args.out,
             prepared_frontend=args.prepared_frontend,
@@ -1789,299 +725,13 @@ def _dispatch(args: argparse.Namespace) -> int:
             global_sta_executable=args.global_sta_executable,
             global_timing_engine=args.global_timing_engine,
         )
+
         _print_json(report.get("summary", report))
+
         return 0 if report["status"] == "pass" else 2
-
-    if args.command == "partition":
-        report = validate_phase3_indexed(
-            ir_path=args.ir,
-            platform_path=args.platform,
-            phase3_report_path=args.phase3_report,
-            assignment_index_path=args.assignment_index,
-        )
-        _print_json(report)
-        return 0
-
-    if args.command == "phase3":
-        report = run_phase3(
-            ir_path=args.ir,
-            platform_path=args.platform,
-            output_dir=args.out,
-            constraints_path=args.constraints,
-            seed=args.seed,
-            min_used_fpgas=args.min_used_fpgas,
-            balance_tolerance=args.balance_tolerance,
-            provider=args.provider,
-            openroad=args.openroad,
-            tritonpart_solution=args.tritonpart_solution,
-            net_weights_path=args.net_weights,
-            tritonpart_timeout_seconds=args.tritonpart_timeout_seconds,
-            tritonpart_seed_attempts=args.tritonpart_seed_attempts,
-            tritonpart_num_initial_solutions=(
-                args.tritonpart_num_initial_solutions
-            ),
-            tritonpart_num_best_initial_solutions=(
-                args.tritonpart_num_best_initial_solutions
-            ),
-            tritonpart_repair_min_used_fpgas=(
-                args.tritonpart_repair_min_used_fpgas
-            ),
-            route_constraints_path=args.route_constraints,
-            hop_refiner=args.hop_refiner,
-            cut_mode=args.cut_mode,
-            max_cross_fpga_dependency_depth=(
-                args.max_cross_fpga_dependency_depth
-            ),
-            timing_database_path=args.timing_database,
-            patron_refiner=args.patron_refiner,
-            patron_max_moves=args.patron_max_moves,
-            patron_algorithm_version=args.patron_algorithm_version,
-            static_exact_candidate_policy=(
-                args.static_exact_candidate_policy
-            ),
-        )
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
-
-    if args.command == "sta":
-        if args.sta_command == "project-path-database":
-            report = project_sta_path_database(
-                args.database, args.assignment, args.output
-            )
-        elif args.sta_command == "validate-path-database":
-            report = validate_sta_path_database(args.database, args.ir)
-        elif args.sta_command == "derive-partition-net-weights":
-            report = derive_partition_net_weights(
-                args.database,
-                args.ir,
-                args.output,
-                criticality_scale=args.criticality_scale,
-                criticality_exponent=args.criticality_exponent,
-            )
-        else:
-            clock_definitions = parse_clock_definitions(
-                args.clock_period
-            )
-            report = run_opensta_path_database(
-                ir_path=args.ir,
-                output_path=args.output,
-                clocks=clock_definitions or None,
-                timing_model_path=args.timing_model,
-                architecture_timing_db_path=args.architecture_timing_db,
-                executable=args.opensta,
-                max_paths=args.max_paths,
-                log_path=args.log,
-            )
-        _print_json(report)
-        return 0
-
-    if args.command == "route":
-        report = validate_phase4(
-            assignment_path=args.assignment,
-            platform_path=args.platform,
-            routes_path=args.routes,
-            timing_paths_path=args.timing_paths,
-        )
-        _print_json(report)
-        return 0
-
-    if args.command == "phase4":
-        report = run_phase4(
-            assignment_path=args.assignment,
-            platform_path=args.platform,
-            output_dir=args.out,
-            constraints_path=args.constraints,
-            frame_slots=args.frame_slots,
-            max_iterations=args.max_iterations,
-            provider=args.provider,
-            timing_paths_path=args.timing_paths,
-            router=args.router,
-            candidate_workers=args.candidate_workers,
-        )
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
-
-    if args.command == "schedule":
-        report = validate_phase5(
-            routes_path=args.routes,
-            platform_path=args.platform,
-            schedule_path=args.schedule,
-
-            assignment_path=args.assignment,
-        )
-        _print_json(report)
-        return 0
-
-    if args.command == "phase5":
-        report = run_phase5(
-            routes_path=args.routes,
-            platform_path=args.platform,
-            output_dir=args.out,
-            assignment_path=args.assignment,
-
-            provider=args.provider,
-
-        )
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
-
-
-    if args.command == "pin-plan":
-        if args.pin_plan_command == "chimew-build":
-            report = run_chimew_phase6_adapter(
-                schedule_path=args.schedule,
-                platform_path=args.platform,
-                bank_channel_input_path=args.assignment_input,
-                electrical_map_path=args.electrical_map,
-                output_dir=args.out,
-                qualification_path=args.qualification,
-                bank_channel_report_path=args.assignment_report,
-                executable=args.assigner,
-                region_count=args.region_count,
-            )
-            _print_json(report)
-            return 0
-        if args.pin_plan_command == "chimew-qualify":
-            report = qualify_chimew_artifact_chain({
-                "schedule": args.schedule, "crossings": args.crossings,
-                "initial_grouping": args.initial_grouping, "positions": args.positions,
-                "refined_grouping": args.refined_grouping, "rudy_input": args.rudy_input,
-                "rudy_report": args.rudy_report, "bank_channel_input": args.assignment_input,
-                "bank_channel_report": args.assignment_report,
-            }, args.output)
-            _print_json(report)
-            return 0
-        if args.pin_plan_command == "chimew-run":
-            source_options = {
-                "routing": args.routing_source,
-                "placement": args.placement_source,
-                "netlist": args.netlist_source,
-                "architecture": args.architecture_source,
-                "package_pins": args.package_pins_source,
-            }
-            present_sources = {
-                label: path
-                for label, path in source_options.items()
-                if path is not None
-            }
-            if present_sources and len(present_sources) != len(source_options):
-                raise EmuFlowError(
-                    "Chimew source binding requires all five source artifacts"
-                )
-            report = run_chimew_phase6_pipeline(
-                schedule_path=args.schedule,
-                platform_path=args.platform,
-                crossings_path=args.crossings,
-                positions_path=args.positions,
-                rudy_input_path=args.rudy_input,
-                bank_channel_input_path=args.assignment_input,
-                electrical_map_path=args.electrical_map,
-                output_dir=args.out,
-                source_paths=present_sources or None,
-                grouper=args.grouper,
-                refiner=args.refiner,
-                rudy=args.rudy,
-                assigner=args.assigner,
-                region_count=args.region_count,
-            )
-            _print_json(report)
-            return 0
-        if args.pin_plan_command == "chimew-validate":
-            report = validate_chimew_phase6_pipeline(args.bundle)
-            _print_json(report)
-            return 0
-        schedule = read_tdm_schedule(args.schedule)
-        platform = Platform.load(args.platform)
-        report = validate_pin_plan(
-            schedule,
-            platform,
-            read_position_hints(args.positions),
-            read_pin_plan(args.plan),
-        )
-        _print_json(report)
-        return 0
-
-    if args.command == "split":
-        report = validate_phase6(
-            ir_path=args.ir,
-            assignment_path=args.assignment,
-            schedule_path=args.schedule,
-            platform_path=args.platform,
-            manifest_path=args.manifest,
-            pin_plan_path=args.pin_plan,
-            position_hints_path=args.position_hints,
-            electrical_binding_path=args.electrical_binding,
-        )
-        _print_json(report)
-        return 0
-
-    if args.command == "phase6":
-        report = run_phase6(
-            ir_path=args.ir,
-            assignment_path=args.assignment,
-            schedule_path=args.schedule,
-            platform_path=args.platform,
-            output_dir=args.out,
-            pin_plan_path=args.pin_plan,
-            position_hints_path=args.position_hints,
-            electrical_binding_path=args.electrical_binding,
-            transport_cost_path=args.transport_cost_db,
-            equivalence_cycles=args.equivalence_cycles,
-            equivalence_seed=args.equivalence_seed,
-            clock_periods=(
-                parse_clock_definitions(args.clock_period)
-                if args.clock_period
-                else None
-            ),
-        )
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
-
-
-
-
-    if args.command == "lower-placement-ir":
-        report = run_placement_ir_lowering_from_split(
-            split_path=args.split,
-            fpga=args.fpga,
-            transport_path=args.transport,
-            transport_ir_path=args.transport_ir,
-            output_path=args.output,
-            report_path=args.report,
-            boundary_identity_path=args.boundary_identities,
-        )
-        _print_json(report)
-        return 0
-
-    if args.command == "emit-mapped-verilog":
-        report = emit_mapped_verilog(
-            ir_path=args.ir,
-            output_path=args.output,
-            report_path=args.report,
-        )
-        _print_json(dict(report))
-        return 0
-
-    if args.command == "phase7c":
-        report = run_phase7c(
-            schedule_path=args.schedule,
-            platform_path=args.platform,
-            phase3_report_path=args.phase3_report,
-            phase4_report_path=args.phase4_report,
-            phase5_report_path=args.phase5_report,
-            phase6_report_path=args.phase6_report,
-            assignment_path=args.assignment,
-            physical_summary_path=args.physical_summary,
-            routes_path=args.routes,
-            simulation_frames=args.simulation_frames,
-            global_sta_executable=args.global_sta_executable,
-            global_timing_engine=args.global_timing_engine,
-            output_dir=args.out,
-        )
-        _print_json(report)
-        return 0 if report["status"] in {"generated", "pass"} else 2
 
     raise AssertionError(f"unhandled command {args.command!r}")
+
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = _build_parser()

@@ -21,7 +21,7 @@ from typing import Iterable
 from emuflow.common.errors import ValidationError
 from emuflow.timing.global_event_store import EventChecks as _IndexedEventChecks, PathMetadata as _IndexedPathMetadata, export_event_model, event_model_sources
 from emuflow.common.native_tools import resolve_native_executable
-from emuflow.timing.opensta import require_opensta_engine
+from emuflow.timing.engine_runtime import require_opensta_engine
 
 @dataclass(frozen=True)
 class EventCheck:

@@ -271,7 +271,7 @@ def _probe_tool(native, arguments):
 def probe_environment(profile, backend=None):
     """Load the installed native libraries and selected solver host before use."""
     import subprocess
-    from emuflow.timing.opensta import check_opensta_engine_version
+    from emuflow.timing.engine_runtime import check_opensta_engine_version
     from emuflow.physical.openparf.openparf import validate_openparf_runtime
 
     report = require_environment(profile, backend)

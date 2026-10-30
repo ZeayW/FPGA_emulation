@@ -426,7 +426,7 @@ def test_phase5_rejects_missing_native_timing_schema_before_reading_circuit_inpu
     tmp_path,
 ):
     from emuflow.common.errors import EmuFlowError
-    from emuflow.scheduling.phase5 import run_phase5
+    from emuflow_tools.stage_clients.schedule import run_phase5
 
     with (
         patch(
@@ -434,7 +434,7 @@ def test_phase5_rejects_missing_native_timing_schema_before_reading_circuit_inpu
             side_effect=EmuFlowError("timing schema unavailable"),
         ),
         patch(
-            "emuflow.scheduling.phase5.read_system_routes",
+            "emuflow_tools.stage_clients.schedule.read_system_routes",
             side_effect=AssertionError("circuit opened before preflight"),
         ),
     ):

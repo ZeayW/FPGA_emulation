@@ -22,6 +22,10 @@ def _build_parser():
     subparsers = parser.add_subparsers(dest="command", required=True)
     platform_parser = subparsers.add_parser("platform", help="Independent BoardDB materializers")
     platform_subparsers = platform_parser.add_subparsers(dest="platform_command", required=True)
+    research = platform_subparsers.add_parser('research-model', help='write a finite research BoardDB')
+    research.add_argument('--output', type=Path, required=True)
+    research.add_argument('--fpga-count', type=int, choices=(2,4), default=4)
+    research.add_argument('--wires-per-bank', type=int, default=20)
     platform_mps4 = platform_subparsers.add_parser(
         "arm-mps4-materialize",
         help="materialize Arm's documented three-MPS4 serial-link topology",
@@ -211,10 +215,53 @@ def _build_parser():
         "--yosys",
         help="explicit comparison override; defaults to the in-tree build",
     )
+    validate_flow = subparsers.add_parser("validate-flow", help="independently audit a complete flow directory")
+    validate_flow.add_argument("--flow", type=Path, required=True)
+    validate_flow.add_argument("--minimum-combinational-cut-nets", type=int, default=0)
+    validate_flow.add_argument("--require-physical", action="store_true")
+    design = subparsers.add_parser("design", help="prepare reproducible design inputs")
+    designs = design.add_subparsers(dest="design_command", required=True)
+    prepare = designs.add_parser("prepare", help="prepare generic RTL, clock and I/O inputs")
+    prepare.add_argument("config", type=Path)
+    prepare.add_argument("--out", type=Path, required=True)
+    nvdla = designs.add_parser("prepare-nvdla", help="prepare the pinned NVDLA validation sources")
+    nvdla.add_argument("--source-root", type=Path, required=True)
+    nvdla.add_argument("--platform", type=Path)
+    nvdla.add_argument("--out", type=Path, required=True)
+    environment = subparsers.add_parser("environment", help="inspect installed tool and device data")
+    commands = environment.add_subparsers(dest="environment_command", required=True)
+    check = commands.add_parser("check")
+    check.add_argument("profile", type=Path, nargs="?")
+    check.add_argument("--backend", choices=("rapidwright", "vivado"))
     return parser
 
 def _dispatch(args):
+    if args.command == "validate-flow":
+        from emuflow_tools.flow_validation import validate_multi_fpga_flow_bundle
+        _print_json(validate_multi_fpga_flow_bundle(args.flow, minimum_combinational_cut_nets=args.minimum_combinational_cut_nets, require_physical=args.require_physical))
+        return 0
+    if args.command == "design":
+        from emuflow_tools.designs.prepare import prepare_design_run, prepare_nvdla_run
+        if args.design_command == "prepare":
+            report = prepare_design_run(args.config, args.out)
+        else:
+            options = {} if args.platform is None else {"platform_path": args.platform}
+            report = prepare_nvdla_run(args.source_root, args.out, **options)
+        _print_json(report)
+        return 0
+    if args.command == "environment":
+        from emuflow.flow.environment import inspect_environment, load_environment, probe_environment, resolve_environment_path
+        profile = load_environment(resolve_environment_path(args.profile))
+        report = inspect_environment(profile, args.backend)
+        if report["status"] == "pass":
+            report = probe_environment(profile, args.backend)
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
     if args.command == "platform":
+        if args.platform_command == 'research-model':
+            from emuflow.platform.default_platform import materialize_research_platform
+            _print_json(materialize_research_platform(args.output, fpga_count=args.fpga_count, wires_per_bank=args.wires_per_bank))
+            return 0
         if args.platform_command == "arm-mps4-materialize":
             report = materialize_arm_mps4_boarddb(
                 output_path=args.output,

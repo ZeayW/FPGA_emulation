@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.scheduling.phase5_native import run_native_phase5
+from emuflow_tools.stage_clients.schedule_native import run_native_phase5
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.scheduling.phase5 import validate_phase5_generation
+from emuflow_tools.stage_clients.schedule import validate_phase5_generation
 from tests.native_build import emuflow_native
 from tests.test_phase5_native_stage import current_case
 from tests.test_native_schedule_generation import install_runtime

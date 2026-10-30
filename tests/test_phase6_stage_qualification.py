@@ -321,7 +321,7 @@ def test_workspace_measurement_deduplicates_aliases_and_excludes_borrowed_symlin
 
 
 def test_native_stage_failure_never_selects_an_adapter_fallback(tmp_path, monkeypatch):
-    from emuflow.transport import phase6_native
+    from emuflow_tools.stage_clients import transport_native as phase6_native
 
     request = prepare(tmp_path, monkeypatch)
     path = tmp_path / "request.json"

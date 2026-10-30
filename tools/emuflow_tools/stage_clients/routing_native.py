@@ -32,7 +32,7 @@ def prepare_configuration_request(path, board, *, assignment=None, timing_paths=
     if external_timing is not None:
         sources.append(('external-timing',bind_store_source(Path(external_timing),'system-routing-paths-v1')))
     if timing_model_path is not None:
-        from emuflow.timing.opensta import DEFAULT_TIMING_MODEL
+        from emuflow_tools.stage_clients.opensta import DEFAULT_TIMING_MODEL
         from emuflow.common.paths import DATA_ROOT
         sources.append(('timing-model',bind_store_source(DEFAULT_TIMING_MODEL if architecture_timing_db_path is not None else Path(timing_model_path),'phase2-source-v1')))
         if architecture_timing_db_path is not None:

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.common.errors import ValidationError
-from emuflow.timing.opensta import (
+from emuflow_tools.stage_clients.opensta import (
     DEFAULT_TIMING_MODEL,
     FPGA_TIMING_MODEL_SCHEMA,
     FPGA_TIMING_MODEL_SCHEMA_V2,
@@ -253,8 +253,8 @@ class OpenStaProviderTest(unittest.TestCase):
             installed_alias.write_bytes(launcher.read_bytes())
             binary.write_bytes(b"engine-revision-a")
             binary.chmod(0o755)
-            with mock.patch("emuflow.timing.opensta.check_opensta_engine_version",return_value="3.1.0"), \
-                 mock.patch("emuflow.timing.opensta._runtime_data_path",return_value=launcher), \
+            with mock.patch("emuflow.timing.engine_runtime.check_opensta_engine_version",return_value="3.1.0"), \
+                 mock.patch("emuflow.timing.engine_runtime._runtime_data_path",return_value=launcher), \
                  mock.patch.dict("os.environ", {"EMUFLOW_OPENSTA_CONTAINER_BINARY":str(binary)}):
                 first = require_opensta_engine(str(launcher))
                 binary.write_bytes(b"engine-revision-b")

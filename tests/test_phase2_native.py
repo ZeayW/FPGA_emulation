@@ -92,8 +92,8 @@ def test_bounded_policy_preserves_default_and_architecture_modes(tmp_path, phase
     executable, _trace = _fixed_opensta(tmp_path, records)
     database = _architecture_stage_contract(tmp_path) if architecture else None
     with patch('emuflow.timing.indexed_timing.IndexedTimingView', side_effect=AssertionError('Python timing graph')), \
-         patch('emuflow.timing.opensta.render_opensta_liberty', side_effect=AssertionError('Python Liberty producer')), \
-         patch('emuflow.timing.opensta.require_opensta_engine', side_effect=AssertionError('Python engine qualification')):
+         patch('emuflow_tools.stage_clients.opensta.render_opensta_liberty', side_effect=AssertionError('Python Liberty producer')), \
+         patch('emuflow_tools.stage_clients.opensta.require_opensta_engine', side_effect=AssertionError('Python engine qualification')):
         policy = prepare_policy(tmp_path / 'policy', source, clocks={'clk': 10.0},
             executable=str(executable), architecture_timing_db_path=database)
     value = json.loads(policy.read_text())
@@ -265,7 +265,7 @@ def _assert_published_tool_evidence(output, engine):
 @pytest.mark.parametrize('optimization_enabled', [False, True])
 def test_complete_native_stage_matches_retained_provider_and_typed_weights(
         tmp_path, phase2_runtime, architecture, optimization_enabled):
-    from emuflow.timing.opensta import run_opensta_path_database
+    from emuflow_tools.stage_clients.opensta import run_opensta_path_database
     from emuflow.timing.phase2_native import run_native_phase2
     from emuflow.timing.sta import (derive_partition_net_weights,
                              iter_partition_net_weight_records,
@@ -279,7 +279,7 @@ def test_complete_native_stage_matches_retained_provider_and_typed_weights(
                'max_paths': 1000}
     output = tmp_path / 'native'
     from unittest.mock import patch
-    with patch('emuflow.timing.opensta.run_opensta_path_database',
+    with patch('emuflow_tools.stage_clients.opensta.run_opensta_path_database',
                side_effect=AssertionError('old Python timing stage was invoked')), \
          patch('emuflow.ir.ir.EmuIR.load', side_effect=AssertionError('whole Python graph was loaded')):
         report = run_native_phase2(source, output, optimization_enabled=optimization_enabled,
@@ -420,7 +420,7 @@ def test_real_opensta_stage_matches_retained_provider_when_installed(tmp_path, p
     import os
     from pathlib import Path
     from emuflow.common.native_tools import resolve_native_executable
-    from emuflow.timing.opensta import run_opensta_path_database
+    from emuflow_tools.stage_clients.opensta import run_opensta_path_database
     from emuflow.timing.phase2_native import run_native_phase2
     from emuflow.timing.sta import iter_sta_path_database_paths
     from emuflow.common.errors import EmuFlowError
@@ -449,7 +449,7 @@ def test_native_policy_matches_all_specialized_pin_roles_and_clock_polarities(tm
     from unittest.mock import patch
     from tests.test_xilinx_preplacement_timing import _mapped_fixture
     from tests.yosys_reference import import_yosys_json
-    from emuflow.timing.opensta import (build_architecture_opensta_timing_model,
+    from emuflow_tools.stage_clients.opensta import (build_architecture_opensta_timing_model,
         render_opensta_liberty, validate_timing_model_coverage, _sealed_string_set_summary)
     mapped = tmp_path / 'mapped.json'
     _mapped_fixture(mapped)
@@ -496,7 +496,7 @@ def test_native_policy_matches_all_specialized_pin_roles_and_clock_polarities(tm
 @pytest.mark.parametrize('damage', ['clock', 'max-paths-bool', 'io-direction', 'architecture-seal', 'architecture-delay', 'model-output'])
 def test_native_policy_rejects_invalid_sources_without_publishing(tmp_path, phase2_runtime, damage):
     from pathlib import Path
-    from emuflow.timing.opensta import DEFAULT_TIMING_MODEL
+    from emuflow_tools.stage_clients.opensta import DEFAULT_TIMING_MODEL
     from emuflow.common.native_tools import native_file_generation
     source, records = _counter_stage_input(tmp_path)
     engine, _trace = _fixed_opensta(tmp_path, records)

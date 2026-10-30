@@ -216,7 +216,7 @@ def prepare_native(root, reference, platform, constraints, timing, routes, origi
     from emuflow.partition.partition_ir import load_partition_ir
     from tests.native_partition_kernel_driver import initialize
     from emuflow.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
-    from emuflow.timing.opensta import OPENSTA_PROVIDER
+    from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
     from emuflow.common.io import read_json
     from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
     source = root / 'source.sqlite'

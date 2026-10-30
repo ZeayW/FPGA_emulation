@@ -15,11 +15,8 @@ from emuflow.platform.board_link_timing import build_board_link_timing_model
 from emuflow.flow.cli import _build_parser, _dispatch
 from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.common.io import read_json, write_json
-from emuflow.flow.multi_fpga_flow import (
-    run_multi_fpga_flow,
-    validate_multi_fpga_flow_bundle,
-    validate_multi_fpga_flow_report,
-)
+from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
+from emuflow_tools.flow_validation import validate_multi_fpga_flow_bundle, validate_multi_fpga_flow_report
 from emuflow.scheduling.tdm_schedule_storage import TypedScheduleEntrySequence
 from emuflow.transport.transport_cost import (
     BASE_FEATURE_NAMES,
@@ -57,7 +54,7 @@ def _catalog_source_fixture():
 
 class MultiFpgaFlowTest(unittest.TestCase):
     def test_python_phase6_dispatch_and_its_schedule_probe_are_retired(self):
-        from emuflow.flow import multi_fpga_flow as flow
+        from emuflow_tools import flow_validation as flow
         self.assertFalse(hasattr(flow,"_schedule_has_entries"))
         self.assertFalse(hasattr(flow,"_compile_split"))
 
@@ -118,7 +115,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     str(source_root), "--platform", "platform.json",
                     "--xilinx-mapping-strategy", strategy, "--out", "unused",
                 ])
-                with patch("emuflow.flow.cli.run_multi_fpga_flow") as run, patch("emuflow.flow.cli._print_json"):
+                with patch('emuflow.flow.native_compile.run_native_multi_fpga_flow') as run, patch("emuflow.flow.cli._print_json"):
                     run.return_value = {"status": "pass"}
                     self.assertEqual(_dispatch(args), 0)
                     self.assertEqual(run.call_args.kwargs["xilinx_mapping_strategy"], strategy)
@@ -327,39 +324,27 @@ class MultiFpgaFlowTest(unittest.TestCase):
         self.assertEqual(
             resumed.tritonpart_solution, Path("saved.part.4")
         )
-        validate = _build_parser().parse_args(
-            [
-                "multi-fpga",
-                "validate",
-                "--flow",
-                "build",
-                "--minimum-combinational-cut-nets",
-                "1",
-                "--require-physical",
-            ]
-        )
+        from emuflow_tools.cli import _build_parser as tools_parser
+        validate = tools_parser().parse_args([
+            "validate-flow", "--flow", "build",
+            "--minimum-combinational-cut-nets", "1", "--require-physical",
+        ])
         self.assertEqual(validate.minimum_combinational_cut_nets, 1)
         self.assertTrue(validate.require_physical)
-        phase3 = _build_parser().parse_args(
-            [
-                "phase3",
-                "--ir",
-                "design.emuir.json",
-                "--platform",
-                "platform.json",
-                "--out",
-                "phase3",
-            ]
-        )
-        self.assertEqual(phase3.provider, "patron")
-        self.assertEqual(phase3.cut_mode, "static-exact-combinational")
+        self.assertEqual(defaults.partition_provider, "patron")
+        self.assertEqual(defaults.cut_mode, "static-exact-combinational")
+        with self.assertRaises(SystemExit):
+            _build_parser().parse_args([
+                "phase3", "--ir", "design.emuir.json",
+                "--platform", "platform.json", "--out", "phase3",
+            ])
         with self.assertRaises(SystemExit):
             _build_parser().parse_args(["cross-stage", "optimize"])
 
     def test_cli_has_one_tdm_provider_and_rejects_retired_options(self):
         parser = _build_parser()
         base = ["multi-fpga", "compile", "--out", "unused"]
-        with patch("emuflow.flow.cli.run_multi_fpga_flow", return_value={"status": "pass"}) as run, patch("emuflow.flow.cli._print_json"):
+        with patch('emuflow.flow.native_compile.run_native_multi_fpga_flow', return_value={"status": "pass"}) as run, patch("emuflow.flow.cli._print_json"):
             self.assertEqual(_dispatch(parser.parse_args(base)), 0)
             self.assertEqual(run.call_args.kwargs["partition_provider"], "patron")
             self.assertEqual(run.call_args.kwargs["patron_algorithm_version"], 14)
@@ -392,7 +377,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 ]
             )
             with (
-                patch("emuflow.flow.cli.run_multi_fpga_flow") as run,
+                patch('emuflow.flow.native_compile.run_native_multi_fpga_flow') as run,
                 patch("emuflow.flow.cli._print_json"),
             ):
                 run.return_value = {"status": "pass"}
@@ -554,7 +539,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
         self.assertEqual(rejected.exception.code, 2)
 
     def test_python_checkpoint_publication_is_retired(self) -> None:
-        from emuflow.flow import multi_fpga_flow as flow
+        from emuflow_tools import flow_validation as flow
         self.assertFalse(hasattr(flow, "finalize_multi_fpga_physical_checkpoint"))
         self.assertFalse(hasattr(flow, "run_native_physical_signoff"))
         with self.assertRaises(SystemExit) as rejected:
@@ -839,7 +824,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 return read_json(path, *args, **kwargs)
 
             with patch(
-                "emuflow.flow.multi_fpga_flow.read_json",
+                'emuflow_tools.flow_validation.read_json',
                 side_effect=bounded_control_read,
             ):
                 typed_replay = validate_multi_fpga_flow_bundle(output)

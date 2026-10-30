@@ -110,10 +110,12 @@ not implement a second bridge algorithm.
 
 ## Native RWRoute export
 
-The production API is `export_rwroute_input(mapped_index, physical_handoff, output)`.
-Its CLI is `emuflow arch export-xilinx-rwroute-input --mapped-index MAPPED.sqlite
---physical-handoff PHYSICAL.sqlite --output INPUT.tsv`. The former separate
-`--packed`/`--placement` JSON export inputs and Python-object API are retired.
+The native physical controller exports from a mapped index and one typed
+physical handoff. The Python qualification client
+`export_rwroute_input(mapped_index, physical_handoff, output)` delegates to the
+same native stage; complete-flow execution does not call the Python client.
+The former standalone Python CLI, separate `--packed`/`--placement` JSON export
+inputs and Python-object API are retired.
 The v2 bounded native request carries source identities, I/O and resource limits;
 top and part come directly from the authoritative stores. It never opens Python
 packing/placement views or copies their graph populations. Standalone export hashes

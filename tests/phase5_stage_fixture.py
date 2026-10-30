@@ -3,8 +3,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from emuflow.scheduling.phase5 import _load_phase3_semantics
-from emuflow.scheduling.phase5_native import _write_inputs
+from emuflow_tools.stage_clients.schedule import _load_phase3_semantics
+from emuflow_tools.stage_clients.schedule_native import _write_inputs
 from emuflow.platform.platform import Platform
 from emuflow.routing.system_route_storage import read_system_routes
 from emuflow.scheduling.tdm import build_native_exact_schedule_request

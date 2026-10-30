@@ -16,11 +16,11 @@ from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
 from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (compute_cut_nets, validate_partition_artifacts_online, build_clusters, build_partition_assignment, normalize_partition_constraints)
-from emuflow.partition.phase3 import run_phase3
+from emuflow_tools.stage_clients.partition import run_phase3
 from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.phase3_exact_fixture import indexed_exact_manifest
 from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-from emuflow.timing.opensta import OPENSTA_PROVIDER
+from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
 from emuflow.common.io import read_json, write_json
 from tests.phase3_decision_reference import (PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
                                             _select_patron_timing_assignment)
@@ -540,7 +540,7 @@ def test_v14_keeps_maximum_path_hops_ahead_of_scalar_predictive_slack(tmp_path):
 
 @pytest.mark.parametrize('argument', [0, -1, True, 0.5])
 def test_current_native_stage_rejects_invalid_timeout_without_publication(tmp_path, argument):
-    from emuflow.partition.phase3_native import run as run_stage
+    from emuflow_tools.stage_clients.partition_native import run as run_stage
     value = case(tmp_path/'facts')
     ir, platform, clusters, constraints, _, routes = value.args
     for name, document in (('board', platform.to_dict()), ('constraints', constraints), ('routes', routes)):

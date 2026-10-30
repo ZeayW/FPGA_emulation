@@ -20,7 +20,8 @@ from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.flow.cli import main
+from emuflow_tools.stage_clients.partition import run_phase3
+from emuflow_tools.stage_clients.schedule import run_phase5, validate_phase5
 from emuflow.partition.combinational_cut import (STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2, STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA, semantic_contract_sha256)
 from tests.native_partition_facts import semantic_contract_facts as build_static_exact_semantic_contract, candidate_index_facts as _build_combinational_cut_candidate_index
 from emuflow.common.errors import ValidationError
@@ -37,7 +38,7 @@ from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints, validate_partition_artifacts)
 from tests.partition_reference import assign_clusters
 from emuflow.platform.platform import Platform
-from emuflow.transport.phase6 import run_phase6, validate_phase6
+from emuflow_tools.stage_clients.transport import run_phase6, validate_phase6
 from emuflow.transport.split_netlist_storage import SplitNetlistView
 from emuflow.partition.phase3_assignment_index import (ASSIGNMENT_INDEX_APPLICATION_ID, open_phase3_assignment_index, phase3_exact_semantic_counts, phase3_exact_relation_counts, read_phase3_exact_split_relations, validate_phase3_assignment_index)
 from tests.native_semantic_facts import read_nodes as read_native_static_exact_cut_node_stream
@@ -2187,7 +2188,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             exact_validation["combinational_cut_nets"], 0
         )
 
-    def test_phase3_cli_emits_structural_qualification(self):
+    def test_native_phase3_emits_structural_qualification(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             ir_path = root / "design.emuir.sqlite"
@@ -2198,29 +2199,12 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             write_fixture_solution(self.ir, PLATFORM_PATH, solution,
                 cut_mode="static-exact-combinational",
                 max_cross_fpga_dependency_depth=2, balance_tolerance=1.0)
-            with redirect_stdout(io.StringIO()):
-                status = main(
-                    [
-                        "phase3",
-                        "--ir",
-                        str(ir_path),
-                        "--platform",
-                        str(PLATFORM_PATH),
-                        "--provider",
-                        "tritonpart",
-                        "--tritonpart-solution",
-                        str(solution),
-                        "--cut-mode",
-                        "static-exact-combinational",
-                        "--max-cross-fpga-dependency-depth",
-                        "2",
-                        "--balance-tolerance",
-                        "1.0",
-                        "--out",
-                        str(output),
-                    ]
-                )
-            self.assertEqual(status, 0)
+            result = run_phase3(
+                ir_path, PLATFORM_PATH, output, provider="tritonpart",
+                tritonpart_solution=solution, cut_mode="static-exact-combinational",
+                max_cross_fpga_dependency_depth=2, balance_tolerance=1.0,
+            )
+            self.assertEqual(result["status"], "pass")
             report = json.loads(
                 (output / "phase3_report.json").read_text(encoding="utf-8")
             )
@@ -2456,7 +2440,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             launch["source_semantics"], "configuration-stable-constant"
         )
 
-    def test_phase5_cli_writes_and_revalidates_exact_schedule(self):
+    def test_native_phase5_writes_and_revalidates_exact_schedule(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
         routes = self._persisted_routes(self._exact_routes(assignment))
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2467,39 +2451,12 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             from tests.native_route_seal_fixture import write_route_store_fixture
             write_route_store_fixture(routes_path, routes)
             write_current_assignment_fixture(assignment_path, self.ir, assignment)
-            with redirect_stdout(io.StringIO()):
-                self.assertEqual(
-                    main(
-                        [
-                            "phase5",
-                            "--routes",
-                            str(routes_path),
-                            "--assignment",
-                            str(assignment_path),
-                            "--platform",
-                            str(PLATFORM_PATH),
-                            "--out",
-                            str(output),
-                        ]
-                    ),
-                    0,
-                )
-                self.assertEqual(
-                    main(
-                        [
-                            "schedule",
-                            "validate",
-                            str(output / "schedule.json"),
-                            "--routes",
-                            str(routes_path),
-                            "--assignment",
-                            str(assignment_path),
-                            "--platform",
-                            str(PLATFORM_PATH),
-                        ]
-                    ),
-                    0,
-                )
+            result = run_phase5(routes_path, PLATFORM_PATH, output, assignment_path=assignment_path)
+            self.assertEqual(result["status"], "pass")
+            validation = validate_phase5(
+                routes_path, PLATFORM_PATH, output / "schedule.json", assignment_path=assignment_path,
+            )
+            self.assertEqual(validation["status"], "pass")
             report = json.loads(
                 (output / "phase5_report.json").read_text(encoding="utf-8")
             )
@@ -2755,7 +2712,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 validation["static_exact_equivalence"]["status"], "pass"
             )
             with patch(
-                "emuflow.transport.phase6._static_exact_equivalence_evidence",
+                "emuflow_tools.stage_clients.transport._static_exact_equivalence_evidence",
                 side_effect=AssertionError("equivalence replay was not reusable"),
             ):
                 structural_validation = validate_phase6(

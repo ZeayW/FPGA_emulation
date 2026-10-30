@@ -13,12 +13,13 @@ RTL designs can run directly from their source files.
 
 ## Prepare the pinned NVDLA design once
 
-From the source checkout, fetch the existing catalog revision and archive:
+Install the [optional preparation tools](../tools/README.md), then fetch the
+existing catalog revision and archive from the source checkout:
 
 ```bash
 python3 scripts/benchmarks/fetch.py fetch nvdla --destination build/rtl
 
-emuflow design prepare-nvdla \
+emuflow-tools design prepare-nvdla \
   --source-root build/rtl/nvdla \
   --out nvdla.run.json
 ```
@@ -64,7 +65,7 @@ publishes `multi-fpga-flow-report.json`, `runtime/phase7c_report.json` and
 contract with:
 
 ```bash
-emuflow multi-fpga validate --flow runs/nvdla-openparf --require-physical
+emuflow-tools validate-flow --flow runs/nvdla-openparf --require-physical
 ```
 
 Unresolved paths, missing physical coverage and failed implementation stages

@@ -32,7 +32,7 @@ def write_fixture_solution(ir, platform_path, path, *, cut_mode="sequential-only
 
 def run_phase3_fixture(*args, **kwargs):
     import inspect
-    from emuflow.partition.phase3 import run_phase3
+    from emuflow_tools.stage_clients.partition import run_phase3
     from emuflow.partition.partition_ir import load_partition_ir
     bound = inspect.signature(run_phase3).bind(*args, **kwargs)
     bound.apply_defaults()
@@ -49,7 +49,7 @@ def run_phase3_fixture(*args, **kwargs):
 
 def run_multi_fpga_flow_fixture(*args, **kwargs):
     """Exercise the actual native controller with a bounded initializer input."""
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
     from tests.yosys_reference import import_yosys_json
     from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
     from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH

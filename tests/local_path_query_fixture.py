@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.ir.ir import EmuIR
 from emuflow.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
-from emuflow.timing.opensta import OPENSTA_PROVIDER
+from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
 from tests.native_route_seal_fixture import write_route_store_fixture
 
 

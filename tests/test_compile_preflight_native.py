@@ -58,7 +58,7 @@ def normalized(value,output):
 @pytest.mark.parametrize('backend',[None,'vivado','rapidwright'])
 def test_all_static_configurations_and_effective_state_match_independent_preflight(tmp_path,backend):
     from tests.preflight_reference import _compile_preflight
-    from emuflow.flow import multi_fpga_flow as flow
+    from emuflow_tools import flow_validation as flow
     options=request_options(tmp_path,backend);value,_=_request((),options)
     reference_value=copy.deepcopy(value);reference_value['options']['output_dir']=str(tmp_path/'reference')
     ctx=_initial_context(reference_value);_compile_preflight(ctx)

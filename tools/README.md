@@ -10,7 +10,8 @@ emuflow-ppro-calibration --help
 ```
 
 This distribution contains public-contest import/evaluation, standalone benchmark
-qualification, public BoardDB materialization and PPro calibration tools. It
+qualification, complete-result auditing, reproducible input preparation,
+public BoardDB materialization and PPro calibration tools. It
 depends on `emuflow`; the runtime package does not depend on or install these tools.
 For source checkout execution, use `PYTHONPATH=src/python:tools python3 -m emuflow_tools`.
 
@@ -32,3 +33,20 @@ another script or source revision.
 The benchmark runner uses the maintained `xcup`/`native` RTL frontend and writes
 its artifacts under `frontend/phase1/`. `benchmark_report.json` uses report v2:
 a compact Phase 1 summary and references to the detailed native evidence and IR.
+
+Complete flow execution stays in `emuflow run` and `emuflow multi-fpga compile`.
+Optional preparation and independent result audits use this distribution:
+
+```sh
+emuflow-tools design prepare design.json --out design.run.json
+emuflow-tools validate-flow --flow runs/design --require-physical
+emuflow-tools environment check --backend rapidwright
+```
+
+The runtime does not import the tool distribution. These commands are not
+alternate production stage controllers.
+
+`emuflow_tools.stage_clients` contains bounded native-stage clients and independent
+replay used by qualification scripts and component tests. They are excluded from
+the production runtime and expose no replacement stage command tree. The retained
+small-design behavioral oracle remains in the runtime with explicit size bounds.

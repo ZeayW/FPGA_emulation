@@ -16,7 +16,7 @@ def run_native_physical_signoff(flow_root, split_root, physical_root, runtime_ro
     runner=resolve_native_executable('emuflow-native')
     engine=resolve_native_executable('sta',executable)
     if launcher_reference is None:
-        from emuflow.timing.opensta import _runtime_data_path
+        from emuflow.timing.engine_runtime import _runtime_data_path
         launcher_reference=_runtime_data_path(Path('scripts/opensta/container_runtime.sh'))
     launcher=str(Path(launcher_reference).absolute()) if Path(launcher_reference).is_file() else '-'
     with tempfile.TemporaryDirectory(prefix='.physical-signoff-driver-',dir=root) as scratch:

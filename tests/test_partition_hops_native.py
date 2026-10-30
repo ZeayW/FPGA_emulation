@@ -237,7 +237,7 @@ def test_retired_numeric_hop_cli_rejects_before_overwriting_results(case, tmp_pa
 
 
 def test_complete_stage_still_enforces_hop_contract(case, tmp_path):
-    from emuflow.partition.phase3_native import run as run_phase3
+    from emuflow_tools.stage_clients.partition_native import run as run_phase3
     f = case
     board = tmp_path/'board.json'
     board.write_text(json.dumps(f.platform.to_dict()))

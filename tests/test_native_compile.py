@@ -41,7 +41,7 @@ def test_control_state_rejects_graph_views_without_traversal():
 
 
 def test_controller_transfers_report_projection_without_graph_diagnostics():
-    from emuflow.flow import multi_fpga_flow as flow
+    from emuflow_tools import flow_validation as flow
     class GraphView(dict):
         def __iter__(self):
             raise AssertionError("diagnostic graph expanded")
@@ -54,7 +54,7 @@ def test_controller_transfers_report_projection_without_graph_diagnostics():
 
 
 def test_adapter_uses_actual_compile_defaults_and_rejects_relative_bindings(tmp_path):
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
     context = _initial_context({"options": {"output_dir": str(tmp_path / "out")}})
     defaults = inspect.signature(run_multi_fpga_flow).parameters
     for key in ("partition_provider", "seed", "cut_mode", "physical_seed"):
@@ -103,8 +103,8 @@ def test_compile_has_no_second_control_selector(implementation):
 
 def test_retired_python_order_and_native_stage_launchers_are_absent():
     import ast
-    from emuflow.flow import multi_fpga_flow as flow
-    source = ast.parse(inspect.getsource(flow.run_multi_fpga_flow))
+    from emuflow_tools import flow_validation as flow
+    source = ast.parse(inspect.getsource(run_native_multi_fpga_flow))
     assert not any(isinstance(node, ast.Name) and node.id.startswith("_compile_") for node in ast.walk(source))
     for name in ("_compile_partition", "_compile_route", "_compile_schedule", "_compile_routing_schedule", "_compile_chimew_signoff"):
         assert not hasattr(flow, name)
@@ -114,24 +114,30 @@ def test_retired_python_order_and_native_stage_launchers_are_absent():
 @pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
 @pytest.mark.parametrize("phase6", ["baseline", "chimew"])
 def test_public_api_submits_retained_configuration_once_without_fallback(tmp_path, backend, phase6):
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-    failure = EmuFlowError("terminal native failure")
-    with patch("emuflow.flow.native_compile.run_native_multi_fpga_flow", side_effect=failure) as controller:
-        with pytest.raises(EmuFlowError, match="terminal native failure"):
-            run_multi_fpga_flow(output_dir=tmp_path / "flow", physical=True, physical_backend=backend,
-                                phase6_provider=phase6, prepared_frontend=tmp_path / "front",
-                                prepared_timing=tmp_path / "timing", clock_periods={"dla_core_clk": 10.0, "dla_csb_clk": 20.0})
-    controller.assert_called_once()
-    options = controller.call_args.kwargs
-    assert options["physical_backend"] == backend
-    assert options["phase6_provider"] == phase6
-    assert options["prepared_frontend"] == tmp_path / "front"
-    assert options["clock_periods"] == {"dla_core_clk": 10.0, "dla_csb_clk": 20.0}
-    assert not (tmp_path / "flow").exists()
+    import emuflow.flow.native_compile as client
+    original = client.subprocess.Popen
+    requests = []
+    def spawn(argv, *args, **kwargs):
+        if len(argv) > 2 and argv[1] == 'compile':
+            requests.append(json.loads(Path(argv[2]).read_text()))
+        return original(argv, *args, **kwargs)
+    with patch.object(client.subprocess, 'Popen', side_effect=spawn):
+        with pytest.raises(EmuFlowError, match='native compile failed'):
+            client.run_native_multi_fpga_flow(output_dir=tmp_path/'flow', physical=True,
+                physical_backend=backend, phase6_provider=phase6,
+                prepared_frontend=tmp_path/'front', prepared_timing=tmp_path/'timing',
+                clock_periods={'dla_core_clk':10.0, 'dla_csb_clk':20.0})
+    assert len(requests) == 1
+    options = requests[0]['options']
+    assert options['physical_backend'] == backend
+    assert options['phase6_provider'] == phase6
+    assert options['prepared_frontend'] == str(tmp_path/'front')
+    assert options['clock_periods'] == {'dla_core_clk':10.0, 'dla_csb_clk':20.0}
+    assert not (tmp_path/'flow').exists()
 
 
 def test_missing_native_install_does_not_start_another_controller(tmp_path):
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
     with patch("emuflow.common.native_tools.require_native_schema"), patch("emuflow.flow.native_compile.resolve_native_executable", side_effect=EmuFlowError("missing native installation")) as resolver:
         with pytest.raises(EmuFlowError, match="missing native installation"):
             run_multi_fpga_flow(output_dir=tmp_path / "flow")
@@ -358,7 +364,7 @@ def test_controller_rejects_ambiguous_request_before_starting_any_phase(tmp_path
 
 def test_native_controller_completes_existing_nonphysical_contract_fixture(tmp_path, monkeypatch):
     """Controller integration only; required large-design acceptance is NVDLA."""
-    from emuflow.flow.multi_fpga_flow import validate_multi_fpga_flow_bundle
+    from emuflow_tools.flow_validation import validate_multi_fpga_flow_bundle
     root = Path(__file__).resolve().parents[1]
     monkeypatch.setattr("emuflow.flow.native_compile.resolve_native_executable", lambda _: str(emuflow_native()))
     output = tmp_path / "flow"
@@ -379,7 +385,7 @@ def test_native_controller_completes_existing_nonphysical_contract_fixture(tmp_p
         max_cross_fpga_dependency_depth=2,
     )
     from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
     report = run_multi_fpga_flow(
         tritonpart_solution=solution,
         platform_path=root / "platforms/virtual/static_exact_acceptance_2fpga.json",
@@ -395,7 +401,7 @@ def test_native_controller_completes_existing_nonphysical_contract_fixture(tmp_p
     from emuflow.timing.indexed_timing import IndexedTimingView
     from emuflow.partition.phase3_storage import read_phase3_cut_timing_view
     from emuflow.timing.sta import iter_sta_path_database_paths
-    from emuflow.timing.opensta import DEFAULT_TIMING_MODEL
+    from emuflow_tools.stage_clients.opensta import DEFAULT_TIMING_MODEL
     from tests.cut_qualification_reference import _build_indexed_cut_segment_qualification
     path_database=output/'timing/path-database.json'
     database=json.loads(path_database.read_text())
@@ -687,7 +693,7 @@ if {damage!r}=='missing-policy':del ctx.native_phase3_configuration
 
 
 def test_partition_policy_python_adapter_and_stage_body_are_retired(tmp_path):
-    from emuflow.flow import multi_fpga_flow
+    from emuflow_tools import flow_validation as multi_fpga_flow
     assert not hasattr(multi_fpga_flow, '_compile_partition_policy')
 
 
@@ -721,5 +727,5 @@ if {damage!r}=='missing-policy':del ctx.native_phase4_configuration
 
 
 def test_python_routing_preparation_body_and_adapter_are_retired(tmp_path):
-    from emuflow.flow import multi_fpga_flow
+    from emuflow_tools import flow_validation as multi_fpga_flow
     assert not hasattr(multi_fpga_flow,'_compile_route_policy')

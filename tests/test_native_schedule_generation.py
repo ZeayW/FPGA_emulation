@@ -74,7 +74,7 @@ def test_complete_native_producer_matches_reference_records_certificates_and_has
          patch("tests.tdm_reference._indexed_certificate", side_effect=AssertionError("Python readiness certificate")), \
          patch("tests.tdm_reference._baseline_ratio_hops", side_effect=AssertionError("Python wire map")), \
          patch("tests.schedule_store_fixture._publish_fixture_records", side_effect=AssertionError("Python record publisher")), \
-         patch("emuflow.scheduling.phase5_native.NativeToolProcess", side_effect=record):
+         patch("emuflow_tools.stage_clients.schedule_native.NativeToolProcess", side_effect=record):
         request = build_native_exact_schedule_request(routes, case.platform)
         assert request is not None
         native_manifest = write_tdm_schedule_storage(tmp_path / "native/schedule.json", request)

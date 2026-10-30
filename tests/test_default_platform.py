@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.flow.cli import _build_parser, _dispatch
+from emuflow_tools import cli as tools_cli
 from emuflow.platform.default_platform import (
     DEFAULT_PLATFORM_PATH,
     materialize_research_platform,
@@ -12,8 +13,8 @@ from emuflow.platform.default_platform import (
 )
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
-from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.partition.phase3 import run_phase3
+from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
+from emuflow_tools.stage_clients.partition import run_phase3
 from emuflow.platform.platform import Platform
 from emuflow.routing.routing import normalize_route_constraints
 
@@ -107,20 +108,23 @@ class DefaultPlatformTest(unittest.TestCase):
 
 
     def test_python_omitted_platform_submits_the_bundled_model(self):
-        with patch("emuflow.flow.native_compile.run_native_multi_fpga_flow", return_value={"status": "pass"}) as controller:
-            run_multi_fpga_flow(output_dir=Path("run"), yosys_json=ROOT / "examples/yosys/counter.json", top="counter")
-        self.assertEqual(controller.call_args.kwargs["platform_path"], DEFAULT_PLATFORM_PATH)
+        from emuflow.flow.native_compile import _request
+        request, _ = _request((), {
+            "output_dir": Path("run"),
+            "yosys_json": ROOT / "examples/yosys/counter.json", "top": "counter",
+        })
+        self.assertEqual(Path(request["options"]["platform_path"]), DEFAULT_PLATFORM_PATH)
 
     def test_cli_materializes_both_models_without_source_relative_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             for count in (2, 4):
                 output = Path(directory) / f"board-{count}.json"
-                args = _build_parser().parse_args([
+                args = tools_cli._build_parser().parse_args([
                     "platform", "research-model", "--fpga-count", str(count),
                     "--output", str(output),
                 ])
-                with patch("emuflow.flow.cli._print_json") as report:
-                    self.assertEqual(_dispatch(args), 0)
+                with patch("emuflow_tools.cli._print_json") as report:
+                    self.assertEqual(tools_cli._dispatch(args), 0)
                     self.assertEqual(report.call_args.args[0]["qualification"], "model-only")
                 self.assertEqual(
                     Platform.load(output).to_dict(),
@@ -147,12 +151,12 @@ class DefaultPlatformTest(unittest.TestCase):
     def test_effective_data_width_override_updates_shared_capacity(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "custom.json"
-            args = _build_parser().parse_args([
+            args = tools_cli._build_parser().parse_args([
                 "platform", "research-model", "--wires-per-bank", "16",
                 "--output", str(output),
             ])
-            with patch("emuflow.flow.cli._print_json"):
-                self.assertEqual(_dispatch(args), 0)
+            with patch("emuflow_tools.cli._print_json"):
+                self.assertEqual(tools_cli._dispatch(args), 0)
             for link in Platform.load(output).links:
                 self.assertEqual((link.bank_count, link.wires_per_bank), (18, 16))
                 self.assertEqual(link.data_lanes_per_direction, 288)
@@ -190,7 +194,7 @@ class DefaultPlatformTest(unittest.TestCase):
         )
         self.assertTrue(DEFAULT_PLATFORM_PATH.is_file())
         self.assertEqual(DEFAULT_PLATFORM_PATH.parent.parent.name, "data")
-        with patch("emuflow.flow.cli.run_multi_fpga_flow") as run, patch("emuflow.flow.cli._print_json"):
+        with patch('emuflow.flow.native_compile.run_native_multi_fpga_flow') as run, patch("emuflow.flow.cli._print_json"):
             run.return_value = {"status": "pass"}
             self.assertEqual(_dispatch(args), 0)
             self.assertEqual(run.call_args.kwargs["platform_path"], DEFAULT_PLATFORM_PATH)

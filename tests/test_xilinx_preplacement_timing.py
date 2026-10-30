@@ -7,7 +7,7 @@ from unittest.mock import patch
 from tests.cut_qualification_reference import (
     build_cut_segment_qualification_value,
 )
-from emuflow.timing.opensta import (
+from emuflow_tools.stage_clients.opensta import (
     _instance_pin_sets,
     build_architecture_opensta_timing_model,
     classify_through_net_timing_endpoints,
@@ -138,7 +138,7 @@ CLK ADDR_A[0] 500
             mapped.write_text(json.dumps(value), encoding="utf-8")
             ir = import_yosys_json(mapped, top="top", clocks=["clk"])
             with patch(
-                "emuflow.timing.opensta._instance_pin_sets", wraps=_instance_pin_sets,
+                "emuflow_tools.stage_clients.opensta._instance_pin_sets", wraps=_instance_pin_sets,
             ) as pin_sets:
                 model, types = build_architecture_opensta_timing_model(ir, database)
             assert pin_sets.call_args.kwargs["instance_ids"] == {
@@ -147,7 +147,7 @@ CLK ADDR_A[0] 500
             # Compare all cells/arcs and per-instance types against the old
             # exhaustive pin collection, not merely aggregate timing scalars.
             with patch(
-                "emuflow.timing.opensta._instance_pin_sets",
+                "emuflow_tools.stage_clients.opensta._instance_pin_sets",
                 side_effect=lambda graph, **kwargs: _instance_pin_sets(graph),
             ):
                 reference = build_architecture_opensta_timing_model(ir, database)

@@ -13,14 +13,14 @@ from emuflow.platform.platform import Platform
 from emuflow.platform.board_link_timing import validate_board_link_timing
 from emuflow.transport.transport_cost import validate_transport_cost_database
 from emuflow.physical.openparf.openparf import validate_openparf_runtime
-from emuflow.timing.opensta import check_opensta_engine_version
+from emuflow_tools.stage_clients.opensta import check_opensta_engine_version
 from emuflow.frontend.policy import VALID_XILINX_MAPPING_STRATEGIES
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.partition.partition import CUT_MODE_STATIC_EXACT, CUT_MODE_SEQUENTIAL_ONLY
 from tests.timing_routing_reference import GLOBAL_CANDIDATE_PROVIDER
 from emuflow.timing.xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
-from emuflow.flow.multi_fpga_physical_flow import _backend_sources
+from emuflow_tools.stage_clients.physical import _backend_sources
 import json
 MULTI_FPGA_MAPPING_PROFILES=(XILINX_ULTRASCALEPLUS_OPEN_PROFILE,)
 MULTI_FPGA_PHASE6_PROVIDERS=('chimew','baseline')
@@ -234,7 +234,7 @@ def _compile_preflight(ctx: _CompileContext):
         require_native_schema("placement-lowering-request-v1")
         require_native_schema("transport-synthesis-request-v1")
         ctx.global_sta_executable = resolve_native_executable("sta", ctx.global_sta_executable)
-        from emuflow.timing.opensta import _runtime_data_path
+        from emuflow_tools.stage_clients.opensta import _runtime_data_path
         ctx.global_sta_launcher_reference = _runtime_data_path(Path("scripts/opensta/container_runtime.sh")).resolve()
         if not Path(ctx.global_sta_executable).is_file() or not os.access(ctx.global_sta_executable, os.X_OK):
             raise EmuFlowError("global OpenSTA executable is unavailable or not executable")
@@ -297,7 +297,7 @@ def _compile_preflight(ctx: _CompileContext):
             criticality_exponent=ctx.timing_criticality_exponent)
         ctx.native_phase2_configuration_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase2_configuration))
 
-    from emuflow.partition.phase3_native import prepare_configuration_request as prepare_partition_configuration
+    from emuflow_tools.stage_clients.partition_native import prepare_configuration_request as prepare_partition_configuration
     from emuflow.common.native_tools import native_file_generation
     ctx.native_phase3_configuration = prepare_partition_configuration(
         ctx.output_dir / ".native-phase3-configuration", ctx.platform_path,
@@ -318,7 +318,7 @@ def _compile_preflight(ctx: _CompileContext):
     ctx.native_phase3_configuration_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase3_configuration))
 
 
-    from emuflow.routing.phase4_native import prepare_configuration_request as prepare_routing
+    from emuflow_tools.stage_clients.routing_native import prepare_configuration_request as prepare_routing
     route_settings = ctx.output_dir / '.native-phase4-configuration'
     route_settings.mkdir()
     ctx.native_phase4_configuration = prepare_routing(route_settings/'request.json', ctx.platform_path,
@@ -329,7 +329,7 @@ def _compile_preflight(ctx: _CompileContext):
         architecture_timing_db_path=ctx.architecture_timing_db)
     ctx.native_phase4_configuration_generation = tuple(str(v) for v in native_file_generation(ctx.native_phase4_configuration))
     if ctx.phase6_provider == 'baseline':
-        from emuflow.transport.phase6_native import prepare_configuration_request as prepare_transport
+        from emuflow_tools.stage_clients.transport_native import prepare_configuration_request as prepare_transport
         ctx.native_phase6_configuration = prepare_transport(ctx.output_dir/'.native-phase6-configuration',ctx.platform_path,
             clock_periods=ctx.clock_periods,transport_cost_path=ctx.transport_cost_db,
             equivalence_cycles=ctx.equivalence_cycles,equivalence_seed=ctx.equivalence_seed)
@@ -337,7 +337,7 @@ def _compile_preflight(ctx: _CompileContext):
 
 
 def _initial_context(request):
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
     from tests.native_compile_state_fixture import CompileContext as _CompileContext
 
     options = request["options"]

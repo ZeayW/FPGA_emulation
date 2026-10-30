@@ -34,7 +34,7 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     monkeypatch.setenv("EMUFLOW_NATIVE_ROOT",str(native_bin.parent))
     # Exercise the real report-last Phase 5 boundary and independent reader,
     # rather than qualifying only the standalone store operation.
-    from emuflow.scheduling.phase5 import run_phase5, validate_phase5
+    from emuflow_tools.stage_clients.schedule import run_phase5, validate_phase5
     from tests.test_combinational_cut import PLATFORM_PATH
     persisted = case._persisted_routes(case._exact_routes(assignment))
     write_route_store_fixture(route_path,persisted)

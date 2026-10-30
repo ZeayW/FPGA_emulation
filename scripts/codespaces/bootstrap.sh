@@ -27,14 +27,10 @@ cmake --build build/codespaces-core --parallel "${jobs}"
 
 cat <<'EOF'
 
-EmuFlow's partition-focused Codespaces environment is ready.
+EmuFlow's native component development environment is ready.
 
-Start with:
+Run the component checks with:
   scripts/codespaces/test-partition.sh smoke
-  scripts/codespaces/run-small-partition.sh \
-    build/codespaces-runs/counter/partition-smoke/attempt-0001
 
-Build the in-tree Yosys frontend only when you are ready to fetch and
-synthesize SERV/PicoRV32/AES:
-  scripts/codespaces/build-yosys.sh
+For a complete flow installation and run, follow README.md and ./install.sh.
 EOF

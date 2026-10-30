@@ -204,8 +204,8 @@ Export either bundled platform for inspection or standalone phase commands.
 a different research configuration; its default is 20:
 
 ```bash
-emuflow platform research-model --wires-per-bank 20 --output build/research-boarddb.json
-emuflow platform research-model --fpga-count 2 --output build/two-fpga-boarddb.json
+emuflow-tools platform research-model --wires-per-bank 20 --output build/research-boarddb.json
+emuflow-tools platform research-model --fpga-count 2 --output build/two-fpga-boarddb.json
 emuflow platform validate build/research-boarddb.json
 
 # Omit --platform to use the bundled four-FPGA model.

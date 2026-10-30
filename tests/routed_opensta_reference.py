@@ -12,7 +12,7 @@ from typing import Any, Dict, Mapping, Optional
 from emuflow.common.errors import ValidationError
 from emuflow.storage.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
 from emuflow.common.io import file_sha256, read_json, write_json
-from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, load_timing_model, require_opensta_engine, run_opensta_path_database
+from emuflow_tools.stage_clients.opensta import DEFAULT_TIMING_MODEL, load_timing_model, require_opensta_engine, run_opensta_path_database
 from emuflow.common.native_tools import resolve_native_executable
 from emuflow.timing.sta import STA_PATH_DATABASE_SCHEMA, STA_PATH_DATABASE_STREAM_SCHEMA, STA_PATH_DATABASE_INDEX_SCHEMA, sta_path_database_qor
 from tests.routed_timing_adapter import XILINX_ROUTED_TIMING_STREAM_SCHEMA

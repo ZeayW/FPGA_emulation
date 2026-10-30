@@ -11,8 +11,8 @@ import pytest
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
-from emuflow.routing.phase4 import run_phase4
-from emuflow.routing.phase4_native import prepare_policy, run_native_phase4
+from emuflow_tools.stage_clients.routing import run_phase4
+from emuflow_tools.stage_clients.routing_native import prepare_policy, run_native_phase4
 from tests.routing_validation_reference import demands_from_assignment
 from emuflow.routing.system_route_storage import read_system_routes
 from tests.timing_routing_reference import load_sta_paths, validate_native_system_routes
@@ -59,7 +59,7 @@ def test_complete_native_stage_preserves_records_hashes_and_independent_checks(t
         timing.write_text(json.dumps(paths))
     # The public API hands off references. It cannot invoke the independent
     # Python validator or reconstruct route-scale input/output objects.
-    with patch('emuflow.routing.phase4_native.validate_native_phase4', side_effect=AssertionError('standalone audit during production')):
+    with patch('emuflow_tools.stage_clients.routing_native.validate_native_phase4', side_effect=AssertionError('standalone audit during production')):
         report = run_phase4(assignment, board, tmp_path/'native',
             timing_paths_path=timing, frame_slots=16, max_iterations=3,
             timing_driven=driven, router=str(emuflow_native()))
@@ -200,7 +200,7 @@ def test_raw_null_signature_retains_normalization_semantics(tmp_path):
 
 @pytest.mark.parametrize('damage',['capacity','topology'])
 def test_routing_preparation_uses_its_original_board_contract_not_host_fields(tmp_path,damage):
-    from emuflow.routing.phase4_native import prepare_configuration_request
+    from emuflow_tools.stage_clients.routing_native import prepare_configuration_request
     _,assignment,board,timing=inputs(tmp_path)
     settings=prepare_configuration_request(tmp_path/'request.json',board,assignment=assignment,
         timing_paths=timing,frame_slots=16,max_iterations=3)
@@ -218,7 +218,7 @@ def test_routing_preparation_uses_its_original_board_contract_not_host_fields(tm
 @pytest.mark.parametrize('driven', [False, True])
 @pytest.mark.parametrize('normalized', [False, True])
 def test_published_native_audit_matches_independent_oracle_without_python_populations(tmp_path, mode, driven, normalized):
-    from emuflow.routing.phase4 import validate_phase4
+    from emuflow_tools.stage_clients.routing import validate_phase4
     case, assignment, board, timing = inputs(tmp_path, mode)
     paths = load_sta_paths(timing, demands_from_assignment(case._phase5_assignment, case.platform))
     if normalized:
@@ -239,7 +239,7 @@ def test_published_native_audit_matches_independent_oracle_without_python_popula
                                    'path-signature', 'route-metric', 'timing-metric', 'master-generator',
                                    'batch-coverage', 'direction-lock', 'normalization'])
 def test_published_native_audit_rejects_resealed_semantic_corruption(tmp_path, damage):
-    from emuflow.routing.phase4 import validate_phase4
+    from emuflow_tools.stage_clients.routing import validate_phase4
     from tests.native_route_seal_fixture import write_route_store_fixture
     _, assignment, board, timing = inputs(tmp_path)
     run_phase4(assignment, board, tmp_path/'native', timing_paths_path=timing,
@@ -281,7 +281,7 @@ def test_published_native_audit_rejects_resealed_semantic_corruption(tmp_path, d
 
 
 def test_published_native_audit_without_timing_input(tmp_path):
-    from emuflow.routing.phase4 import validate_phase4
+    from emuflow_tools.stage_clients.routing import validate_phase4
     _, assignment, board, _ = inputs(tmp_path)
     report = run_phase4(assignment, board, tmp_path/'native', timing_driven=False,
                         frame_slots=16, max_iterations=3)

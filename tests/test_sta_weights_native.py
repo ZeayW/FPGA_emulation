@@ -119,28 +119,34 @@ def test_original_proof_reuse_does_not_repeat_full_path_validation(tmp_path):
         derive_partition_net_weights(paths, source, tmp_path/"invalid.json", _validation=True)
 
 
-def test_default_cli_extraction_and_weight_chain_never_selects_inline_production(tmp_path):
+def test_optional_native_extraction_and_weight_chain_never_selects_inline_production(tmp_path):
     from emuflow.flow.cli import main
+    from emuflow_tools.stage_clients.opensta import run_opensta_path_database
     from tests.test_sta_paths_native import ROOT
 
     _ir, source, _measured, _records = path_fixture(tmp_path)
     paths, weights = tmp_path/"engine-paths.json", tmp_path/"engine-weights.json"
     with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole-graph fallback")), \
          patch("emuflow.timing.sta.iter_sta_path_database_paths", side_effect=AssertionError("Python path replay")):
-        assert main(["sta", "run-opensta", "--ir", str(source), "--output", str(paths),
-                     "--opensta", str(ROOT/"tests/fixtures/fake_opensta_paths.py"), "--clock-period", "clk=10"]) == 0
-        assert main(["sta", "derive-partition-net-weights", "--ir", str(source),
-                     "--database", str(paths), "--output", str(weights)]) == 0
+        extracted = run_opensta_path_database(
+            source, paths, executable=str(ROOT/"tests/fixtures/fake_opensta_paths.py"), clocks={"clk": 10.0},
+        )
+        assert extracted["paths"] > 0
+        assert derive_partition_net_weights(paths, source, weights)["status"] == "pass"
     assert json.loads(paths.read_text())["schema"] == "emuflow.sta-path-database/v3"
     assert validate_partition_net_weights(weights, paths, source)["paths"] > 0
+    for command in (["sta", "run-opensta", "--ir", str(source)],
+                    ["sta", "derive-partition-net-weights", "--ir", str(source)]):
+        with pytest.raises(SystemExit):
+            main(command)
 
 
 def test_legacy_ir_is_rejected_before_starting_opensta(tmp_path):
-    from emuflow.timing.opensta import run_opensta_path_database
+    from emuflow_tools.stage_clients.opensta import run_opensta_path_database
 
     ir, _source, _measured, _records = path_fixture(tmp_path)
     legacy = tmp_path/"legacy.json";legacy.write_text(json.dumps(ir.value))
-    with patch("emuflow.timing.opensta.require_opensta_engine", side_effect=AssertionError("engine started")), \
+    with patch("emuflow_tools.stage_clients.opensta.require_opensta_engine", side_effect=AssertionError("engine started")), \
          pytest.raises(ValidationError, match="compact EmuIR v2"):
         run_opensta_path_database(legacy, tmp_path/"paths.json")
 

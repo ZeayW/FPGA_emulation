@@ -187,14 +187,18 @@ class NativeRwrouteTests(unittest.TestCase):
             self.assertIn('META\tpacked_sha256\t'+file_sha256(physical), text)
             self.assertIn('META\tplacement_sha256\t'+file_sha256(physical), text)
 
-    def test_current_cli_accepts_one_handoff_and_rejects_old_export_options(self):
+    def test_native_export_accepts_one_handoff_and_retires_old_cli_options(self):
         from emuflow.flow.cli import _build_parser
         import contextlib, io
         parser = _build_parser()
-        args = parser.parse_args(['arch', 'export-xilinx-rwroute-input', '--mapped-index', 'm.sqlite',
-                                  '--physical-handoff', 'p.sqlite', '--output', 'input.tsv'])
-        self.assertEqual(args.mapped_index, Path('m.sqlite'))
-        self.assertEqual(args.physical_handoff, Path('p.sqlite'))
+        import inspect
+        request = inspect.signature(export_rwroute_input).bind(
+            Path('m.sqlite'), Path('p.sqlite'), Path('input.tsv'),
+        )
+        self.assertEqual(request.args[:2], (Path('m.sqlite'), Path('p.sqlite')))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(['arch', 'export-xilinx-rwroute-input', '--mapped-index', 'm.sqlite',
+                               '--physical-handoff', 'p.sqlite', '--output', 'input.tsv'])
         for version, accepted in ((1, False), (2, True)):
             probe = subprocess.run([str(self.executable), 'check-runtime', 'rwroute-export-request-v'+str(version)],
                                    capture_output=True, text=True)

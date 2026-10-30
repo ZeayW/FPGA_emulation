@@ -13,6 +13,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+from typing import Any, Dict, Iterable, Mapping, Optional
+from emuflow.flow.compile_options import COMPILE_DEFAULTS
 
 from emuflow.common.errors import EmuFlowError
 import math
@@ -59,9 +61,7 @@ def _cancellable():
 
 
 def _request(args, kwargs):
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-
-    signature = inspect.signature(run_multi_fpga_flow)
+    signature = _COMPILE_SIGNATURE
     bound = signature.bind(*args, **kwargs)
     bound.apply_defaults()
     if (
@@ -101,17 +101,104 @@ def _request(args, kwargs):
     return value, encoded
 
 
-def run_native_multi_fpga_flow(*args, **kwargs):
+def run_native_multi_fpga_flow(
+    platform_path: Path = COMPILE_DEFAULTS['platform_path'],
+    output_dir: Optional[Path] = COMPILE_DEFAULTS['output_dir'],
+    *,
+    sources: Iterable[Path] = COMPILE_DEFAULTS['sources'],
+    include_dirs: Iterable[Path] = COMPILE_DEFAULTS['include_dirs'],
+    defines: Iterable[str] = COMPILE_DEFAULTS['defines'],
+    source_checksums: Optional[Dict[str, str]] = COMPILE_DEFAULTS['source_checksums'],
+    top: Optional[str] = COMPILE_DEFAULTS['top'],
+    clocks: Iterable[str] = COMPILE_DEFAULTS['clocks'],
+    yosys_json: Optional[Path] = COMPILE_DEFAULTS['yosys_json'],
+    prepared_frontend: Optional[Path] = COMPILE_DEFAULTS['prepared_frontend'],
+    prepared_timing: Optional[Path] = COMPILE_DEFAULTS['prepared_timing'],
+    yosys: Optional[str] = COMPILE_DEFAULTS['yosys'],
+    mapping_profile: str = COMPILE_DEFAULTS['mapping_profile'],
+    xilinx_mapping_strategy: Optional[str] = COMPILE_DEFAULTS['xilinx_mapping_strategy'],
+    partition_constraints: Optional[Path] = COMPILE_DEFAULTS['partition_constraints'],
+    partition_provider: str = COMPILE_DEFAULTS['partition_provider'],
+    seed: int = COMPILE_DEFAULTS['seed'],
+    min_used_fpgas: Optional[int] = COMPILE_DEFAULTS['min_used_fpgas'],
+    balance_tolerance: Optional[float] = COMPILE_DEFAULTS['balance_tolerance'],
+    openroad: Optional[str] = COMPILE_DEFAULTS['openroad'],
+    tritonpart_solution: Optional[Path] = COMPILE_DEFAULTS['tritonpart_solution'],
+    patron_refiner: Optional[str] = COMPILE_DEFAULTS['patron_refiner'],
+    patron_max_moves: Optional[int] = COMPILE_DEFAULTS['patron_max_moves'],
+    patron_algorithm_version: int = COMPILE_DEFAULTS['patron_algorithm_version'],
+    partition_timeout_seconds: int = COMPILE_DEFAULTS['partition_timeout_seconds'],
+    partition_seed_attempts: int = COMPILE_DEFAULTS['partition_seed_attempts'],
+    partition_num_initial_solutions: int = COMPILE_DEFAULTS['partition_num_initial_solutions'],
+    partition_num_best_initial_solutions: int = COMPILE_DEFAULTS['partition_num_best_initial_solutions'],
+    partition_repair_min_used_fpgas: bool = COMPILE_DEFAULTS['partition_repair_min_used_fpgas'],
+    cut_mode: str = COMPILE_DEFAULTS['cut_mode'],
+    max_cross_fpga_dependency_depth: int = (
+        COMPILE_DEFAULTS['max_cross_fpga_dependency_depth']
+    ),
+    static_exact_candidate_policy: str = COMPILE_DEFAULTS['static_exact_candidate_policy'],
+    timing_driven: bool = COMPILE_DEFAULTS['timing_driven'],
+    clock_periods: Optional[Dict[str, float]] = COMPILE_DEFAULTS['clock_periods'],
+    timing_io: Optional[Mapping[str, Any]] = COMPILE_DEFAULTS['timing_io'],
+    timing_model: Path = COMPILE_DEFAULTS['timing_model'],
+    architecture_timing_db: Optional[Path] = COMPILE_DEFAULTS['architecture_timing_db'],
+    opensta: Optional[str] = COMPILE_DEFAULTS['opensta'],
+    sta_max_paths: int = COMPILE_DEFAULTS['sta_max_paths'],
+    timing_criticality_scale: float = COMPILE_DEFAULTS['timing_criticality_scale'],
+    timing_criticality_exponent: float = COMPILE_DEFAULTS['timing_criticality_exponent'],
+    route_constraints: Optional[Path] = COMPILE_DEFAULTS['route_constraints'],
+    board_link_timing_db: Optional[Path] = COMPILE_DEFAULTS['board_link_timing_db'],
+    transport_cost_db: Optional[Path] = COMPILE_DEFAULTS['transport_cost_db'],
+    timing_paths: Optional[Path] = COMPILE_DEFAULTS['timing_paths'],
+    router: Optional[str] = COMPILE_DEFAULTS['router'],
+    route_provider: Optional[str] = COMPILE_DEFAULTS['route_provider'],
+    route_candidate_workers: int = COMPILE_DEFAULTS['route_candidate_workers'],
+    frame_slots: Optional[int] = COMPILE_DEFAULTS['frame_slots'],
+    optimize_frame_slots: bool = COMPILE_DEFAULTS['optimize_frame_slots'],
+    route_max_iterations: Optional[int] = COMPILE_DEFAULTS['route_max_iterations'],
+    tdm_provider: Optional[str] = COMPILE_DEFAULTS['tdm_provider'],
+
+    simulation_frames: int = COMPILE_DEFAULTS['simulation_frames'],
+    equivalence_cycles: int = COMPILE_DEFAULTS['equivalence_cycles'],
+    equivalence_seed: int = COMPILE_DEFAULTS['equivalence_seed'],
+    phase6_provider: str = COMPILE_DEFAULTS['phase6_provider'],
+    phase6_chimew_region_count: int = COMPILE_DEFAULTS['phase6_chimew_region_count'],
+    phase6_chimew_grouper: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_grouper'],
+    phase6_chimew_refiner: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_refiner'],
+    phase6_chimew_rudy: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_rudy'],
+    phase6_chimew_assigner: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_assigner'],
+    physical: bool = COMPILE_DEFAULTS['physical'],
+    physical_backend: str = COMPILE_DEFAULTS['physical_backend'],
+    physical_architecture: Optional[Path] = COMPILE_DEFAULTS['physical_architecture'],
+    physical_openparf_install: Optional[Path] = COMPILE_DEFAULTS['physical_openparf_install'],
+    physical_openparf_python: Optional[Path] = COMPILE_DEFAULTS['physical_openparf_python'],
+    physical_seed: int = COMPILE_DEFAULTS['physical_seed'],
+    physical_vivado: Optional[str] = COMPILE_DEFAULTS['physical_vivado'],
+    physical_vivado_place_directive: str = COMPILE_DEFAULTS['physical_vivado_place_directive'],
+    physical_vivado_route_directive: str = COMPILE_DEFAULTS['physical_vivado_route_directive'],
+    physical_rapidwright_jar: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_jar'],
+    physical_rapidwright_java: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_java'],
+    physical_rapidwright_java_source: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_java_source'],
+    physical_rapidwright_device_data: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_device_data'],
+    physical_rapidwright_timing_data: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_timing_data'],
+    physical_rapidwright_opensta: Optional[str] = COMPILE_DEFAULTS['physical_rapidwright_opensta'],
+    physical_rapidwright_native_constraints: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_native_constraints'],
+    physical_rapidwright_provider_manifest: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_provider_manifest'],
+    physical_workers: int = COMPILE_DEFAULTS['physical_workers'],
+    global_sta_executable: Optional[str] = COMPILE_DEFAULTS['global_sta_executable'],
+    global_timing_engine: str = COMPILE_DEFAULTS['global_timing_engine'],
+) -> Dict[str, Any]:
     """Execute the sole production controller; never select another control chain.
 
     The C++ controller owns RTL frontend, pre-placement timing, partitioning,
     routing, TDM, baseline/Chimew splitting, both physical backends and
     global timing. This host encodes bounded options and reads final summaries.
     """
+    options = locals().copy()
     from emuflow.common.native_tools import require_native_schema
 
     require_native_schema("boarddb-v1")
-    value, encoded = _request(args, kwargs)
+    value, encoded = _request((), options)
     executable = resolve_native_executable("emuflow-native")
     output = Path(value["options"]["output_dir"])
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -157,3 +244,6 @@ def run_native_multi_fpga_flow(*args, **kwargs):
         if report.get("schema") != "emuflow.multi-fpga-flow/v2" or report.get("status") != "pass":
             raise EmuFlowError("native compiler flow report is invalid")
         return report
+
+
+_COMPILE_SIGNATURE = inspect.signature(run_native_multi_fpga_flow)

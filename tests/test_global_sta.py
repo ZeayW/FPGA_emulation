@@ -488,7 +488,7 @@ def test_comparison_rejects_corrupt_evidence(damage):
 def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, saved):
     from tests.test_phase7c import Phase7CTest
     from emuflow.common.io import write_json, read_json
-    from emuflow.timing.phase7c import run_phase7c
+    from emuflow_tools.stage_clients.timing_replay import run_phase7c
     import emuflow.timing.global_sta as sta
     f = Phase7CTest(); f.setUp()
     # Current typed entries express the absolute event directly. This small
@@ -497,15 +497,15 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
         assert entry.pop('transport_round') == 0
         entry['capacity_key'] = f"{entry['link']}:{entry['from']}:{entry['to']}"
 
-    monkeypatch.setattr("emuflow.timing.phase7c.validate_phase5_generation", lambda _: {"status": "pass"})
+    monkeypatch.setattr("emuflow_tools.stage_clients.timing_replay.validate_phase5_generation", lambda _: {"status": "pass"})
     # This test isolates orchestration. Independent typed projection and full
     # coverage rejection are exercised by test_phase5_timing_native and
     # test_physical_coverage_native, without legacy Python projection.
     class Coverage(dict):
         def close(self):
             pass
-    monkeypatch.setattr("emuflow.timing.phase7c.validate_cross_layer_timing_contract", lambda *_: {"status":"pass"})
-    monkeypatch.setattr("emuflow.timing.phase7c.build_cross_layer_physical_binding",
+    monkeypatch.setattr("emuflow_tools.stage_clients.timing_replay.validate_cross_layer_timing_contract", lambda *_: {"status":"pass"})
+    monkeypatch.setattr("emuflow_tools.stage_clients.timing_replay.build_cross_layer_physical_binding",
         lambda *a, **k: Coverage(status="pass", metrics={}))
     for name, value in {"schedule": f.schedule, "platform": f.platform.to_dict(),
                         "physical": f._physical_summary(), "routes": f.routes, **f.reports}.items():
@@ -640,19 +640,27 @@ def test_standalone_report_rejects_interleaved_measurements(
 
 def test_only_opensta_engine_is_exposed():
     import inspect
+    from pathlib import Path
     from emuflow.flow.cli import _build_parser
-    from emuflow.timing.phase7c import run_phase7c
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow_tools.stage_clients.timing_replay import run_phase7c
+    from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
     for fn in (run_phase7c, run_multi_fpga_flow):
         assert inspect.signature(fn).parameters["global_timing_engine"].default == "opensta"
     parser = _build_parser()
-    commands = [["multi-fpga", "compile", "--out", "out", "--platform", "p"],
-                ["phase7c", "--out", "out", "--schedule", "s", "--platform", "p",
-                 "--phase3-report", "a", "--phase4-report", "b", "--phase5-report", "c", "--phase6-report", "d"]]
-    for cmd in commands:
-        assert parser.parse_args(cmd).global_timing_engine == "opensta"
-        with pytest.raises(SystemExit):
-            parser.parse_args(cmd + ["--global-timing-engine", "python"])
+    cmd = ["multi-fpga", "compile", "--out", "out", "--platform", "p"]
+    assert parser.parse_args(cmd).global_timing_engine == "opensta"
+    with pytest.raises(SystemExit):
+        parser.parse_args(cmd + ["--global-timing-engine", "python"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["phase7c", "--out", "out", "--schedule", "s"])
+    from emuflow.flow.native_compile import _request
+    from emuflow.common.errors import EmuFlowError
+    with pytest.raises(EmuFlowError, match="only the OpenSTA"):
+        _request((), {"output_dir": Path("out"), "global_timing_engine": "python"})
+    with pytest.raises(ValidationError, match="only the OpenSTA"):
+        run_phase7c(*(Path(name) for name in ("s", "p", "a", "b", "c", "d", "out")),
+                    global_timing_engine="python")
+
 
 def test_physical_binding_uses_raw_measurements():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest

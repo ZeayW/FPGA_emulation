@@ -12,7 +12,7 @@ from emuflow.ir.emuir_storage import _write_emuir_sqlite_v1
 from emuflow.common.errors import ValidationError
 from emuflow.timing.indexed_timing import IndexedTimingView
 from emuflow.ir.ir import EmuIR
-from emuflow.timing.opensta import run_opensta_path_database
+from emuflow_tools.stage_clients.opensta import run_opensta_path_database
 from emuflow.ir.resources import ResourceVector
 from emuflow.timing.sta import (
     derive_partition_net_weights,
@@ -55,7 +55,7 @@ def test_compact_stream_uses_real_provider_protocol_without_ir_reload(tmp_path):
     path = tmp_path / "design.emuir.sqlite"
     ir.save(path)
     out = tmp_path / "paths.json"
-    with patch("emuflow.timing.opensta.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
+    with patch("emuflow_tools.stage_clients.opensta.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
         report = run_opensta_path_database(
             path, out, clocks={"clk": 10},
             executable=str(ROOT / "tests/fixtures/fake_opensta_paths.py"),

@@ -51,7 +51,7 @@ def _parse_wrapper(path: Path) -> Tuple[str, str, List[Tuple[str, str, str]]]:
 
 
 BLACKBOX_MEMORY_POLICY = "interface-accurate-black-box-scale-abstraction"
-PHYSICAL_MEMORY_POLICY = "physically-implementable-shared-memory-model-v1"
+from emuflow.flow.designs.nvdla_contract import PHYSICAL_MEMORY_POLICY
 MEMORY_POLICIES = {BLACKBOX_MEMORY_POLICY, PHYSICAL_MEMORY_POLICY}
 MEMORY_NAME = re.compile(r"^nv_ram_(rws|rwsp|rwst|rwsthp)_(\d+)x(\d+)$")
 COMMON_PORTS = {

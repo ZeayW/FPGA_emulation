@@ -8,11 +8,11 @@ from emuflow_tools.ppro_blackbox_application import benchmark_rtl_identity
 from tests.nvdla_source_reference import (
     collect_nvdla_source_files,
 )
-from emuflow.flow.designs.nvdla_memory import (
+from emuflow_tools.designs.nvdla_memory import (
     PHYSICAL_MEMORY_POLICY,
     generate,
 )
-from emuflow.flow.designs.nvdla import prepare_nvdla_holdout
+from emuflow_tools.designs.nvdla import prepare_nvdla_holdout
 
 
 class NvdlaRamStubTest(unittest.TestCase):

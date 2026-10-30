@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 from emuflow.common.errors import ValidationError
-from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow, validate_multi_fpga_physical_report
+from emuflow_tools.stage_clients.physical import run_multi_fpga_physical_flow, validate_multi_fpga_physical_report
 from tests.test_physical_flow_native import setup
 
 
@@ -31,7 +31,7 @@ def test_public_host_hands_entire_flow_to_native_without_python_graph_stages(tmp
     def record(executable, argv, **kwargs):
         calls.append(argv)
         return NativeToolProcess(executable, argv, **kwargs)
-    with patch('emuflow.flow.multi_fpga_physical_flow.NativeToolProcess', side_effect=record):
+    with patch('emuflow_tools.stage_clients.physical.NativeToolProcess', side_effect=record):
         assert validate_multi_fpga_physical_report(result,physical_summary_path=original_summary)==result['summary']
     assert calls and calls[0][-1]==str(original_summary.resolve())
     with pytest.raises(ValidationError,match='one explicit owner'):
@@ -60,6 +60,6 @@ def test_public_host_hands_entire_flow_to_native_without_python_graph_stages(tmp
 ])
 def test_invalid_public_request_is_rejected_before_tool_or_source_access(tmp_path,kwargs):
     options={'backend':'vivado',**kwargs}
-    with patch('emuflow.flow.multi_fpga_physical_flow.resolve_native_executable',side_effect=AssertionError('premature tool lookup')):
+    with patch('emuflow_tools.stage_clients.physical.resolve_native_executable',side_effect=AssertionError('premature tool lookup')):
         with pytest.raises(ValidationError):run_multi_fpga_physical_flow(tmp_path/'split',tmp_path/'board',tmp_path/'schedule',tmp_path/'output',**options)
     assert not (tmp_path/'output').exists()

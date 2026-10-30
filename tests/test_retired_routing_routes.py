@@ -6,8 +6,8 @@ import pytest
 
 from emuflow.flow.cli import _build_parser
 from emuflow.common.errors import EmuFlowError
-from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.routing.phase4 import run_phase4
+from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
+from emuflow_tools.stage_clients.routing import run_phase4
 from tests.timing_routing_reference import (GLOBAL_CANDIDATE_PROVIDER)
 
 
@@ -37,15 +37,16 @@ def test_retired_route_provider_rejected_before_compile_frontend(tmp_path, provi
 @pytest.mark.parametrize("provider", RETIRED)
 def test_retired_routing_choices_removed_at_every_cli_entry(provider):
     parser = _build_parser()
-    for args in (
-        ["phase4", "--assignment", "a", "--platform", "b", "--out", "out", "--provider", provider],
-        ["multi-fpga", "compile", "--out", "out", "--route-provider", provider],
-    ):
-        # Establish a valid command before testing the retired choice.
-        parser.parse_args([GLOBAL_CANDIDATE_PROVIDER if a == provider else a for a in args])
-        with pytest.raises(SystemExit) as failure:
-            parser.parse_args(args)
-        assert failure.value.code == 2
+    args = ["multi-fpga", "compile", "--out", "out", "--route-provider", provider]
+    # The retained complete-flow command must accept the current provider before
+    # checking a retired choice; rejection cannot be caused by a removed stage.
+    current = parser.parse_args([GLOBAL_CANDIDATE_PROVIDER if a == provider else a for a in args])
+    assert current.route_provider == GLOBAL_CANDIDATE_PROVIDER
+    with pytest.raises(SystemExit) as failure:
+        parser.parse_args(args)
+    assert failure.value.code == 2
+    with pytest.raises(SystemExit):
+        parser.parse_args(["phase4", "--assignment", "a", "--platform", "b", "--out", "out", "--provider", provider])
 
 
 @pytest.mark.parametrize("command", ["compare-routing-tdm", "compare-routing-tdm-scale"])
@@ -91,7 +92,7 @@ def test_native_stage_rejects_retired_input_versions(tmp_path, header):
     "--physical-feedback-weight",
 ])
 def test_retired_external_feedback_cli_is_rejected(option):
-    arguments = ["phase4", "--assignment", "a", "--platform", "b", "--out", "out"]
+    arguments = ["multi-fpga", "compile", "--out", "out"]
     parser = _build_parser()
     parser.parse_args(arguments)
     with pytest.raises(SystemExit) as failure:

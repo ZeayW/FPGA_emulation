@@ -13,7 +13,7 @@ from emuflow.partition.phase3_assignment_index import (
     ASSIGNMENT_INDEX_USER_VERSION, CURRENT_DDL, CUT_RECORDS_SCHEMA,
     _json, _normalized_cut_record,
 )
-from emuflow.routing.phase4_native import run_native_phase4
+from emuflow_tools.stage_clients.routing_native import run_native_phase4
 from tests.routing_validation_reference import static_exact_contract_from_assignment
 from tests.timing_routing_reference import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import emuflow_native

@@ -35,7 +35,7 @@ def _write_inputs(producer, root):
 
 
 def run_native_phase5(producer, output_dir):
-    from emuflow.scheduling.phase5 import validate_phase5_generation
+    from emuflow_tools.stage_clients.schedule import validate_phase5_generation
 
     output_dir = Path(output_dir).absolute()
     output_dir.mkdir(parents=True, exist_ok=True)

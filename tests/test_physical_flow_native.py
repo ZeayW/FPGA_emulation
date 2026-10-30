@@ -12,7 +12,7 @@ from tests.yosys_reference import import_yosys_json
 from emuflow.platform.platform import Platform
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.transport.phase6_native import run_native_phase6
+from emuflow_tools.stage_clients.transport_native import run_native_phase6
 from emuflow.transport.runtime import build_virtual_runtime
 from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
 from tests.native_build import emuflow_native

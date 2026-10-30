@@ -9,6 +9,7 @@ from emuflow.common.errors import EmuFlowError
 from emuflow.common.io import file_sha256, write_json
 from emuflow.flow import environment as env
 from emuflow.flow import run_config as run
+from emuflow_tools.designs import prepare
 
 
 @pytest.fixture
@@ -73,7 +74,7 @@ def profile(tmp_path):
 @pytest.fixture
 def design(tmp_path, profile):
     from tests.test_nvdla import NvdlaRamStubTest
-    from emuflow.flow.designs.nvdla import _catalog_entry, CATALOG_PATH
+    from emuflow.flow.designs.nvdla_contract import _catalog_entry, CATALOG_PATH
 
     source, _, _ = NvdlaRamStubTest()._prepared_fixture(tmp_path)
     catalog = _catalog_entry(CATALOG_PATH)
@@ -87,7 +88,7 @@ def design(tmp_path, profile):
         },
     )
     output = tmp_path / "nvdla.run.json"
-    run.prepare_nvdla_run(source, output, environment_path=profile)
+    prepare.prepare_nvdla_run(source, output, environment_path=profile)
     return output, source
 
 
@@ -203,7 +204,9 @@ def test_complete_run_configuration_uses_the_same_native_controller(
     )
     if backend == "vivado":
         assert options["physical_vivado"] == str(tmp_path / "vivado")
-        assert options["physical_openparf_python"] is None
+        from emuflow.flow.native_compile import _request
+        request, _ = _request((), options)
+        assert request["options"]["physical_openparf_python"] is None
     else:
         assert options["physical_openparf_python"] == tmp_path / "openparf_python"
         assert options["physical_rapidwright_java_source"].is_file()
@@ -219,7 +222,7 @@ def test_repeated_design_preparation_does_not_rewrite_live_generated_rtl(
         for item in benchmark.value["preparation"]["generated_files"]
     ]
     before = [p.stat().st_mtime_ns for p in generated]
-    run.prepare_nvdla_run(
+    prepare.prepare_nvdla_run(
         source, tmp_path / "another.run.json", environment_path=profile
     )
     assert [p.stat().st_mtime_ns for p in generated] == before
@@ -311,7 +314,7 @@ def test_registered_solver_probes_use_the_selected_backend_and_restore_environme
     original = os.environ.get("LM_LICENSE_FILE")
     with (
         patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stderr="")),
-        patch("emuflow.timing.opensta.check_opensta_engine_version"),
+        patch("emuflow.timing.engine_runtime.check_opensta_engine_version"),
         patch(
             "emuflow.physical.openparf.openparf.validate_openparf_runtime"
         ) as openparf,
@@ -342,7 +345,7 @@ def test_version_probe_uses_real_native_tool_supervision(channel):
 
 
 def test_installed_nvdla_pin_matches_the_fetch_catalog():
-    from emuflow.flow.designs.nvdla import CATALOG_PATH
+    from emuflow.flow.designs.nvdla_contract import CATALOG_PATH
 
     root = Path(__file__).resolve().parents[1]
     canonical = json.loads((root / "benchmarks/rtl_catalog.json").read_text())
@@ -363,7 +366,7 @@ def generic_design(tmp_path):
     )
     (root / "include/config.vh").write_text("`define WIDTH 1\n")
     value = {
-        "schema": run.DESIGN_SCHEMA,
+        "schema": prepare.DESIGN_SCHEMA,
         "name": "user-design",
         "source_root": "user-rtl",
         "sources": ["rtl/*.sv"],
@@ -447,7 +450,7 @@ def test_direct_cli_run_does_not_treat_an_rtl_file_as_a_prepared_config(
 def test_generic_cli_prepare_and_run_preserve_user_inputs(
     generic_design, profile, tmp_path, backend, monkeypatch
 ):
-    from emuflow.flow.cli import _build_parser, _dispatch
+    from emuflow_tools.cli import _build_parser, _dispatch
 
     config, root, description = generic_design
     monkeypatch.setenv(env.ENVIRONMENT_VARIABLE, str(profile))
@@ -461,7 +464,7 @@ def test_generic_cli_prepare_and_run_preserve_user_inputs(
             str(output),
         ]
     )
-    with patch("emuflow.flow.cli._print_json") as printed:
+    with patch("emuflow_tools.cli._print_json") as printed:
         assert _dispatch(args) == 0
     assert printed.call_args.args[0]["top"] == "user_top"
     assert printed.call_args.args[0]["source_files"] == 1
@@ -528,7 +531,7 @@ def test_generic_prepare_rejects_invalid_inputs_without_publishing(
     write_json(config, value)
     output = tmp_path / "rejected.run.json"
     with pytest.raises(EmuFlowError):
-        run.prepare_design_run(config, output, environment_path=profile)
+        prepare.prepare_design_run(config, output, environment_path=profile)
     assert not output.exists()
     assert not output.with_name(output.stem + ".benchmark.json").exists()
 
@@ -538,12 +541,12 @@ def test_generic_prepare_rejects_overwrites_and_source_tree_outputs(
 ):
     config, root, _ = generic_design
     with pytest.raises(EmuFlowError, match="outside"):
-        run.prepare_design_run(config, root / "run.json", environment_path=profile)
+        prepare.prepare_design_run(config, root / "run.json", environment_path=profile)
     output = tmp_path / "ready.json"
-    run.prepare_design_run(config, output, environment_path=profile)
+    prepare.prepare_design_run(config, output, environment_path=profile)
     before = output.read_bytes()
     with pytest.raises(EmuFlowError, match="new run"):
-        run.prepare_design_run(config, output, environment_path=profile)
+        prepare.prepare_design_run(config, output, environment_path=profile)
     assert output.read_bytes() == before
     (root / "include/config.vh").write_text("changed\n")
     with pytest.raises(EmuFlowError, match="bytes differ"):
@@ -563,7 +566,7 @@ def test_generic_template_is_a_valid_design_description(profile, tmp_path):
     value["source_root"] = str(root)
     config = tmp_path / "template.json"
     write_json(config, value)
-    report = run.prepare_design_run(
+    report = prepare.prepare_design_run(
         config, tmp_path / "template.run.json", environment_path=profile
     )
     assert report["source_files"] == 2

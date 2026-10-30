@@ -86,7 +86,7 @@ def _backend_sources(backend, *, architecture=None, yosys=None, openparf_install
         from emuflow.physical.openparf.openparf import _runtime_location
         from emuflow.physical.openparf import openparf_native_driver
         from emuflow.physical.rapidwright.xilinx_rwroute import RAPIDWRIGHT_TIMING_CONTRACT
-        from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT
+        from emuflow_tools.stage_clients.opensta import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT
         required=(architecture,rapidwright_jar,rapidwright_java,rapidwright_device_data,rapidwright_timing_data)
         if any(p is None for p in required):raise ValidationError('RapidWright backend runtime is incomplete')
         installation,python,environment=_runtime_location(openparf_install,openparf_python)

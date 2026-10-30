@@ -19,7 +19,7 @@ from emuflow.common.errors import (
 )
 from emuflow.common.io import read_json
 from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
-from emuflow.scheduling.phase5 import run_phase5, validate_phase5
+from emuflow_tools.stage_clients.schedule import run_phase5, validate_phase5
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.routing.routing import normalize_route_constraints
@@ -107,7 +107,7 @@ class Phase5Test(unittest.TestCase):
     def test_retired_provider_is_rejected_before_reading_inputs(self):
         for provider in ("deterministic-round-barrier-earliest-slot-v2", "lagrangian-kkt-v1", "native-timing-dag-ratio-v1"):
             with self.subTest(provider=provider), mock.patch(
-                "emuflow.scheduling.phase5.read_system_routes", side_effect=AssertionError("input read"),
+                "emuflow_tools.stage_clients.schedule.read_system_routes", side_effect=AssertionError("input read"),
             ), self.assertRaisesRegex(ValueError, "unsupported Phase 5 provider"):
                 run_phase5(Path("missing"), Path("missing"), Path("unused"), provider=provider)
 

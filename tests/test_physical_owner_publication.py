@@ -288,12 +288,17 @@ def test_independent_native_audit_rejoins_original_device_semantics(tmp_path, na
         audit_physical_handoff(native_handoff.mapped, handoff, native_handoff.architecture)
 
 
-def test_cli_requires_typed_physical_owner_and_retires_json_validator_routes():
+def test_cli_requires_typed_physical_owner_and_retires_json_validator_routes(tmp_path, native_handoff):
     from emuflow.flow.cli import _build_parser
     parser = _build_parser()
-    parsed = parser.parse_args(['arch', 'validate-xilinx-physical', '--mapped-index', 'mapped.sqlite',
-                                '--physical-handoff', 'handoff.sqlite', '--architecture', 'architecture.json'])
-    assert parsed.arch_command == 'validate-xilinx-physical'
+    from emuflow.physical.handoff import audit_physical_handoff
+    from tests.physical_handoff_native_fixture import build_native_handoff
+    report = build_native_handoff(native_handoff, tmp_path / 'typed-owner')
+    checked = audit_physical_handoff(native_handoff.mapped, Path(report['physical_handoff']), native_handoff.architecture)
+    assert checked['packing']['status'] == checked['placement']['status'] == 'pass'
+    with pytest.raises(SystemExit):
+        parser.parse_args(['arch', 'validate-xilinx-physical', '--mapped-index', 'mapped.sqlite',
+                           '--physical-handoff', 'handoff.sqlite', '--architecture', 'architecture.json'])
     for retired in ('validate-xilinx-packing', 'validate-xilinx-placement'):
         with pytest.raises(SystemExit):
             parser.parse_args(['arch', retired])

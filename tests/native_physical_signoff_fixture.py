@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from emuflow.common.io import write_json
-from emuflow.scheduling.phase5_native import run_native_phase5
+from emuflow_tools.stage_clients.schedule_native import run_native_phase5
 from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.transport.runtime import build_virtual_runtime, validate_physical_summary, virtual_runtime_controller_to_systemverilog
