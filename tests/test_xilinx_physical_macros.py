@@ -7,8 +7,8 @@ from types import MappingProxyType
 from unittest import mock
 
 from emuflow.common.errors import ValidationError
-import emuflow.physical.xilinx_physical_macros as physical_macros
-from emuflow.physical.xilinx_physical_macros import (
+import tests.xilinx_macro_reference as physical_macros
+from tests.xilinx_macro_reference import (
     XILINX_PHYSICAL_MACRO_CONTRACT_SCHEMA,
     derive_xilinx_physical_macro_contract,
     validate_xilinx_physical_macro_contract,
@@ -417,7 +417,7 @@ class XilinxPhysicalMacroContractTest(unittest.TestCase):
 
     def test_json_schema_declares_the_versioned_contract(self):
         schema = json.loads(
-            (Path(__file__).parents[1] / "schemas/xilinx-physical-macro-contract-v1.schema.json")
+            (Path(__file__).parent / "fixtures/xilinx-physical-macro-contract-v1.schema.json")
             .read_text(encoding="utf-8")
         )
         self.assertEqual(

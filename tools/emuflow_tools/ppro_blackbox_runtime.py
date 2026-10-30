@@ -26,7 +26,7 @@ from .ppro_blackbox_constraints import (
 )
 from .ppro_blackbox_provenance import require_current_runner_revision
 from .ppro_blackbox_runner import RuntimeBinding, validate_run_spec
-from emuflow.frontend.synthesis import YOSYS_DEFINE
+from emuflow.frontend.policy import YOSYS_DEFINE
 
 
 PPRO_COMPILATION_CONTEXT_SCHEMA = "emuflow.ppro-compilation-context/v1"

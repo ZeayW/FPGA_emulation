@@ -5,7 +5,7 @@ from pathlib import Path
 
 from emuflow.validation.equivalence import _MappedModel
 from emuflow.common.errors import ValidationError
-from emuflow.physical.xilinx_primitives import normalize_xilinx_mapped_json
+from tests.xilinx_normalization_reference import normalize_xilinx_mapped_json
 from tests.yosys_reference import import_yosys_json
 
 

@@ -10,7 +10,6 @@ import pytest
 
 from emuflow.common.errors import EmuFlowError
 from emuflow.common.process_output import run_with_bounded_output
-from emuflow.frontend.synthesis import _run_yosys_json_consumer
 from emuflow.common.tool_runtime import NativeToolProcess, _request_bytes, native_tool_runner
 from tests.native_build import emuflow_native
 
@@ -169,39 +168,10 @@ def test_engine_exit_reaps_pipe_holding_descendant(runner, tmp_path):
     assert not process_alive(int(pid_path.read_text()))
 
 
-def test_streamed_yosys_stdout_preserves_document_and_bounded_diagnostics(runner, tmp_path, monkeypatch):
-    monkeypatch.setattr("emuflow.frontend.synthesis.native_tool_runner", lambda _: runner)
-    command = [sys.executable, "-c", "import os; os.write(2,b'x'*3000000+b'END'); os.write(1,b'{\"design\":\"stream\"}')"]
-    log = tmp_path / "yosys.log"
-    value = _run_yosys_json_consumer(command, json.load, tmp_path, log, "Yosys")
-    assert value == {"design": "stream"}
-    assert log.stat().st_size == 2 * 1024 * 1024
-    assert log.read_text().endswith("END")
-    assert list(tmp_path.iterdir()) == [log]
 
 
-def test_stream_consumer_failure_cancels_engine(runner, tmp_path, monkeypatch):
-    monkeypatch.setattr("emuflow.frontend.synthesis.native_tool_runner", lambda _: runner)
-    pid_path = tmp_path / "pid"
-    command = [sys.executable, "-c", "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); print('diagnostic',file=sys.stderr,flush=True); print('start',flush=True); time.sleep(60)", str(pid_path)]
-
-    def fail(stream):
-        assert stream.readline() == "start\n"
-        raise ValueError("importer rejected document")
-
-    with pytest.raises(ValueError, match="importer rejected"):
-        _run_yosys_json_consumer(command, fail, tmp_path, tmp_path / "yosys.log", "Yosys")
-    assert not process_alive(int(pid_path.read_text()))
-    assert (tmp_path / "yosys.log").read_text() == "diagnostic\n"
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["pid", "yosys.log"]
 
 
-def test_failed_engine_retains_error_precedence_over_truncated_document(runner, tmp_path, monkeypatch):
-    monkeypatch.setattr("emuflow.frontend.synthesis.native_tool_runner", lambda _: runner)
-    command = [sys.executable, "-c", "import sys; print('{'); print('engine failure',file=sys.stderr); raise SystemExit(7)"]
-    with pytest.raises(EmuFlowError, match="Yosys failed with exit code 7"):
-        _run_yosys_json_consumer(command, json.load, tmp_path, tmp_path / "yosys.log", "Yosys")
-    assert (tmp_path / "yosys.log").read_text() == "engine failure\n"
 
 
 def test_resource_limits_are_applied_to_engine(runner):
@@ -276,3 +246,6 @@ def test_native_stdin_forwarding_is_explicit_and_streamed(runner, tmp_path):
             assert evidence["operation"]["inputs"][0]["schema"] == "external-tool-request-v2"
     with NativeToolProcess(runner, [sys.executable, "-c", "import sys; print(len(sys.stdin.buffer.read()))"]) as process:
         assert process.finish().stdout.strip() == "0"
+
+# Stream ingestion, noisy diagnostics, parser cancellation and producer-error
+# precedence are covered at the maintained native owner in test_native_frontend.

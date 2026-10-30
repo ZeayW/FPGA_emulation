@@ -46,7 +46,7 @@ def test_native_input_has_no_host_cell_macro_or_device_population(tmp_path):
                 side_effect=AssertionError("host source rederivation"),
             ),
             patch(
-                "emuflow.physical.xilinx_physical_macros.build_xilinx_physical_macro_contract",
+                "tests.xilinx_macro_reference.build_xilinx_physical_macro_contract",
                 side_effect=AssertionError("host macro population"),
             ),
             patch.object(

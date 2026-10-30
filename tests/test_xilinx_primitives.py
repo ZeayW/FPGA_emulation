@@ -8,14 +8,8 @@ from unittest import mock
 
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
-from emuflow.physical.xilinx_primitives import (
-    XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-    audit_xilinx_mapped_json,
-    load_xilinx_primitive_library,
-    normalize_xilinx_indexed_staging,
-    normalize_xilinx_mapped_json,
-    _IndexedCellMapping,
-)
+from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE, load_xilinx_primitive_library
+from tests.xilinx_normalization_reference import audit_xilinx_mapped_json, normalize_xilinx_indexed_staging, normalize_xilinx_mapped_json, _IndexedCellMapping
 from emuflow.ir.resources import ResourceVector, classify_primitive_resources
 from tests.yosys_reference import import_yosys_json_indexed
 

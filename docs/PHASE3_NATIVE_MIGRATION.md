@@ -387,10 +387,10 @@ Native timing statistics retain the reference arithmetic and sorted accumulation
 order; numeric TEMP sorting uses source-scoped IDs instead of duplicate path names.
 See the [indexed timing contract](FLOW_PLAN.md#phase-5-indexed-timing). This closes
 the current Phase 5 summary and cross-layer publication data plane, alongside the
-independent indexed schedule validator. Python still controls report/generation
-publication; native orchestration integration, other phase data planes and real
-design qualification remain required. This does not complete W7 or establish
-whole-stage performance gains.
+independent indexed schedule validator. The complete native Phase 5 stage owns
+report/generation publication and is invoked directly by the native compiler.
+Whole-design NVDLA qualification remains required; component acceptance does not
+establish W7 completion or whole-stage performance gains.
 Deployment probes load the unified entry and physical bridge before publishing
 runtime provenance; launchers must repeat them in the actual execution
 environment before expensive computation.
@@ -1104,10 +1104,11 @@ CI[0] exception index for cascade exclusion. It does not store every consumer's
 repeated identity. Negative-edge FF metadata updates its existing rows directly,
 without creating a second full FF relation. Carry and helper rewrites use
 SQLite-owned records rather than Python name/consumer/replacement dictionaries.
-The production hierarchical frontend never retries the Python normalizer after
-native failure. The existing Python normalizer still serves explicit flat and
-mapped-index consumers; those consumers must migrate before that implementation
-can retire. Independent differential tests use it as an oracle.
+The production frontend never retries a Python normalizer after native failure.
+The former Python JSON/indexed importers, mapped-JSON normalizer and physical
+macro builder are retired from the production package. Their independent fixture
+oracles live only in tests. Primitive-library facts and validation remain shared
+bounded inputs; standalone mapping statistics live in the optional tools package.
 
 `phase1 import-yosys REQUEST EMUIR SUMMARY [PRIMITIVE_LIBRARY]` now runs the
 complete hierarchical source-to-compact producer in the shared core. Source
@@ -1205,10 +1206,10 @@ package-pin generation are retired from that producer. Its source document
 contains owner references only. Timing guards reside in the crossing input;
 the Phase 5 schedule is not cloned. Native paper kernels remain unchanged.
 
-Python still builds hop/group inputs and timing weights, and the shared core
-and full native production data plane are not complete. VTR/open execution
-entries, standalone artifact adapters and engine/build dependencies are retired.
-This scope reduction does not establish full NVDLA acceptance.
+The native Chimew controller builds placed lookahead and hop/group/timing inputs,
+executes the retained kernels, independently validates their outputs and publishes
+the candidate pin plan. VTR/open execution entries and their deployment dependencies
+are retired. Full NVDLA physical/global timing acceptance remains required.
 
 
 ### Complete original local-path query owner

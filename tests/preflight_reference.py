@@ -14,7 +14,7 @@ from emuflow.platform.board_link_timing import validate_board_link_timing
 from emuflow.transport.transport_cost import validate_transport_cost_database
 from emuflow.physical.openparf.openparf import validate_openparf_runtime
 from emuflow.timing.opensta import check_opensta_engine_version
-from emuflow.frontend.synthesis import VALID_XILINX_MAPPING_STRATEGIES
+from emuflow.frontend.policy import VALID_XILINX_MAPPING_STRATEGIES
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.partition.partition import CUT_MODE_STATIC_EXACT, CUT_MODE_SEQUENTIAL_ONLY

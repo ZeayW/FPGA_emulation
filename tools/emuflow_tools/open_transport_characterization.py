@@ -26,7 +26,9 @@ from emuflow.common.io import read_json, write_json
 from emuflow.transport.netlist import transport_to_systemverilog
 from emuflow.platform.platform import Platform
 from emuflow.transport.runtime import virtual_runtime_controller_to_systemverilog
-from emuflow.frontend.synthesis import run_xilinx_ultrascaleplus_yosys
+from emuflow.frontend.frontend_native import run_rtl_frontend
+from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
+from emuflow.common.io import file_sha256
 
 
 OPEN_TRANSPORT_MATRIX_SCHEMA = "emuflow.open-transport-matrix/v2"
@@ -341,12 +343,21 @@ def _tool_version(executable: str) -> str:
     return completed.stdout.strip().splitlines()[0]
 
 
+def _native_transport_mapper(sources, top, output, *, executable=None, log_path=None):
+    """Reuse the maintained frontend and retain only its resource evidence."""
+    root = Path(output).parent / (Path(output).stem + "-native")
+    summary = run_rtl_frontend(sources, top, DEFAULT_PLATFORM_PATH, root, yosys=executable)
+    report = dict(summary["synthesis"]["tool_report"])
+    report["mapped_emuir_sha256"] = file_sha256(root / "frontend/phase1/design.emuir.sqlite")
+    return report
+
+
 def characterize_open_transport_case(
     case: Mapping[str, Any],
     *,
     yosys_executable: str,
     work_root: Path,
-    mapper: Callable[..., Mapping[str, Any]] = run_xilinx_ultrascaleplus_yosys,
+    mapper: Callable[..., Mapping[str, Any]] = _native_transport_mapper,
 ) -> Dict[str, Any]:
     """Map one exact production transport shell and return compact evidence."""
 
@@ -406,6 +417,8 @@ def characterize_open_transport_case(
                 "yosys_version": _tool_version(yosys_executable),
                 "primitive_library_sha256": audit.get("primitive_library_sha256"),
                 "mapped_json_sha256": audit.get("mapped_json_sha256"),
+                "mapped_emuir_sha256": report.get("mapped_emuir_sha256"),
+                "mapped_representation": audit.get("mapped_representation", "yosys-json"),
                 "cell_types": audit.get("cell_types", {}),
                 "unknown_cell_types": audit.get("unknown_cell_types", {}),
                 "external_macros": audit.get("external_macros", {}),

@@ -109,3 +109,24 @@ class OpenTransportCharacterizationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_default_mapper_reuses_native_frontend_without_json_netlist(tmp_path):
+    import hashlib
+    import json
+    import sys
+    from emuflow_tools import open_transport_characterization as tool
+    from tests.test_native_frontend import source as mapped_fixture
+    executable=tmp_path/'fixture-yosys'
+    executable.write_text('#!'+sys.executable+'\nimport sys\nif "-V" in sys.argv:\n print("Yosys 0.57");raise SystemExit(0)\nprint('+repr(json.dumps(mapped_fixture()))+')\n')
+    executable.chmod(0o755)
+    source=tmp_path/'transport.sv';source.write_text('module top(input clk,d); endmodule')
+    output=tmp_path/'mapped.json'
+    result=tool._native_transport_mapper([source],'top',output,executable=str(executable))
+    assert result['status']=='pass' and result['primitive_audit']['status']=='pass'
+    assert result['primitive_audit']['resource_totals']=={'ff':1}
+    owners=list(tmp_path.glob('*/frontend/phase1/design.emuir.sqlite'))
+    assert len(owners)==1
+    assert result['mapped_emuir_sha256']==hashlib.sha256(owners[0].read_bytes()).hexdigest()
+    assert result['primitive_audit']['mapped_json_sha256'] is None
+    assert not output.exists()

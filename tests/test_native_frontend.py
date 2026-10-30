@@ -226,3 +226,24 @@ def test_prepared_source_checksums_bind_original_rtl_and_include_files(tmp_path,
         prepare_frontend(ctx)
         assert str(header).encode() in ctx.native_frontend_request.read_bytes()
         assert str(rtl).encode() in ctx.native_frontend_request.read_bytes()
+
+
+def test_native_parser_rejection_reaps_a_live_producer_and_keeps_diagnostics(native,tmp_path):
+    path,root,program,_=request(tmp_path)
+    pid_path=tmp_path/'rejected-engine.pid'
+    program.write_text('import os,sys,time\nfrom pathlib import Path\nPath('+repr(str(pid_path))+').write_text(str(os.getpid()))\nprint("diagnostic",file=sys.stderr,flush=True)\nprint("!invalid",flush=True)\ntime.sleep(60)\n')
+    result=run(native,path,timeout=5)
+    assert result.returncode!=0
+    assert 'diagnostic' in result.stderr
+    with pytest.raises(ProcessLookupError):os.kill(int(pid_path.read_text()),0)
+    assert not root.exists() and not list(root.parent.glob('.frontend-generation-*'))
+
+
+def test_native_producer_exit_precedes_incomplete_interchange(native,tmp_path):
+    path,root,program,_=request(tmp_path)
+    program.write_text('import sys\nprint("{",flush=True)\nprint("engine failure",file=sys.stderr,flush=True)\nraise SystemExit(7)\n')
+    result=run(native,path,timeout=5)
+    assert result.returncode!=0
+    assert 'exited with code 7' in result.stderr
+    assert 'engine failure' in result.stderr
+    assert not root.exists() and not list(root.parent.glob('.frontend-generation-*'))

@@ -1,9 +1,4 @@
-"""Compact, provider-neutral physical-macro contracts for Xilinx mapping.
-
-The contract records only cells that participate in an indivisible site macro
-or a dedicated inter-site cascade.  It is derived from mapped connectivity and
-contains no placement candidate, device-site inventory, or copied netlist.
-"""
+"""Independent fixture-only physical macro oracle; never installed."""
 
 from __future__ import annotations
 
@@ -27,7 +22,8 @@ from emuflow.physical.xilinx_packing import _mux_input_driver
 from emuflow.physical.xilinx_packing import _net_drivers
 from emuflow.physical.xilinx_packing import _pack_mux_cone
 from emuflow.physical.xilinx_packing import _select_module
-from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE, audit_xilinx_mapped_json
+from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+from tests.xilinx_normalization_reference import audit_xilinx_mapped_json
 
 
 XILINX_PHYSICAL_MACRO_CONTRACT_SCHEMA = (

@@ -562,7 +562,8 @@ def import_yosys_json_indexed(
     if _expand_hierarchy:
         if top is None or _source_value is not None or _source_index_path is not None:
             raise ImportError("hierarchical indexed Yosys import requires an explicit top and a stream or path")
-        from emuflow.physical.xilinx_primitives import normalize_xilinx_indexed_staging, DEFAULT_XILINX_PRIMITIVE_LIBRARY
+        from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
+        from tests.xilinx_normalization_reference import normalize_xilinx_indexed_staging
         if staging_transform is not None and staging_transform is not normalize_xilinx_indexed_staging:
             raise ImportError("hierarchical import requires the current native Xilinx normalization or no transform")
         from emuflow.frontend.yosys_hierarchy_native import import_hierarchical_emuir

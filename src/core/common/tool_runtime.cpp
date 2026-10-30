@@ -300,9 +300,11 @@ void Execute(const ToolRequest& request, ToolResult& result,
   FinishTail(result, ring, cursor);
   std::exception_ptr consumer_error;
   if(worker){try{worker->Finish();}catch(...){consumer_error=std::current_exception();}}
-  // Cancellation closes the producer pipe. A parser's consequent EOF error
-  // must not replace the authoritative timeout/cancellation diagnosis.
-  if(!result.timed_out && !result.cancelled_signal && !result.spawn_errno && consumer_error)
+  // Cancellation or a failed producer can close the document mid-record.
+  // Preserve that authoritative diagnosis; a rejected document still owns
+  // the failure when its consumer terminates a running producer by signal.
+  if(!result.timed_out && !result.cancelled_signal && !result.spawn_errno &&
+      result.return_code<=0 && consumer_error)
     std::rethrow_exception(consumer_error);
   if (result.timed_out || result.cancelled_signal || result.spawn_errno || result.return_code)
     throw StageError(ErrorCode::kExecutionFailed,

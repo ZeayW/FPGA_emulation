@@ -105,7 +105,9 @@
       "source_paths": [
         "engines/yosys",
         "engines/yosys/abc",
-        "src/python/emuflow/frontend/synthesis.py",
+        "src/core/frontend/frontend.cpp",
+        "src/core/frontend/configuration.cpp",
+        "src/core/frontend/yosys_hierarchy.cpp",
         "src/python/emuflow/physical/xilinx_primitives.py",
         "schemas/xilinx-primitive-library-db-v1.schema.json",
         "src/python/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
@@ -114,11 +116,14 @@
         "scripts/yosys/logic_only_map.v"
       ],
       "build_targets": [
-        "yosys_native"
+        "yosys_native",
+        "emuflow_core",
+        "emuflow_native"
       ],
       "runtime_products": [
         "yosys",
-        "yosys-abc"
+        "yosys-abc",
+        "emuflow-native"
       ],
       "integration": "default-in-tree-build"
     },

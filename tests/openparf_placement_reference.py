@@ -53,7 +53,7 @@ from emuflow.physical.xilinx_packing import FF_TYPES
 
 from emuflow.physical.xilinx_packing import LUT_TYPES
 
-from emuflow.physical.xilinx_physical_macros import build_xilinx_physical_macro_contract
+from tests.xilinx_macro_reference import build_xilinx_physical_macro_contract
 
 from emuflow.physical.openparf.xilinx_openparf_source_storage import OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA, materialize_xilinx_openparf_atomic_source, read_xilinx_openparf_atomic_source
 

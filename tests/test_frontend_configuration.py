@@ -13,7 +13,7 @@ import pytest
 from emuflow.common.native_tools import native_file_generation
 from emuflow.frontend.frontend_native import prepare_frontend
 from emuflow.frontend.inputs import prepare_inputs
-from emuflow.frontend.synthesis import build_yosys_script
+from tests.synthesis_script_reference import build_yosys_script
 from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
 from emuflow.platform.platform import Platform
 from tests.native_build import emuflow_native

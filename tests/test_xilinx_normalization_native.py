@@ -10,7 +10,8 @@ import pytest
 
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.storage.store_publication import bind_store_source
-from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY, normalize_xilinx_mapped_json, normalize_xilinx_indexed_staging
+from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
+from tests.xilinx_normalization_reference import normalize_xilinx_mapped_json, normalize_xilinx_indexed_staging
 from tests.yosys_reference import import_yosys_json_indexed
 from emuflow.frontend.yosys_hierarchy_native import stage_hierarchy
 from emuflow.ir.ir import EmuIR
@@ -94,7 +95,7 @@ def test_complete_normalized_records_and_audit_match_independent_reference(nativ
 def test_production_hierarchical_import_bypasses_python_normalizer(native,tmp_path,monkeypatch):
     monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
     monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.require_native_schema",lambda _:None)
-    monkeypatch.setattr("emuflow.physical.xilinx_primitives.normalize_xilinx_mapped_json",lambda *a,**k:pytest.fail("production rebuilt a Python primitive population"))
+    monkeypatch.setattr("tests.xilinx_normalization_reference.normalize_xilinx_mapped_json",lambda *a,**k:pytest.fail("production rebuilt a Python primitive population"))
     report=import_yosys_json_indexed(Path("<stream>"),tmp_path/"design.emuir.sqlite",top="top",_source_stream=io.StringIO(json.dumps(source(0))),_expand_hierarchy=True,staging_transform=normalize_xilinx_indexed_staging)
     assert report["carry8_paired_cells"]==1
     assert report["negedge_ff_normalized_cells"]==4

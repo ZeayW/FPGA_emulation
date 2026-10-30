@@ -67,7 +67,7 @@ from emuflow.transport.pin_planning import validate_pin_plan
 from emuflow.transport.pin_plan_storage import read_pin_plan
 from emuflow.transport.position_hints_storage import read_position_hints
 
-from emuflow.frontend.synthesis import VALID_SYNTHESIS_POLICIES, VALID_XILINX_FAMILIES, VALID_XILINX_MAPPING_STRATEGIES, run_yosys, run_xilinx_ultrascaleplus_yosys
+from emuflow.frontend.policy import VALID_XILINX_MAPPING_STRATEGIES
 from emuflow.timing.sta import derive_partition_net_weights, validate_sta_path_database
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
@@ -207,50 +207,6 @@ def _build_parser() -> argparse.ArgumentParser:
     ir_stats = ir_subparsers.add_parser("stats", help="show EmuIR statistics")
     ir_stats.add_argument("path", type=Path)
 
-    synthesis = subparsers.add_parser(
-        "synth-yosys", help="synthesize RTL to mapped Xilinx Yosys JSON"
-    )
-    synthesis.add_argument("sources", nargs="+", type=Path)
-    synthesis.add_argument("--top", required=True)
-    synthesis.add_argument("--output", "-o", type=Path, required=True)
-    synthesis.add_argument(
-        "--family",
-        choices=sorted(VALID_XILINX_FAMILIES),
-        default="xcup",
-    )
-    synthesis.add_argument(
-        "--yosys",
-        help="explicit comparison override; defaults to the in-tree build",
-    )
-    synthesis.add_argument("--log", type=Path)
-    synthesis.add_argument(
-        "--include-dir",
-        action="append",
-        default=[],
-        type=Path,
-        help="Verilog include directory passed to Yosys (repeatable)",
-    )
-    synthesis.add_argument(
-        "--define",
-        action="append",
-        default=[],
-        help="Verilog preprocessor NAME or NAME=VALUE (repeatable)",
-    )
-    synthesis.add_argument(
-        "--verilog-output",
-        type=Path,
-        help="optional flattened mapped Verilog for downstream physical tools",
-    )
-    synthesis.add_argument(
-        "--policy",
-        choices=sorted(VALID_SYNTHESIS_POLICIES),
-        default="native",
-    )
-    synthesis.add_argument(
-        "--mapping-profile",
-        choices=[XILINX_ULTRASCALEPLUS_OPEN_PROFILE],
-        help="enable the fail-closed Route A UltraScale+ primitive contract",
-    )
 
     multi_fpga = subparsers.add_parser(
         "multi-fpga",
@@ -1490,53 +1446,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             _print_json(ir.stats())
         return 0
 
-    if args.command == "synth-yosys":
-        if args.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-            if args.verilog_output is not None:
-                raise EmuFlowError(
-                    "Route A normalized synthesis does not yet emit mapped Verilog"
-                )
-            report = run_xilinx_ultrascaleplus_yosys(
-                sources=args.sources,
-                top=args.top,
-                output=args.output,
-                executable=args.yosys,
-                log_path=args.log,
-                include_dirs=args.include_dir,
-                defines=args.define,
-            )
-        else:
-            run_yosys(
-                sources=args.sources,
-                top=args.top,
-                output=args.output,
-                family=args.family,
-                policy=args.policy,
-                verilog_output=args.verilog_output,
-                executable=args.yosys,
-                log_path=args.log,
-                include_dirs=args.include_dir,
-                defines=args.define,
-            )
-            report = {"status": "pass"}
-        _print_json(
-            {
-                **report,
-                "family": args.family,
-                "policy": args.policy,
-                "output": str(args.output),
-                "verilog_output": (
-                    str(args.verilog_output)
-                    if args.verilog_output is not None
-                    else None
-                ),
-                "sources": [str(source) for source in args.sources],
-                "include_dirs": [str(path) for path in args.include_dir],
-                "defines": list(args.define),
-                "top": args.top,
-            }
-        )
-        return 0
 
 
     if args.command == "arch":
