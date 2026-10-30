@@ -135,7 +135,6 @@ void FinalizeFlow(const fs::path& output) {
   AddArtifact(artifacts,bindings,output,"phase6_comparison_report","phase6-comparison/comparison-report.json","exact-sha256-text-v1",false);
   AddArtifact(artifacts,bindings,output,"board_link_timing","timing/board-link-timing.json","exact-sha256-text-v1",false);
   AddArtifact(artifacts,bindings,output,"board_link_route_constraints","timing/board-link-route-constraints.json","exact-sha256-text-v1",false);
-  AddArtifact(artifacts,bindings,output,"frame_search_report","frame-search/frame-search-report.json","exact-sha256-text-v1",false);
   AddArtifact(artifacts,bindings,output,"timing_path_database","timing/path-database.json","exact-sha256-text-v1",false);
   const auto path_payload=OptionalSelectorPayload(output/"timing/path-database.json");
   if(!path_payload.empty())AddArtifact(artifacts,bindings,output,"timing_path_database_payload",fs::path("timing")/path_payload);
@@ -197,7 +196,7 @@ void FinalizeFlow(const fs::path& output) {
         "BoardLink/timing optimization policy disagrees");
     report["board_link_timing"]=link.text();
   }
-  if(fs::is_regular_file(output/"frame-search/frame-search-report.json"))report["frame_search"]=load("frame-search/frame-search-report.json").text();
+  Check(!fs::exists(output/"frame-search") && !fs::is_symlink(output/"frame-search"),"frame search artifacts are retired");
   const bool comparison=fs::is_regular_file(output/"phase6-comparison/comparison-report.json");
   if(comparison){
     auto value=load("phase6-comparison/comparison-report.json");Pass(value,"Phase 6 comparison");

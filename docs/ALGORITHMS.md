@@ -210,8 +210,8 @@ See the [hardware platform and link model](HARDWARE_PLATFORM.md).
 The old registered-boundary producer, split scheduling/publication protocol,
 and cross-stage ratio-feedback optimizer are removed. A bounded earliest-slot
 oracle lives in tests only; supported explicit artifacts retain independent
-legality checks. Minimum-frame search reruns the same production scheduler
-and records `emuflow.frame-search/v5`, without optimizer-selection parameters.
+legality checks. Frame length is an explicit per-run constraint; the unused
+minimum-frame search producer, report reader and historical schemas are retired.
 
 ## Phase 6: pin planning, netlist splitting, and transport
 

@@ -43,8 +43,8 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     output=tmp_path/"phase5"
     # Production must select the complete native producer from its indexed contract.
     with patch("tests.schedule_store_fixture._publish_fixture_records",side_effect=AssertionError("Python publisher used")), \
-         patch("emuflow.scheduling.tdm._indexed_certificate",side_effect=AssertionError("Python producer certificate used")), \
-         patch("emuflow.scheduling.tdm._baseline_ratio_hops",side_effect=AssertionError("Python hop map rebuilt before validation")):
+         patch("tests.tdm_reference._indexed_certificate",side_effect=AssertionError("Python producer certificate used")), \
+         patch("tests.tdm_reference._baseline_ratio_hops",side_effect=AssertionError("Python hop map rebuilt before validation")):
         report=run_phase5(route_path,PLATFORM_PATH,output,assignment_path)
     assert report["status"]=="pass"
     assert "simulation" not in report

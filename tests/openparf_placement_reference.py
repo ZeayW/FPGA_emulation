@@ -47,11 +47,11 @@ from emuflow.common.io import file_sha256, read_json, write_json
 
 from emuflow.physical.xilinx_native_device_constraints import load_xilinx_native_device_constraints, require_xilinx_native_constraint_capability
 
-from emuflow.physical.xilinx_packing import DUAL_OUTPUT_LUT_TYPE
+from tests.xilinx_packing_reference import DUAL_OUTPUT_LUT_TYPE
 
-from emuflow.physical.xilinx_packing import FF_TYPES
+from tests.xilinx_packing_reference import FF_TYPES
 
-from emuflow.physical.xilinx_packing import LUT_TYPES
+from tests.xilinx_packing_reference import LUT_TYPES
 
 from tests.xilinx_macro_reference import build_xilinx_physical_macro_contract
 

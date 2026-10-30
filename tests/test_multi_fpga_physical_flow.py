@@ -21,10 +21,35 @@ def test_public_host_hands_entire_flow_to_native_without_python_graph_stages(tmp
     assert result['implementation_id']=='native-multi-fpga-physical-v1'
     summary=json.loads((tmp_path/'physical/physical-summary.json').read_text())
     assert validate_multi_fpga_physical_report(result,summary)==result['summary']
+    # Namespace/census validation must not serialize unrelated graph evidence.
+    poisoned = copy.deepcopy(summary)
+    poisoned['boundary_timing'] = object()
+    assert validate_multi_fpga_physical_report(result,poisoned)==result['summary']
+    original_summary = tmp_path/'physical/physical-summary.json'
+    from emuflow.common.tool_runtime import NativeToolProcess
+    calls = []
+    def record(executable, argv, **kwargs):
+        calls.append(argv)
+        return NativeToolProcess(executable, argv, **kwargs)
+    with patch('emuflow.flow.multi_fpga_physical_flow.NativeToolProcess', side_effect=record):
+        assert validate_multi_fpga_physical_report(result,physical_summary_path=original_summary)==result['summary']
+    assert calls and calls[0][-1]==str(original_summary.resolve())
+    with pytest.raises(ValidationError,match='one explicit owner'):
+        validate_multi_fpga_physical_report(result,summary,physical_summary_path=original_summary)
     broken=copy.deepcopy(summary);broken['fpgas'][0]['original_cells']+=1
     with pytest.raises(ValidationError,match='coverage disagrees'):validate_multi_fpga_physical_report(result,broken)
     broken=copy.deepcopy(result);broken['fpgas'][0]['part']='another-device'
     with pytest.raises(ValidationError):validate_multi_fpga_physical_report(broken)
+    finish = NativeToolProcess.finish
+    def replace_owner_during_validation(process):
+        value = finish(process)
+        replacement = original_summary.with_suffix('.replacement')
+        replacement.write_bytes(original_summary.read_bytes())
+        replacement.replace(original_summary)
+        return value
+    with patch.object(NativeToolProcess,'finish',replace_owner_during_validation):
+        with pytest.raises(ValidationError,match='changed'):
+            validate_multi_fpga_physical_report(result,physical_summary_path=original_summary)
 
 
 @pytest.mark.parametrize('kwargs',[

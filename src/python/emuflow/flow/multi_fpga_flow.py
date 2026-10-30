@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from emuflow.common.errors import ValidationError
-from emuflow.scheduling.frame_search import validate_frame_search_report
 from emuflow.common.io import read_json
 from emuflow.flow.multi_fpga_physical_flow import validate_multi_fpga_physical_report
 from emuflow.partition.phase3 import validate_phase3_indexed
@@ -27,7 +26,7 @@ from emuflow.platform.platform import Platform
 from emuflow.transport.runtime import validate_virtual_runtime
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from emuflow.routing.phase4 import GLOBAL_CANDIDATE_PROVIDER
 
 MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v2"
 MULTI_FPGA_FLOW_PROVIDER = (
@@ -560,18 +559,8 @@ def validate_multi_fpga_flow_report(
             )
     if "hardware_bsp" in report:
         raise ValidationError("hardware BSP reports are no longer supported")
-    frame_search = report.get("frame_search")
-    if frame_search is not None:
-        frame_validation = validate_frame_search_report(frame_search)
-        if (
-            frame_validation["selected_frame_slots"]
-            != tdm_validation.get("frame_slots")
-            or frame_validation["selected_frame_slots"]
-            != runtime["validation"].get("frame_slots")
-        ):
-            raise ValidationError(
-                "frame-search selection disagrees with TDM/runtime"
-            )
+    if "frame_search" in report:
+        raise ValidationError("frame search reports are no longer supported")
     if report.get("cross_stage") is not None:
         raise ValidationError("retired cross-stage ratio-feedback flow is not supported")
     if any(
@@ -842,8 +831,7 @@ def validate_multi_fpga_flow_bundle(
             Path("physical/physical-summary.json"),
             "physical summary",
         )
-        with read_physical_summary(physical_summary_path) as summary_view:
-            validate_multi_fpga_physical_report(live_physical, summary_view)
+        validate_multi_fpga_physical_report(live_physical, physical_summary_path=physical_summary_path)
         candidate_link_timing = flow_root / "timing/board-link-timing.json"
         if candidate_link_timing.is_file():
             board_link_timing_path = _checked_flow_member(

@@ -7,6 +7,10 @@ from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
 from emuflow.ir.resources import ResourceVector, classify_primitive_resources
 
+LUT_TYPES = {f"LUT{width}" for width in range(1, 7)}
+DUAL_OUTPUT_LUT_TYPE = "LUT6_2"
+CONSTANT_TYPES = {"GND", "VCC"}
+
 XILINX_PRIMITIVE_LIBRARY_SCHEMA = (
     "emuflow.xilinx-primitive-library-db/v1"
 )

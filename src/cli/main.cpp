@@ -158,6 +158,7 @@ constexpr const char* kUsage =
     "  phase3 normalize-configuration EMUIR REQUEST [RAW_CONSTRAINTS] OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
     "  phase4 run ASSIGNMENT BOARD POLICY OUTPUT_DIR [TIMING_PATHS]\n"
+    "  phase4 validate ASSIGNMENT BOARD SELECTOR STORE SUMMARY [TIMING_PATHS]\n"
     "  phase4 seal-routes STORE REQUEST SUMMARY\n"
     "  phase5 timing-contract ROUTE_STORE [SCHEDULE_STORE [BOARD_REQUEST]] REQUEST SUMMARY\n"
     "  phase5 validate-schedule ROUTE_STORE BOARD_REQUEST SCHEDULE_STORE REQUEST SUMMARY\n"
@@ -597,6 +598,16 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(argc==5 && std::string(argv[1])=="phase3" && std::string(argv[2])=="run") {
     ToolSignals signals;return Finish(emuflow::core::RunPhase3(emuflow::core::ArtifactRef::Bind(argv[3],"phase3-stage-request-v1"),argv[4],&tool_cancelled),report);
+  }
+  if((argc==8 || argc==9) && std::string(argv[1])=="phase4" && std::string(argv[2])=="validate") {
+    ToolSignals signals;
+    std::vector<emuflow::core::ArtifactRef> inputs{
+      emuflow::core::ArtifactRef::Bind(argv[3],"assignment-index-v4"),
+      emuflow::core::ArtifactRef::Bind(argv[4],"boarddb-v1"),
+      emuflow::core::ArtifactRef::Bind(argv[5],"system-route-selector-v1"),
+      emuflow::core::ArtifactRef::Bind(argv[6],"system-route-store-v3")};
+    if(argc==9)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[8],"system-routing-paths-v1"));
+    return Finish(emuflow::core::ValidatePhase4(inputs,argv[7],&tool_cancelled),report);
   }
   if((argc==7 || argc==8) && std::string(argv[1])=="phase4" && std::string(argv[2])=="run") {
     ToolSignals signals;

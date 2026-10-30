@@ -2,7 +2,7 @@
 from __future__ import annotations
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
-from emuflow.scheduling import tdm as _tdm
+from tests import tdm_reference as _tdm
 REFERENCE_TDM_PROVIDER = "deterministic-round-barrier-earliest-slot-v2"
 from emuflow.common.errors import TDMScheduleInfeasibleError, ValidationError
 from emuflow.platform.platform import Platform

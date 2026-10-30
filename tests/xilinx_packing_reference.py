@@ -1,4 +1,4 @@
-"""Shared UltraScale+ primitive and dedicated-macro source rules."""
+"""Independent fixture oracle for native primitive packing and macro checks."""
 
 from __future__ import annotations
 

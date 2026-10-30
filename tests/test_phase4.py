@@ -17,14 +17,10 @@ from tests.native_partition_facts import (build_clusters, normalize_partition_co
 from tests.partition_reference import assign_clusters
 from emuflow.routing.phase4 import run_phase4
 from emuflow.platform.platform import Platform
-from emuflow.routing.routing import (
-    SYSTEM_ROUTES_SCHEMA,
-    demands_from_assignment,
-    normalize_route_constraints,
-    validate_system_routes,
-)
+from emuflow.routing.routing import SYSTEM_ROUTES_SCHEMA, normalize_route_constraints
+from tests.routing_validation_reference import demands_from_assignment, validate_system_routes
 from tests.routing_reference import exact_route_tree_selection
-from emuflow.scheduling.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, load_sta_paths, normalize_sta_paths, reconstruct_system_route_timing, validate_native_system_routes)
+from tests.timing_routing_reference import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, load_sta_paths, normalize_sta_paths, reconstruct_system_route_timing, validate_native_system_routes)
 from emuflow.routing.system_route_storage import SYSTEM_ROUTE_STORAGE_SCHEMA, SYSTEM_ROUTE_USER_VERSION, SystemRoutesView, read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.yosys_reference import import_yosys_json

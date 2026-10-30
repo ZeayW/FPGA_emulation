@@ -26,7 +26,7 @@ from emuflow.common.io import file_sha256, read_json, write_json
 from emuflow.common.native_tools import native_file_generation
 from emuflow.storage.store_publication import bind_store_source, publish_sqlite_store, require_store_sources_unchanged, validate_store_destination
 from emuflow.physical.xilinx_netlist import is_xilinx_mapped_index
-from emuflow.physical.xilinx_packing import CONSTANT_TYPES
+from tests.xilinx_packing_reference import CONSTANT_TYPES
 def write_xilinx_openparf_atomic_name_map_storage(
     path: Path,
     *,

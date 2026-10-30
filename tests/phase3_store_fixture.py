@@ -104,7 +104,7 @@ def write_cluster_fixture(path, value, **_options):
 
 def write_assignment_index_fixture(path, ir, assignment):
     from emuflow.partition.phase3_exact_binary import (EXACT_BINARY_ARTIFACT)
-    from emuflow.routing.routing import static_exact_contract_from_assignment
+    from tests.routing_validation_reference import static_exact_contract_from_assignment
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     owners = assignment['instance_assignment']
     if len(owners) > 65536: raise ValidationError('assignment fixture exceeds instance bound')

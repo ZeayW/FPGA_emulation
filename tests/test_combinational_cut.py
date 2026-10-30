@@ -44,18 +44,11 @@ from tests.native_semantic_facts import read_nodes as read_native_static_exact_c
 from emuflow.partition.phase3_exact_binary import (validate_phase3_exact_binary)
 from tests.phase3_exact_fixture import indexed_exact_facts
 from emuflow.partition.phase3_storage import (PACKED_ASSIGNMENT_SCHEMA, read_phase3_assignment_view)
-from emuflow.routing.routing import (
-    build_directed_graph,
-    demands_from_assignment,
-    normalize_route_constraints,
-    validate_system_routes,
-)
+from emuflow.routing.routing import build_directed_graph, normalize_route_constraints
+from tests.routing_validation_reference import demands_from_assignment, validate_system_routes
 from emuflow.ir.resources import ResourceVector
-from emuflow.scheduling.tdm import (
-    TDM_EXACT_DEPENDENCY_PROVIDER,
-    SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
-    validate_tdm_schedule,
-)
+from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER, SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA
+from tests.tdm_reference import validate_tdm_schedule
 from tests.schedule_reference import (
     REFERENCE_TDM_PROVIDER as TDM_BASELINE_PROVIDER,
     build_tdm_schedule,
@@ -1258,8 +1251,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 write_tdm_schedule_storage(path, request)
                 self.assertEqual(read_tdm_schedule(path, materialize=True), reference)
                 with read_tdm_schedule(path) as schedule, patch(
-                    "emuflow.scheduling.tdm._indexed_exact_nodes", side_effect=AssertionError("R-sized node map")), patch(
-                    "emuflow.scheduling.tdm._exact_dependency_order", side_effect=AssertionError("R-sized order")):
+                    'tests.tdm_reference._indexed_exact_nodes', side_effect=AssertionError("R-sized node map")), patch(
+                    'tests.tdm_reference._exact_dependency_order', side_effect=AssertionError("R-sized order")):
                     self.assertEqual(validate_tdm_schedule(native_routes, self.platform, schedule)["status"], "pass")
 
         compare(routes)

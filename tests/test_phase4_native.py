@@ -13,9 +13,9 @@ from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
 from emuflow.routing.phase4 import run_phase4
 from emuflow.routing.phase4_native import prepare_policy, run_native_phase4
-from emuflow.routing.routing import demands_from_assignment
+from tests.routing_validation_reference import demands_from_assignment
 from emuflow.routing.system_route_storage import read_system_routes
-from emuflow.scheduling.timing_routing import load_sta_paths, validate_native_system_routes
+from tests.timing_routing_reference import load_sta_paths, validate_native_system_routes
 from tests.native_build import emuflow_native
 from tests.native_schedule_case import _case
 
@@ -59,7 +59,7 @@ def test_complete_native_stage_preserves_records_hashes_and_independent_checks(t
         timing.write_text(json.dumps(paths))
     # The public API hands off references. It cannot invoke the independent
     # Python validator or reconstruct route-scale input/output objects.
-    with patch('emuflow.routing.phase4.validate_native_system_routes', side_effect=AssertionError('Python stage validator')):
+    with patch('emuflow.routing.phase4_native.validate_native_phase4', side_effect=AssertionError('standalone audit during production')):
         report = run_phase4(assignment, board, tmp_path/'native',
             timing_paths_path=timing, frame_slots=16, max_iterations=3,
             timing_driven=driven, router=str(emuflow_native()))
@@ -212,3 +212,77 @@ def test_routing_preparation_uses_its_original_board_contract_not_host_fields(tm
     result=subprocess.run([str(emuflow_native()),'phase4','prepare-policy',str(settings),str(output)],capture_output=True,text=True)
     assert result.returncode!=0 and not output.exists()
     assert 'normalized board contract differs' in result.stderr
+
+
+@pytest.mark.parametrize('mode', [False, True, 'banks', 'tree'])
+@pytest.mark.parametrize('driven', [False, True])
+@pytest.mark.parametrize('normalized', [False, True])
+def test_published_native_audit_matches_independent_oracle_without_python_populations(tmp_path, mode, driven, normalized):
+    from emuflow.routing.phase4 import validate_phase4
+    case, assignment, board, timing = inputs(tmp_path, mode)
+    paths = load_sta_paths(timing, demands_from_assignment(case._phase5_assignment, case.platform))
+    if normalized:
+        timing.write_text(json.dumps(paths))
+    report = run_phase4(assignment, board, tmp_path/'native', timing_paths_path=timing,
+                        frame_slots=16, max_iterations=3, timing_driven=driven)
+    # The historical implementation remains an independent test oracle. Neither
+    # its route builder nor its whole-path normalizer may serve this public API.
+    with patch('tests.timing_routing_reference.validate_native_system_routes', side_effect=AssertionError('Python route population')), \
+         patch('tests.timing_routing_reference.load_sta_paths', side_effect=AssertionError('Python path population')):
+        actual = validate_phase4(assignment, board, tmp_path/'native/routes.json', timing)
+    assert actual == report['validation']
+    assert not list(tmp_path.glob('.phase4-stage-*'))
+
+
+@pytest.mark.parametrize('damage', ['source', 'sink', 'edge', 'dependency', 'latency',
+                                   'delay', 'semantic', 'path-slack', 'path-members',
+                                   'path-signature', 'route-metric', 'timing-metric', 'master-generator',
+                                   'batch-coverage', 'direction-lock', 'normalization'])
+def test_published_native_audit_rejects_resealed_semantic_corruption(tmp_path, damage):
+    from emuflow.routing.phase4 import validate_phase4
+    from tests.native_route_seal_fixture import write_route_store_fixture
+    _, assignment, board, timing = inputs(tmp_path)
+    run_phase4(assignment, board, tmp_path/'native', timing_paths_path=timing,
+               frame_slots=16, max_iterations=3)
+    routes = read_system_routes(tmp_path/'native/routes.json')
+    from collections.abc import Mapping, Sequence
+    def fixture_value(value):
+        if isinstance(value, Mapping):
+            return {key: fixture_value(item) for key, item in value.items()}
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return [fixture_value(item) for item in value]
+        return value
+    logical = fixture_value(routes)
+    route = logical['routes'][0]
+    if damage == 'source': route['source'] = route['sinks'][0]
+    elif damage == 'sink': route['sinks'] = ['unknown-fpga']
+    elif damage == 'edge': route['tree_edges'][0]['to'] = route['source']
+    elif damage == 'dependency': route['dependency_level'] += 1
+    elif damage == 'latency': route['max_latency_cycles'] += 1
+    elif damage == 'delay': route['predicted_max_delay_ns'] += 1.0
+    elif damage == 'semantic': logical['semantic_contract_sha256'] = '0'*64
+    elif damage == 'path-slack': logical['timing']['paths'][0]['slack_ns'] += 1.0
+    elif damage == 'path-members': logical['timing']['paths'][0]['compressed_path_ids'] = ['wrong-original-path']
+    elif damage == 'path-signature': logical['timing']['paths'][0]['route_signature'] = 'unknown'
+    elif damage == 'route-metric': logical['metrics']['total_link_bit_hops'] += 1
+    elif damage == 'timing-metric': logical['metrics']['worst_slack_ns'] += 1.0
+    elif damage == 'master-generator': logical['joint_optimization']['candidate_generation']['master_selection'][0]['generator'] = 'refined-final'
+    elif damage == 'batch-coverage':
+        logical['joint_optimization']['refinement_batches'].update(batches=[], batch_count=0, maximum_parallel_batch=0)
+        logical['metrics'].update(reroute_conflict_batches=0, maximum_parallel_batch=0)
+    elif damage == 'direction-lock': logical['direction_locks'] = [{'group': 0, 'link': 'unknown', 'from': route['source'], 'to': route['sinks'][0]}]
+    else: logical['timing']['normalization']['positive_slack_scale_ns'] += 1.0
+    selector = tmp_path/'corrupt/routes.json'
+    # This fixture has valid storage/record hashes. Rejection must come from
+    # recomputing the original assignment, board and timing contract.
+    write_route_store_fixture(selector, logical)
+    with pytest.raises(ValidationError, match='native Phase 4 validation failed'):
+        validate_phase4(assignment, board, selector, timing)
+
+
+def test_published_native_audit_without_timing_input(tmp_path):
+    from emuflow.routing.phase4 import validate_phase4
+    _, assignment, board, _ = inputs(tmp_path)
+    report = run_phase4(assignment, board, tmp_path/'native', timing_driven=False,
+                        frame_slots=16, max_iterations=3)
+    assert validate_phase4(assignment, board, tmp_path/'native/routes.json') == report['validation']

@@ -195,7 +195,7 @@ def run_multi_fpga_physical_flow(
         'selected_fpgas':list(fpga_ids) if fpga_ids is not None else None},output_dir)
 
 
-def validate_multi_fpga_physical_report(report,physical_summary=None):
+def validate_multi_fpga_physical_report(report,physical_summary=None,*,physical_summary_path=None):
     """Validate bounded reports through the independent native report validator."""
     with tempfile.TemporaryDirectory(prefix='emuflow-physical-report-') as temporary:
         root=Path(temporary);source=root/'report.json';output=root/'facts.json'
@@ -204,11 +204,30 @@ def validate_multi_fpga_physical_report(report,physical_summary=None):
         source.write_text(text)
         native=resolve_native_executable('emuflow-native')
         argv=[native,'physical','validate-flow-report',str(source),str(output)]
-        if physical_summary is not None:
-            summary=root/'summary.json';text=json.dumps(physical_summary,allow_nan=False,separators=(',',':'))
+        from emuflow.storage.store_publication import bind_store_source, require_store_sources_unchanged
+        sources = []
+        if physical_summary_path is not None:
+            if physical_summary is not None:
+                raise ValidationError('physical summary must have one explicit owner')
+            source_ref = bind_store_source(Path(physical_summary_path).resolve(), 'physical-summary-v1')
+            if source_ref.generation[2] > 8*1024*1024:
+                raise ValidationError('physical summary exceeds bound')
+            sources.append(source_ref)
+            argv.append(str(source_ref.path))
+        elif physical_summary is not None:
+            # This API checks board-sized namespace/census facts. Evidence stays
+            # in its typed owner, including for explicit small caller mappings.
+            rows = physical_summary.get('fpgas')
+            if not isinstance(rows, (list, tuple)) or len(rows) > 256 or any(not isinstance(row, Mapping) for row in rows):
+                raise ValidationError('physical summary FPGA census is not bounded')
+            facts = {key: physical_summary.get(key) for key in ('schema','status','design','platform')}
+            facts['fpgas'] = [{'fpga': row.get('fpga'), 'original_cells': row.get('original_cells')} for row in rows]
+            summary=root/'summary.json';text=json.dumps(facts,allow_nan=False,separators=(',',':'))
             if len(text.encode())>8*1024*1024:raise ValidationError('physical summary exceeds bound')
             summary.write_text(text);argv.append(str(summary))
+        require_store_sources_unchanged(sources)
         with NativeToolProcess(native,argv,environment=dict(os.environ),scratch_parent=root) as process:
             result=process.finish()
         if result.returncode:raise ValidationError('native physical report validation failed: '+result.stdout)
+        require_store_sources_unchanged(sources)
         return _small(output)['summary']

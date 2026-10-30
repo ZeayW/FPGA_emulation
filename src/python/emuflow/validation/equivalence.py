@@ -10,6 +10,141 @@ from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
 
 
+def static_exact_contract_from_assignment(
+    assignment: Mapping[str, Any],
+) -> Optional[Mapping[str, Any]]:
+    from emuflow.partition.combinational_cut import (STATIC_EXACT_CANDIDATE_POLICIES, STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS, STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA)
+    contract = assignment.get("semantic_contract")
+    if contract is None:
+        if assignment.get("semantic_contract_indexed") is not True:
+            return None
+        schema = assignment.get("semantic_contract_schema")
+        digest = assignment.get("semantic_contract_sha256")
+        raw_cuts = assignment.get("cut_nets")
+        if (
+            schema != STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or not isinstance(raw_cuts, list)
+        ):
+            raise ValidationError(
+                "indexed assignment semantic contract identity is incomplete"
+            )
+        for index, cut in enumerate(raw_cuts):
+            if not isinstance(cut, dict) or not isinstance(
+                cut.get("net"), str
+            ):
+                raise ValidationError(
+                    f"indexed assignment cut_nets[{index}] is invalid"
+                )
+            if cut.get("cut_class") == "combinational":
+                if (
+                    isinstance(cut.get("dependency_level"), bool)
+                    or not isinstance(cut.get("dependency_level"), int)
+                    or cut["dependency_level"] < 0
+                    or isinstance(
+                        cut.get("combinational_dependency_depth"), bool
+                    )
+                    or not isinstance(
+                        cut.get("combinational_dependency_depth"), int
+                    )
+                    or cut["combinational_dependency_depth"] < 0
+                    or not isinstance(cut.get("predecessor_cut_nets"), list)
+                    or not all(
+                        isinstance(item, str) and item
+                        for item in cut["predecessor_cut_nets"]
+                    )
+                ):
+                    raise ValidationError(
+                        "indexed assignment cut dependency is invalid"
+                    )
+        return {
+            "schema": schema,
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+    if not isinstance(contract, dict):
+        raise ValidationError("assignment.semantic_contract: expected an object")
+    if (
+        contract.get("schema") not in STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS
+        or contract.get("mode") != "static-exact-combinational"
+        or contract.get("qualification")
+        != "structural-partition-legality"
+    ):
+        raise ValidationError(
+            "assignment.semantic_contract is not a supported exact-cut contract"
+        )
+    if (
+        contract.get("schema") == STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
+        and contract.get("candidate_selection_policy")
+        not in STATIC_EXACT_CANDIDATE_POLICIES
+    ):
+        raise ValidationError(
+            "assignment structural exact-cut certificate is incomplete"
+        )
+    digest = assignment.get("semantic_contract_sha256")
+    if not isinstance(digest, str) or len(digest) != 64:
+        raise ValidationError(
+            "assignment semantic contract identity is incomplete"
+        )
+    raw_cuts = assignment.get("cut_nets")
+    raw_nodes = contract.get("cut_nodes")
+    if not isinstance(raw_cuts, list) or not isinstance(raw_nodes, list):
+        raise ValidationError(
+            "exact assignment cut and contract nodes must be arrays"
+        )
+    if not all(
+        isinstance(item, dict)
+        and isinstance(item.get("net"), str)
+        and bool(item["net"])
+        for item in raw_cuts + raw_nodes
+    ):
+        raise ValidationError(
+            "exact assignment cuts and contract nodes require non-empty net "
+            "identities"
+        )
+    cuts = {
+        item["net"]: item for item in raw_cuts
+    }
+    nodes = {
+        item["net"]: item for item in raw_nodes
+    }
+    if (
+        len(cuts) != len(raw_cuts)
+        or len(nodes) != len(raw_nodes)
+        or set(cuts) != set(nodes)
+    ):
+        raise ValidationError(
+            "exact semantic contract cut-node coverage is not exact"
+        )
+    for net_id in sorted(cuts):
+        cut = cuts[net_id]
+        node = nodes[net_id]
+        expected = {
+            "cut_class": cut.get("cut_class"),
+            "source_fpgas": cut.get("source_fpgas"),
+            "sink_fpgas": cut.get("sink_fpgas"),
+        }
+        for field, value in expected.items():
+            if node.get(field) != value:
+                raise ValidationError(
+                    f"exact semantic contract node {net_id!r}.{field} "
+                    "does not match assignment"
+                )
+        if cut.get("cut_class") == "combinational":
+            for field in (
+                "dependency_level",
+                "combinational_dependency_depth",
+                "predecessor_cut_nets",
+            ):
+                if cut.get(field) != node.get(field):
+                    raise ValidationError(
+                        f"exact semantic contract node {net_id!r}.{field} "
+                        "does not match assignment"
+                    )
+    return contract
+
 def _bit(value: Any, default: int = 0) -> int:
     if value is None:
         return default
@@ -1487,7 +1622,6 @@ def _static_exact_equivalence_context(
     schedule: Mapping[str, Any],
 ) -> Dict[str, Any]:
     from emuflow.partition.combinational_cut import semantic_contract_sha256
-    from emuflow.routing.routing import static_exact_contract_from_assignment
     from emuflow.scheduling.tdm import is_sampled_virtual_wire_schedule, sampled_virtual_wire_timing_constraints
 
     contract = static_exact_contract_from_assignment(assignment)

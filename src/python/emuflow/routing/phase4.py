@@ -3,12 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from emuflow.partition.phase3_storage import read_phase3_assignment_view
-from emuflow.platform.platform import Platform
-from emuflow.routing.routing import demands_from_assignment
-from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER, load_sta_paths, validate_native_system_routes
-from emuflow.routing.system_route_storage import read_system_routes
 
+
+GLOBAL_CANDIDATE_PROVIDER = "timing-aware-global-candidate-v1"
 
 PHASE4_REPORT_SCHEMA = "emuflow.phase4-report/v1"
 
@@ -43,17 +40,5 @@ def validate_phase4(
     routes_path: Path,
     timing_paths_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    assignment = read_phase3_assignment_view(
-        assignment_path, include_semantic_contract=False
-    )
-    platform = Platform.load(platform_path)
-    routes = read_system_routes(routes_path)
-    if routes.get("provider") != GLOBAL_CANDIDATE_PROVIDER:
-        raise ValueError("Phase 4 requires the global candidate provider")
-    timing_paths = (
-        load_sta_paths(timing_paths_path, demands_from_assignment(assignment, platform))
-        if timing_paths_path is not None else None
-    )
-    if timing_paths is None and routes["routes"] and routes.get("timing_evaluation") is None:
-        raise ValueError("global candidate route validation requires --timing-paths")
-    return validate_native_system_routes(assignment, platform, routes, timing_paths)
+    from emuflow.routing.phase4_native import validate_native_phase4
+    return validate_native_phase4(assignment_path, platform_path, routes_path, timing_paths_path)

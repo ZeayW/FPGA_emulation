@@ -130,3 +130,63 @@ def run_native_phase4(assignment, board, output, *, timing_paths=None,
             raise ValidationError('native Phase 4 report identity disagrees')
         require_store_sources_unchanged(outputs)
         return value
+
+
+def validate_native_phase4(assignment, board, selector, timing_paths=None):
+    """Reopen original typed owners through the independent native checker."""
+    require_native_schema('phase4-validation-v1')
+    assignment, board, selector = map(lambda p: Path(p).resolve(), (assignment, board, selector))
+    sources = []
+    if assignment.suffix != '.sqlite':
+        from emuflow.partition.phase3_storage import read_phase3_assignment_view
+        sources.append(bind_store_source(assignment, 'phase3-assignment-storage-v4'))
+        if assignment.stat().st_size > 8*1024*1024:
+            raise ValidationError('Phase 3 assignment selector exceeds bound')
+        view = read_phase3_assignment_view(assignment)
+        assignment = view['cut_nets'].path
+    sources.extend((bind_store_source(assignment, 'assignment-index-v4'),
+                    bind_store_source(board, 'boarddb-v1'),
+                    bind_store_source(selector, 'system-route-selector-v1')))
+    if selector.stat().st_size > 8*1024*1024:
+        raise ValidationError('Phase 4 route selector exceeds bound')
+    value = json.loads(selector.read_text())
+    artifact = value.get('artifact')
+    if (value.get('schema') != 'emuflow.system-route-storage/v1'
+            or value.get('user_version') != 3 or not isinstance(artifact, str)
+            or not artifact or Path(artifact).name != artifact):
+        raise ValidationError('Phase 4 requires the current explicit typed route selector')
+    store = selector.with_name(artifact)
+    sources.append(bind_store_source(store, 'system-route-store-v3'))
+    if timing_paths is not None:
+        timing_paths = Path(timing_paths).resolve()
+        sources.append(bind_store_source(timing_paths, 'system-routing-paths-v1'))
+    require_store_sources_unchanged(sources)
+    native = resolve_native_executable('emuflow-native')
+    with tempfile.TemporaryDirectory(prefix='.phase4-validation-') as temporary:
+        root = Path(temporary).resolve()
+        output, operation = root/'validation.json', root/'operation.json'
+        argv = [native, '--report', str(operation), 'phase4', 'validate',
+                str(assignment), str(board), str(selector), str(store), str(output)]
+        if timing_paths is not None:
+            argv.append(str(timing_paths))
+        with NativeToolProcess(native, argv, environment=dict(os.environ), scratch_parent=root) as process:
+            result = process.finish()
+        if result.returncode:
+            raise ValidationError('native Phase 4 validation failed: '+result.stdout)
+        if operation.stat().st_size > 262144 or output.stat().st_size > 262144:
+            raise ValidationError('Phase 4 validation result exceeds bound')
+        proof = json.loads(operation.read_text())
+        fields = ('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
+        outputs = proof.get('outputs', [])
+        if (proof.get('schema') != 'emuflow.native-stage-result/v1' or proof.get('stage') != 'phase4.validate'
+                or proof.get('status') != 'pass' or len(outputs) != 1
+                or outputs[0].get('path') != str(output) or outputs[0].get('schema') != 'phase4-validation-v1'
+                or tuple(outputs[0].get('generation', {}).get(k) for k in fields) != native_file_generation(output)):
+            raise ValidationError('native Phase 4 validation output binding disagrees')
+        value = json.loads(output.read_text())
+        if (value.get('schema') != 'emuflow.phase4-validation/v1' or value.get('status') != 'pass'
+                or value.get('implementation_id') != 'native-independent-phase4-validation-v1'
+                or not isinstance(value.get('validation'), dict) or value['validation'].get('status') != 'pass'):
+            raise ValidationError('native Phase 4 validation identity disagrees')
+        require_store_sources_unchanged(sources)
+        return value['validation']

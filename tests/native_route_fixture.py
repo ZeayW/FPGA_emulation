@@ -14,8 +14,8 @@ from emuflow.partition.phase3_assignment_index import (
     _json, _normalized_cut_record,
 )
 from emuflow.routing.phase4_native import run_native_phase4
-from emuflow.routing.routing import static_exact_contract_from_assignment
-from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from tests.routing_validation_reference import static_exact_contract_from_assignment
+from tests.timing_routing_reference import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import emuflow_native
 
 

@@ -30,7 +30,7 @@ from emuflow.transport.transport_cost import (
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from tests.tdm_timing_oracle import timing_paths as reconstruct_tdm_schedule_timing_paths
-from emuflow.scheduling.timing_routing import (
+from tests.timing_routing_reference import (
     GLOBAL_CANDIDATE_PROVIDER,
 )
 from tests.native_build import tlr_router
@@ -745,6 +745,11 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 equivalence_cycles=2,
                 mapping_profile="xilinx-ultrascaleplus-open-v1",
             )
+            for retired in (None, {}, {"schema": "emuflow.frame-search/v5", "status": "pass"}):
+                broken = copy.deepcopy(report)
+                broken["frame_search"] = retired
+                with self.assertRaisesRegex(ValidationError, "frame search reports are no longer supported"):
+                    validate_multi_fpga_flow_report(broken)
             broken = copy.deepcopy(report)
             broken["stages"]["tdm"]["platform"] = "different"
             with self.assertRaisesRegex(

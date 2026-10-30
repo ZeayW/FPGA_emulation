@@ -386,6 +386,133 @@ std::vector<std::vector<int>> ReconstructBatches(const Model& m,const std::vecto
   return batches;
 }
 std::uint32_t U32(const std::string& bytes,std::size_t offset) {Check(bytes.size()-offset>=4,"truncated candidate ordinal");std::uint32_t out=0;for(unsigned i=0;i<4;++i)out|=std::uint32_t(static_cast<unsigned char>(bytes[offset+i]))<<(8*i);return out;}
+void SummarizeRouted(const Model &m, Routed &result, bool supplied_metrics) {
+  const auto minimum = Int(m.constraints, "tdm_min_ratio"),
+             maximum = Int(m.constraints, "tdm_max_ratio"),
+             quantum = Int(m.constraints, "tdm_ratio_quantum");
+  result.ratios.resize(m.capacities.size(), 1);
+  std::set<std::string> banked;
+  for (const auto &a : m.arcs) {
+    Check(result.usage[a.domain] <= a.capacity,
+          "route exceeds capacity domain");
+    const auto amount = result.usage[a.domain];
+    I ratio = 1;
+    if (!a.sll && amount > 0) {
+      const auto raw = std::max(minimum, (amount + a.lanes - 1) / a.lanes);
+      ratio = raw == 1 ? 1 : ((raw + quantum - 1) / quantum) * quantum;
+      if (minimum <= 1)
+        ratio = std::min(maximum, ratio);
+    }
+    result.ratios[a.domain] = int(ratio);
+    if (a.banks)
+      banked.insert(a.link);
+  }
+  for (const auto &link : banked) {
+    const auto first =
+        std::find_if(m.arcs.begin(), m.arcs.end(),
+                     [&](const auto &a) { return a.link == link; });
+    Check(first != m.arcs.end() && first->opposite >= 0,
+          "invalid bank topology");
+    const auto &reverse = m.arcs[first->opposite];
+    const auto per_bank = I(first->wires) * maximum;
+    Check((result.usage[first->domain] + per_bank - 1) / per_bank +
+                  (result.usage[reverse.domain] + per_bank - 1) / per_bank <=
+              first->banks,
+          "route exceeds shared bank inventory");
+    const auto ratios = shared_bank_ratios(
+        result.usage[first->domain], result.usage[reverse.domain], first->banks,
+        first->wires, int(quantum), int(minimum), int(maximum + quantum));
+    result.ratios[first->domain] = ratios.first;
+    result.ratios[reverse.domain] = ratios.second;
+  }
+  I sinks = 0, edges = 0, max_hops = 0;
+  double max_utilization = 0;
+  for (std::size_t i = 0; i < result.routes.size(); ++i) {
+    auto &route = result.routes[i];
+    sinks += m.demands[i].sinks.size();
+    edges += route.arcs.size();
+    max_hops = std::max(max_hops, I(route.hops));
+    std::vector<std::vector<int>> adjacency(m.nodes.size());
+    for (const auto edge : route.arcs)
+      adjacency[m.arcs[edge].source].push_back(edge);
+    std::vector<double> delay(m.nodes.size());
+    std::queue<int> queue;
+    queue.push(m.demands[i].node);
+    while (!queue.empty()) {
+      const auto node = queue.front();
+      queue.pop();
+      for (const auto edge : adjacency[node]) {
+        const auto &a = m.arcs[edge];
+        delay[a.sink] =
+            delay[node] + a.delay + a.beta * (result.ratios[a.domain] - 1);
+        queue.push(a.sink);
+      }
+    }
+    if (Get(m.constraints, "tree_edge_sum_tdm") == "true") {
+      for (const auto edge : route.arcs) {
+        const auto &a = m.arcs[edge];
+        route.tdm_delay +=
+            a.delay + (a.sll ? 0 : a.beta) * (result.ratios[a.domain] - 1);
+      }
+    } else
+      for (const auto sink : m.demands[i].terminals)
+        route.tdm_delay = std::max(route.tdm_delay, delay[sink]);
+  }
+  Array utilization;
+  I bit_hops = 0;
+  for (std::size_t i = 0; i < m.capacities.size(); ++i) {
+    auto capacity = m.capacities[i];
+    const auto used = result.usage[i];
+    const auto ratio = double(used) / Int(capacity, "capacity_bits");
+    capacity["used_bits"] = std::to_string(used);
+    capacity["utilization"] = JsonRecord(ratio).Encode();
+    max_utilization = std::max(max_utilization, ratio);
+    bit_hops += used;
+    utilization.push_back(Record(Encode(capacity)));
+  }
+  result.metrics = {
+      {"demands", std::to_string(m.demands.size())},
+      {"routed_sinks", std::to_string(sinks)},
+      {"tree_edges", std::to_string(edges)},
+      {"max_link_utilization", JsonRecord(max_utilization).Encode()},
+      {"total_link_bit_hops", std::to_string(bit_hops)}};
+  for (const auto *name :
+       {"iterations", "accepted_reroutes", "rolled_back_reroutes",
+        "master_rounds", "master_switches", "reroute_conflict_batches",
+        "maximum_parallel_batch"})
+    result.metrics[name] =
+        supplied_metrics ? Get(result.native_metrics, name) : "0";
+  result.metrics["master_exact"] =
+      supplied_metrics && Int(result.native_metrics, "master_exact") ? "true"
+                                                                     : "false";
+  if (m.demands.empty())
+    for (const auto *key :
+         {"master_rounds", "master_switches", "master_exact",
+          "reroute_conflict_batches", "maximum_parallel_batch"})
+      result.metrics.erase(key);
+  result.metrics["estimated_max_tdm_ratio"] = std::to_string(
+      m.demands.empty()
+          ? 0
+          : *std::max_element(result.ratios.begin(), result.ratios.end()));
+  if (Get(m.constraints, "max_route_hops") != "null")
+    result.metrics["max_route_hops_observed"] = std::to_string(max_hops);
+  result.validation = result.metrics;
+  for (const auto *key :
+       {"master_rounds", "master_switches", "master_exact",
+        "reroute_conflict_batches", "maximum_parallel_batch",
+        "estimated_max_tdm_ratio", "accepted_reroutes", "rolled_back_reroutes"})
+    result.validation.erase(key);
+  result.validation["status"] = JsonQuote("pass");
+  result.validation["provider"] = JsonQuote(provider);
+  result.validation["overloaded_links"] = "0";
+  result.validation["link_utilization"] = JsonRecord(utilization).Encode();
+  result.validation["direction_locks"] =
+      std::to_string(m.demands.empty() ? m.default_direction_locks.size()
+                                       : result.locks.size());
+  result.validation["timing_optimization_enabled"] =
+      m.timing_driven && !m.demands.empty() ? "true" : "false";
+  result.validation["predicted_delay_check"] = JsonQuote("pass");
+}
 Routed ReadRouter(const Model& m,const ArtifactRef* artifact) {
   Routed result;result.usage.resize(m.capacities.size());result.domains.resize(m.demands.size());result.selection.resize(m.demands.size(),-1);
   if(artifact){SqliteStore store(*artifact);auto& db=store.database();
@@ -421,30 +548,7 @@ Routed ReadRouter(const Model& m,const ArtifactRef* artifact) {
     Check(Int(result.native_metrics,"reroute_conflict_batches")==I(result.batches.size()) && Int(result.native_metrics,"maximum_parallel_batch")==largest,"independent conflict batch reconstruction disagrees");
     artifact->RequireUnchanged();
   }else Check(m.demands.empty(),"missing router result");
-  const auto minimum=Int(m.constraints,"tdm_min_ratio"),maximum=Int(m.constraints,"tdm_max_ratio"),quantum=Int(m.constraints,"tdm_ratio_quantum");result.ratios.resize(m.capacities.size(),1);
-  std::set<std::string> banked;
-  for(const auto& a:m.arcs){Check(result.usage[a.domain]<=a.capacity,"route exceeds capacity domain");const auto amount=result.usage[a.domain];I ratio=1;
-    if(!a.sll && amount>0){const auto raw=std::max(minimum,(amount+a.lanes-1)/a.lanes);ratio=raw==1?1:((raw+quantum-1)/quantum)*quantum;if(minimum<=1)ratio=std::min(maximum,ratio);}result.ratios[a.domain]=int(ratio);
-    if(a.banks)banked.insert(a.link);}
-  for(const auto& link:banked){const auto first=std::find_if(m.arcs.begin(),m.arcs.end(),[&](const auto& a){return a.link==link;});Check(first!=m.arcs.end() && first->opposite>=0,"invalid bank topology");const auto& reverse=m.arcs[first->opposite];
-    const auto per_bank=I(first->wires)*maximum;Check((result.usage[first->domain]+per_bank-1)/per_bank+(result.usage[reverse.domain]+per_bank-1)/per_bank<=first->banks,"route exceeds shared bank inventory");
-    const auto ratios=shared_bank_ratios(result.usage[first->domain],result.usage[reverse.domain],first->banks,first->wires,int(quantum),int(minimum),int(maximum+quantum));result.ratios[first->domain]=ratios.first;result.ratios[reverse.domain]=ratios.second;}
-  I sinks=0,edges=0,max_hops=0;double max_utilization=0;
-  for(std::size_t i=0;i<result.routes.size();++i){auto& route=result.routes[i];sinks+=m.demands[i].sinks.size();edges+=route.arcs.size();max_hops=std::max(max_hops,I(route.hops));
-    std::vector<std::vector<int>> adjacency(m.nodes.size());for(const auto edge:route.arcs)adjacency[m.arcs[edge].source].push_back(edge);std::vector<double> delay(m.nodes.size());std::queue<int> queue;queue.push(m.demands[i].node);
-    while(!queue.empty()){const auto node=queue.front();queue.pop();for(const auto edge:adjacency[node]){const auto& a=m.arcs[edge];delay[a.sink]=delay[node]+a.delay+a.beta*(result.ratios[a.domain]-1);queue.push(a.sink);}}
-    if(Get(m.constraints,"tree_edge_sum_tdm")=="true"){for(const auto edge:route.arcs){const auto& a=m.arcs[edge];route.tdm_delay+=a.delay+(a.sll?0:a.beta)*(result.ratios[a.domain]-1);}}
-    else for(const auto sink:m.demands[i].terminals)route.tdm_delay=std::max(route.tdm_delay,delay[sink]);
-  }
-  Array utilization;I bit_hops=0;for(std::size_t i=0;i<m.capacities.size();++i){auto capacity=m.capacities[i];const auto used=result.usage[i];const auto ratio=double(used)/Int(capacity,"capacity_bits");capacity["used_bits"]=std::to_string(used);capacity["utilization"]=JsonRecord(ratio).Encode();max_utilization=std::max(max_utilization,ratio);bit_hops+=used;utilization.push_back(Record(Encode(capacity)));}
-  result.metrics={{"demands",std::to_string(m.demands.size())},{"routed_sinks",std::to_string(sinks)},{"tree_edges",std::to_string(edges)},{"max_link_utilization",JsonRecord(max_utilization).Encode()},{"total_link_bit_hops",std::to_string(bit_hops)}};
-  for(const auto* name:{"iterations","accepted_reroutes","rolled_back_reroutes","master_rounds","master_switches","reroute_conflict_batches","maximum_parallel_batch"})result.metrics[name]=artifact?Get(result.native_metrics,name):"0";
-  result.metrics["master_exact"]=artifact && Int(result.native_metrics,"master_exact")?"true":"false";
-  if(m.demands.empty())for(const auto* key:{"master_rounds","master_switches","master_exact","reroute_conflict_batches","maximum_parallel_batch"})result.metrics.erase(key);
-  result.metrics["estimated_max_tdm_ratio"]=std::to_string(m.demands.empty()?0:*std::max_element(result.ratios.begin(),result.ratios.end()));
-  if(Get(m.constraints,"max_route_hops")!="null")result.metrics["max_route_hops_observed"]=std::to_string(max_hops);
-  result.validation=result.metrics;for(const auto* key:{"master_rounds","master_switches","master_exact","reroute_conflict_batches","maximum_parallel_batch","estimated_max_tdm_ratio","accepted_reroutes","rolled_back_reroutes"})result.validation.erase(key);
-  result.validation["status"]=JsonQuote("pass");result.validation["provider"]=JsonQuote(provider);result.validation["overloaded_links"]="0";result.validation["link_utilization"]=JsonRecord(utilization).Encode();result.validation["direction_locks"]=std::to_string(m.demands.empty()?m.default_direction_locks.size():result.locks.size());result.validation["timing_optimization_enabled"]=m.timing_driven && !m.demands.empty()?"true":"false";result.validation["predicted_delay_check"]=JsonQuote("pass");
+  SummarizeRouted(m,result,artifact!=nullptr);
   return result;
 }
 
@@ -575,6 +679,375 @@ Publication PublishRoutes(Model& m,Routed& routed,SqliteDatabase& staging,
     PublishTextArtifact((directory/file.first).string(),sources,[&](std::ostream& out){out<<file.second<<'\n';});
   return {report,header,selector};
 }
+void AuditRouteSeal(SqliteDatabase &db, const Raw &header, const Raw &selector,
+                    const fs::path &scratch,
+                    const std::vector<ArtifactRef> &sources) {
+  const auto sections = Fields(Meta(db, "sections"));
+  Check(Encode(sections) == Encode(Fields(Get(selector, "sections"))),
+        "selector section seals disagree");
+  std::array<I, 5> counts{};
+  const char *names[] = {"demands", "routes", "timing_paths",
+                         "master_selections", "refinement_batch_paths"};
+  for (unsigned i = 0; i < 5; ++i)
+    counts[i] =
+        Int(Fields(Get(sections, names[i])), i == 4 ? "batches" : "records");
+  auto tree = header;
+  tree["demands"] = "[]";
+  tree["routes"] = "[]";
+  if (tree.count("timing")) {
+    auto timing = Fields(tree.at("timing"));
+    timing["paths"] = "[]";
+    tree["timing"] = Encode(timing);
+  }
+  if (tree.count("joint_optimization")) {
+    auto joint = Fields(tree.at("joint_optimization"));
+    auto candidate = Fields(Get(joint, "candidate_generation")),
+         batches = Fields(Get(joint, "refinement_batches"));
+    candidate["master_selection"] = "[]";
+    batches["batches"] = "[]";
+    joint["candidate_generation"] = Encode(candidate);
+    joint["refinement_batches"] = Encode(batches);
+    tree["joint_optimization"] = Encode(joint);
+  }
+  const auto request = scratch / "seal.bin";
+  SealRequest writer(request, sources);
+  writer.Put<std::uint64_t>(UINT64_C(0x31515352464d5545));
+  writer.Put<std::uint32_t>(1);
+  std::vector<std::string> path;
+  WriteSealTree(writer, Encode(tree), counts, path);
+  writer.Finish();
+  const auto seal = Fields(SealSystemRouteDatabase(db, request.string()));
+  Check(Get(seal, "logical_sha256") == Get(selector, "logical_sha256") &&
+            Get(seal, "logical_sha256") == Meta(db, "logical_sha256"),
+        "logical route seal disagrees");
+}
+
+Routed AuditPublishedTrees(const Model &m, SqliteDatabase &db,
+                           const Raw &header,
+                           const volatile std::sig_atomic_t *cancelled) {
+  Routed result;
+  result.usage.resize(m.capacities.size());
+  for (const auto &token : Values(Get(header, "direction_locks"))) {
+    const auto lock = Fields(token);
+    Check(lock.size() == 4, "direction lock fields disagree");
+    const auto group = Int(lock, "group");
+    const auto found =
+        std::find_if(m.arcs.begin(), m.arcs.end(), [&](const auto &a) {
+          return a.link == Text(lock, "link") && a.from == Text(lock, "from") &&
+                 a.to == Text(lock, "to") && a.direction == group;
+        });
+    Check(found != m.arcs.end() &&
+              result.locks.emplace(int(group), int(found - m.arcs.begin()))
+                  .second,
+          "invalid/repeated published direction lock");
+  }
+  if (!m.demands.empty()) {
+    std::set<int> groups;
+    for (const auto &a : m.arcs)
+      if (a.direction >= 0)
+        groups.insert(a.direction);
+    Check(groups.size() == result.locks.size(),
+          "published direction lock coverage disagrees");
+  } else {
+    Array locks;
+    for (const auto &lock : m.default_direction_locks)
+      locks.push_back(Record(Encode(lock.second)));
+    Check(Get(header, "direction_locks") == JsonRecord(locks).Encode(),
+          "empty route direction locks disagree");
+  }
+  auto routes = db.Prepare(
+      "SELECT "
+      "seq,demand_id,net_id,source_fpga,width_bits,transport_round,cut_class,"
+      "dependency_level,combinational_dependency_depth,max_latency_cycles,"
+      "predicted_max_delay_ns FROM routes ORDER BY seq");
+  auto demands =
+      db.Prepare("SELECT seq,demand_id,route_seq FROM demands ORDER BY seq");
+  auto sinks = db.Prepare(
+      "SELECT route_seq,seq,sink_fpga FROM route_sinks ORDER BY route_seq,seq");
+  auto edges = db.Prepare("SELECT route_seq,seq,link_id,source_fpga,sink_fpga "
+                          "FROM route_edges ORDER BY route_seq,seq");
+  auto predecessors = db.Prepare("SELECT route_seq,seq,predecessor_net FROM "
+                                 "route_predecessors ORDER BY route_seq,seq");
+  bool have_sink = sinks.Step(), have_edge = edges.Step(),
+       have_predecessor = predecessors.Step();
+  while (routes.Step()) {
+    Stop(cancelled);
+    const auto i = result.routes.size();
+    Check(i < m.demands.size(), "excess published route");
+    const auto &d = m.demands[i];
+    Check(routes.TypedInteger(0) == I(i) && routes.TypedText(1) == d.id &&
+              routes.TypedText(2) == d.net && routes.TypedText(3) == d.source &&
+              routes.TypedInteger(4) == 1,
+          "published route source identity/width disagrees");
+    Check(demands.Step() && demands.TypedInteger(0) == I(i) &&
+              demands.TypedText(1) == d.id && demands.TypedInteger(2) == I(i),
+          "published demand identity/order disagrees");
+    for (const auto &f : std::vector<std::pair<const char *, int>>{
+             {"transport_round", 5},
+             {"cut_class", 6},
+             {"dependency_level", 7},
+             {"combinational_dependency_depth", 8}}) {
+      const auto found = d.fields.find(f.first);
+      if (found == d.fields.end())
+        Check(routes.IsNull(f.second), "unexpected route dependency field");
+      else
+        Check(!routes.IsNull(f.second) &&
+                  (f.second == 6
+                       ? JsonQuote(routes.TypedText(f.second))
+                       : std::to_string(routes.TypedInteger(f.second))) ==
+                      found->second,
+              "published route dependency coordinate disagrees");
+    }
+    std::vector<std::string> actual_sinks, pred;
+    std::vector<int> actual_edges;
+    while (have_sink && sinks.TypedInteger(0) == I(i)) {
+      Check(sinks.TypedInteger(1) == I(actual_sinks.size()),
+            "published sink order disagrees");
+      actual_sinks.push_back(sinks.TypedText(2));
+      have_sink = sinks.Step();
+    }
+    Check(actual_sinks == d.sinks,
+          "published route sinks disagree with assignment");
+    while (have_predecessor && predecessors.TypedInteger(0) == I(i)) {
+      Check(predecessors.TypedInteger(1) == I(pred.size()),
+            "published predecessor order disagrees");
+      pred.push_back(predecessors.TypedText(2));
+      have_predecessor = predecessors.Step();
+    }
+    Check(pred == d.predecessors,
+          "published predecessors disagree with assignment");
+    while (have_edge && edges.TypedInteger(0) == I(i)) {
+      Check(edges.TypedInteger(1) == I(actual_edges.size()),
+            "published edge order disagrees");
+      const auto found =
+          std::find_if(m.arcs.begin(), m.arcs.end(), [&](const auto &a) {
+            return a.link == edges.TypedText(2) &&
+                   a.from == edges.TypedText(3) && a.to == edges.TypedText(4);
+          });
+      Check(found != m.arcs.end(), "published route uses unknown board arc");
+      actual_edges.push_back(int(found - m.arcs.begin()));
+      have_edge = edges.Step();
+    }
+    const auto delay = routes.TypedReal(10);
+    auto tree = ValidateTree(m, i, actual_edges, result.locks, &delay);
+    Check(routes.TypedInteger(9) == tree.latency,
+          "published route latency disagrees");
+    result.routes.push_back(std::move(tree));
+    for (const auto arc : actual_edges)
+      ++result.usage[m.arcs[arc].domain];
+  }
+  Check(result.routes.size() == m.demands.size() && !demands.Step() &&
+            !have_sink && !have_edge && !have_predecessor,
+        "incomplete/orphan published route relation");
+  result.native_metrics = Fields(Get(header, "metrics"));
+  if (!m.demands.empty()) {
+    const auto exact = Get(result.native_metrics, "master_exact");
+    Check(exact == "true" || exact == "false", "invalid master exact flag");
+    result.native_metrics["master_exact"] = exact == "true" ? "1" : "0";
+  }
+  for (const auto *name :
+       {"iterations", "accepted_reroutes", "rolled_back_reroutes",
+        "master_rounds", "master_switches", "reroute_conflict_batches",
+        "maximum_parallel_batch"})
+    if (!m.demands.empty())
+      Check(Int(result.native_metrics, name) >= 0,
+            "negative optimizer diagnostic");
+  SummarizeRouted(m, result, !m.demands.empty());
+  if (m.exact)
+    result.validation["transport_round_policy"] =
+        JsonQuote("dependency-diagnostic-only");
+  Check(Get(header, "link_utilization") ==
+            Get(result.validation, "link_utilization"),
+        "published link utilization disagrees");
+  if (m.demands.empty()) {
+    Check(!header.count("joint_optimization"),
+          "empty routes have candidate selection metadata");
+  } else {
+    const auto joint = Fields(Get(header, "joint_optimization"));
+    Check(Text(joint, "method") ==
+              "checked-candidate-pool+deterministic-batch-conflict-lns-v2",
+          "unsupported candidate method");
+    auto selection = db.Prepare("SELECT seq,demand_id,generator FROM "
+                                "route_master_selections ORDER BY seq");
+    std::size_t i = 0;
+    while (selection.Step()) {
+      Check(i < m.demands.size() && selection.TypedInteger(0) == I(i) &&
+                selection.TypedText(1) == m.demands[i].id,
+            "master selection coverage disagrees");
+      const auto name = selection.TypedText(2);
+      Check(std::find(generators, generators + 6, name) != generators + 6,
+            "invalid master selection generator");
+      ++i;
+    }
+    Check(i == m.demands.size(), "missing master selection");
+  }
+  return result;
+}
+
+void AuditPublishedBatches(const Model &m, const Routed &routed,
+                           SqliteDatabase &db, const Raw &header) {
+  if (m.demands.empty())
+    return;
+  const auto refinement = Fields(
+      Get(Fields(Get(header, "joint_optimization")), "refinement_batches"));
+  std::vector<std::set<int>> paths_by_demand(m.demands.size());
+  for (std::size_t p = 0; p < m.paths.size(); ++p)
+    for (const auto d : m.paths[p].demands)
+      paths_by_demand[d].insert(int(p));
+  auto rows = db.Prepare("SELECT seq,batch_index,position,path_index FROM "
+                         "refinement_batch_paths ORDER BY seq");
+  I total = 0, batches = 0, position = 0, largest = 0;
+  std::set<int> domains, affected;
+  while (rows.Step()) {
+    const auto batch = rows.TypedInteger(1), offset = rows.TypedInteger(2),
+               p = rows.TypedInteger(3);
+    Check(m.timing_driven && rows.TypedInteger(0) == total++ && p >= 0 &&
+              p < I(m.paths.size()),
+          "invalid refinement path coverage");
+    if (batch == batches) {
+      Check(offset == 0, "nonzero initial refinement position");
+      ++batches;
+      position = 0;
+      domains.clear();
+      affected.clear();
+    }
+    Check(batch == batches - 1 && offset == position++,
+          "refinement batch order disagrees");
+    largest = std::max(largest, position);
+    std::set<int> path_domains, path_affected;
+    for (const auto d : m.paths[p].demands) {
+      for (const auto arc : routed.routes[d].arcs)
+        path_domains.insert(m.arcs[arc].domain);
+      path_affected.insert(paths_by_demand[d].begin(),
+                           paths_by_demand[d].end());
+    }
+    Check(!Intersects(domains, path_domains) &&
+              !Intersects(affected, path_affected),
+          "conflicting published refinement batch");
+    domains.insert(path_domains.begin(), path_domains.end());
+    affected.insert(path_affected.begin(), path_affected.end());
+  }
+  Check(total == (m.timing_driven ? I(m.paths.size()) : 0) &&
+            batches == Int(refinement, "batch_count") &&
+            largest == Int(refinement, "maximum_parallel_batch") &&
+            batches == Int(routed.native_metrics, "reroute_conflict_batches") &&
+            largest == Int(routed.native_metrics, "maximum_parallel_batch"),
+        "refinement batch coverage/metrics disagree");
+}
+
+void AuditPublishedTiming(const Model &m, Routed &routed,
+                          SqliteDatabase &source, SqliteDatabase &published,
+                          const Raw &header,
+                          const volatile std::sig_atomic_t *cancelled) {
+  auto expected = source.Prepare(
+           "SELECT seq,record_json FROM normalized_paths ORDER BY seq"),
+       actual = published.Prepare(
+           "SELECT seq,path_id,record_json FROM timing_paths ORDER BY seq");
+  std::array<std::pair<double, std::string>, 4> worst;
+  for (auto &item : worst)
+    item = {std::numeric_limits<double>::infinity(), ""};
+  I count = 0;
+  while (expected.Step()) {
+    Stop(cancelled);
+    Check(count < I(m.paths.size()) && expected.TypedInteger(0) == count &&
+              actual.Step() && actual.TypedInteger(0) == count,
+          "published timing coverage disagrees");
+    const auto &p = m.paths[count];
+    const auto fields = Fields(expected.TypedText(1)),
+               row = Fields(actual.TypedText(2));
+    Check(actual.TypedText(1) == p.id && Text(row, "path") == p.id,
+          "published path identity disagrees");
+    for (const auto *key : {"clock_domain", "clock_period_ns", "fixed_delay_ns",
+                            "cut_nets", "cut_signature", "compressed_path_ids"})
+      Check(Record(Get(row, key)).Encode() == Record(Get(fields, key)).Encode(),
+            "published path source field disagrees");
+    Check(row.count("cut_transitions") == fields.count("cut_transitions") &&
+              (!row.count("cut_transitions") ||
+               Record(row.at("cut_transitions")).Encode() ==
+                   Record(fields.at("cut_transitions")).Encode()),
+          "published path transitions disagree");
+    double transport = 0, tdm_transport = 0;
+    std::string signature;
+    for (const auto d : p.demands) {
+      transport += routed.routes[d].delay;
+      tdm_transport += routed.routes[d].tdm_delay;
+      auto arcs = routed.routes[d].arcs;
+      std::sort(arcs.begin(), arcs.end());
+      for (const auto arc : arcs) {
+        if (!signature.empty())
+          signature += ',';
+        signature += std::to_string(arc);
+      }
+    }
+    const double required = p.fixed + p.slack, delay = p.fixed + transport,
+                 slack = required - delay,
+                 normalized = Normalized(m, slack, p.period),
+                 tdm_slack = required - (p.fixed + tdm_transport),
+                 tdm_normalized = Normalized(m, tdm_slack, p.period);
+    Check(Num(row, "required_time_ns") == required &&
+              Text(row, "route_signature") ==
+                  (signature.empty() ? "-" : signature),
+          "published path event/signature disagrees");
+    for (const auto &metric : std::vector<std::pair<const char *, double>>{
+             {"delay_ns", delay},
+             {"slack_ns", slack},
+             {"normalized_slack", normalized}})
+      Check(std::abs(Num(row, metric.first) - metric.second) <= 1e-9,
+            "published path timing disagrees with source/route reconstruction");
+    // Optimized rows retain the independently checked engine scalars. The
+    // evaluated-only route also publishes the two explicit TDM proxy fields.
+    Check(
+        m.timing_driven ||
+            (std::abs(Num(row, "estimated_tdm_slack_ns") - tdm_slack) <= 1e-9 &&
+             std::abs(Num(row, "estimated_tdm_normalized_slack") -
+                      tdm_normalized) <= 1e-9),
+        "published path TDM proxy disagrees");
+    const std::array<double, 4> values{slack, normalized, tdm_slack,
+                                       tdm_normalized};
+    for (unsigned i = 0; i < 4; ++i)
+      worst[i] = std::min(worst[i], std::make_pair(values[i], p.id));
+    ++count;
+  }
+  Check(count == I(m.paths.size()) && !actual.Step(),
+        "extra/missing published timing path");
+  if (count) {
+    const auto timing = Fields(Get(header, "timing"));
+    Check(Text(timing, "schema") == "emuflow.sta-paths/v1" &&
+              Record(Get(timing, "normalization")).Encode() ==
+                  Record(Encode(m.normalization)).Encode() &&
+              Record(Get(timing, "compression")).Encode() ==
+                  Record(Encode(m.compression)).Encode(),
+          "published normalization/compression disagrees");
+    routed.validation.erase("predicted_delay_check");
+    routed.validation["timing_paths_original"] =
+        Get(m.compression, "original_paths");
+    routed.validation["timing_paths_compressed"] = std::to_string(count);
+    const char *metrics[] = {"worst_slack_ns", "worst_normalized_slack",
+                             "estimated_worst_tdm_slack_ns",
+                             "estimated_worst_tdm_normalized_slack"};
+    const char *paths[] = {"worst_slack_path", "worst_normalized_path",
+                           "estimated_worst_tdm_slack_path",
+                           "estimated_worst_tdm_normalized_path"};
+    for (unsigned i = 0; i < 4; ++i) {
+      Check(std::abs(Num(Fields(Get(header, "metrics")), metrics[i]) -
+                     worst[i].first) <= 1e-9,
+            "published timing objective disagrees");
+      routed.validation[metrics[i]] = JsonRecord(worst[i].first).Encode();
+      routed.validation[paths[i]] = JsonQuote(worst[i].second);
+    }
+    for (const auto *key : {"estimated_max_tdm_ratio", "accepted_reroutes",
+                            "rolled_back_reroutes"})
+      routed.validation[key] = Get(routed.metrics, key);
+  } else
+    Check(!header.count("timing"),
+          "routes without paths publish timing metadata");
+  const auto metrics = Fields(Get(header, "metrics"));
+  for (const auto &metric : routed.metrics)
+    Check(Record(Get(metrics, metric.first)).Encode() ==
+              Record(metric.second).Encode(),
+          "published route metric disagrees");
+}
+
 } // namespace
 
 PartitionRoutingPolicy BuildPartitionRoutingPolicy(const ArtifactRef &board,
@@ -702,5 +1175,131 @@ StageResult RunPhase4(const std::vector<ArtifactRef>& inputs,const std::string& 
     auto routed=ReadRouter(model,native_result?&*native_result:nullptr);(void)PublishRoutes(model,routed,staging,native_result?&*native_result:nullptr,generation.root,work.root,sources,cancelled);
     staging.Close();Stop(cancelled);PublishNewDirectory(generation.root.string(),destination.string(),sources);generation.root.clear();
   },[&]{return std::vector<ArtifactRef>{ArtifactRef::Bind((fs::path(directory)/"phase4_report.json").string(),"phase4-report-v1"),ArtifactRef::Bind((fs::path(directory)/"routes.json").string(),"system-route-selector-v1")};});
+}
+StageResult ValidatePhase4(const std::vector<ArtifactRef> &inputs,
+                           const std::string &summary,
+                           const volatile std::sig_atomic_t *cancelled) {
+  return RunStage(
+      "phase4.validate",
+      [&] {
+        Check((inputs.size() == 4 || inputs.size() == 5) &&
+                  inputs[0].schema() == "assignment-index-v4" &&
+                  inputs[1].schema() == "boarddb-v1" &&
+                  inputs[2].schema() == "system-route-selector-v1" &&
+                  inputs[3].schema() == "system-route-store-v3" &&
+                  (inputs.size() == 4 ||
+                   inputs[4].schema() == "system-routing-paths-v1"),
+              "validation source roles disagree");
+        return inputs;
+      },
+      [&](const auto &sources) {
+        Stop(cancelled);
+        const auto output = fs::absolute(summary);
+        fs::create_directories(output.parent_path());
+        Workspace work(output.parent_path());
+        for (const auto &source : sources)
+          Check(source.path() != output, "validation output aliases input");
+        const auto selector = Fields(ReadSmall(inputs[2]));
+        Check(Text(selector, "schema") == "emuflow.system-route-storage/v1" &&
+                  Text(selector, "logical_schema") ==
+                      "emuflow.system-routes/v1" &&
+                  Int(selector, "application_id") == 0x454d5552 &&
+                  Int(selector, "user_version") == 3,
+              "unsupported published route selector");
+        const auto selected =
+            fs::weakly_canonical(fs::path(inputs[2].path()).parent_path() /
+                                 Text(selector, "artifact"));
+        Check(selected == fs::path(inputs[3].path()) &&
+                  Int(selector, "store_bytes") ==
+                      I(inputs[3].generation().bytes) &&
+                  Text(selector, "store_sha256") ==
+                      DigestFile(inputs[3].path()),
+              "route selector payload identity/seal disagrees");
+        SqliteStore published(inputs[3]);
+        auto &db = published.database();
+        const auto header = Fields(Meta(db, "header"));
+        Check(Encode(header) == Encode(Fields(Get(selector, "header"))) &&
+                  Text(header, "schema") == "emuflow.system-routes/v1" &&
+                  Text(header, "provider") == provider,
+              "route selector logical header/provider disagrees");
+        Check(!header.count("round_capacity_contract"),
+              "round-barrier routing is retired");
+        Model model;
+        model.constraints = Fields(NormalizeRoutePolicy(
+            ReadSmall(inputs[1]), Get(header, "constraints")));
+        Check(Encode(model.constraints) ==
+                  Encode(Fields(Get(header, "constraints"))),
+              "route constraints are not canonical");
+        model.timing_driven = !header.count("timing_evaluation");
+        if (!model.timing_driven)
+          Check(Record(header.at("timing_evaluation")).Encode() ==
+                    JsonRecord(Object{{"mode", "post-route-evaluation-only"},
+                                      {"optimization_enabled", false}})
+                        .Encode(),
+                "invalid timing evaluation policy");
+        {
+          SqliteStore assignment(inputs[0]);
+          const auto semantic = Meta(assignment.database(),
+                                     "semantic_contract_sha256"),
+                     schema = Meta(assignment.database(),
+                                   "semantic_contract_schema");
+          model.exact = semantic != "null";
+          Check(model.exact == (schema != "null"),
+                "incomplete assignment semantic identity");
+          if (model.exact) {
+            model.semantic_hash = DecodeJsonString(semantic);
+            model.semantic_schema = DecodeJsonString(schema);
+            Check(model.semantic_schema ==
+                          "emuflow.static-exact-combinational-cut/v3" &&
+                      model.semantic_hash.size() == 64 &&
+                      std::all_of(model.semantic_hash.begin(),
+                                  model.semantic_hash.end(),
+                                  [](char c) {
+                                    return (c >= '0' && c <= '9') ||
+                                           (c >= 'a' && c <= 'f');
+                                  }),
+                  "invalid assignment semantic identity");
+            Check(Text(header, "semantic_contract_schema") ==
+                          model.semantic_schema &&
+                      Text(header, "semantic_contract_sha256") ==
+                          model.semantic_hash,
+                  "published semantic identity disagrees with assignment");
+          } else
+            Check(!header.count("semantic_contract_schema") &&
+                      !header.count("semantic_contract_sha256"),
+                  "unexpected published semantic identity");
+        }
+        BuildBoard(model, Fields(ReadSmall(inputs[1])));
+        BuildDemands(model, inputs[0]);
+        Check(Text(header, "design") == model.design &&
+                  Text(header, "platform") == model.platform,
+              "route/assignment/board namespace disagrees");
+        SqliteDatabase staging((work.root / "paths.sqlite").string(),
+                               SqliteDatabase::Mode::kCreateExclusive);
+        staging.Execute("PRAGMA journal_mode=OFF;PRAGMA synchronous=OFF;PRAGMA "
+                        "temp_store=FILE");
+        LoadPaths(model, inputs.size() == 5 ? &inputs[4] : nullptr, staging,
+                  cancelled);
+        AuditRouteSeal(db, header, selector, work.root, sources);
+        auto routed = AuditPublishedTrees(model, db, header, cancelled);
+        AuditPublishedBatches(model, routed, db, header);
+        AuditPublishedTiming(model, routed, staging, db, header, cancelled);
+        Stop(cancelled);
+        PublishTextArtifact(summary, sources, [&](std::ostream &stream) {
+          stream << JsonRecord(
+                        Object{
+                            {"schema", "emuflow.phase4-validation/v1"},
+                            {"status", "pass"},
+                            {"implementation_id",
+                             "native-independent-phase4-validation-v1"},
+                            {"validation", Record(Encode(routed.validation))}})
+                        .Encode()
+                 << '\n';
+        });
+      },
+      [&] {
+        return std::vector<ArtifactRef>{
+            ArtifactRef::Bind(summary, "phase4-validation-v1")};
+      });
 }
 } // namespace emuflow::core

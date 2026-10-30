@@ -16,14 +16,8 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from emuflow.common.errors import ValidationError
 from emuflow.platform.platform import Platform
-from emuflow.routing.routing import (
-    ArcKey,
-    build_directed_graph,
-    demands_from_assignment,
-    estimate_tdm_ratio,
-    normalize_route_constraints,
-    route_link_delay_ns,
-)
+from emuflow.routing.routing import ArcKey, build_directed_graph, normalize_route_constraints, route_link_delay_ns
+from tests.routing_validation_reference import demands_from_assignment, estimate_tdm_ratio
 
 
 def _tree_distances(

@@ -10,7 +10,8 @@ from tests.native_partition_facts import (build_partition_assignment, validate_p
 from tests.native_partition_kernel_driver import run_hops as run
 from tests.native_partition_kernel_driver import initialize
 from emuflow.partition.partition_topology import _shortest_hop_distances
-from emuflow.routing.routing import load_route_constraints, normalize_route_constraints
+from emuflow.routing.routing import normalize_route_constraints
+from tests.routing_validation_reference import load_route_constraints
 from emuflow.storage.store_publication import bind_store_source
 from tests.partition_hop_fixture import case as build_case, audit, line_platform, weights, weighted_objective
 

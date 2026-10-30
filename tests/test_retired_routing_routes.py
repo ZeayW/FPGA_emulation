@@ -8,7 +8,7 @@ from emuflow.flow.cli import _build_parser
 from emuflow.common.errors import EmuFlowError
 from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.routing.phase4 import run_phase4
-from emuflow.scheduling.timing_routing import (GLOBAL_CANDIDATE_PROVIDER)
+from tests.timing_routing_reference import (GLOBAL_CANDIDATE_PROVIDER)
 
 
 RETIRED = (

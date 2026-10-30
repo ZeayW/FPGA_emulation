@@ -93,7 +93,6 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/python/emuflow/platform/fpga_interchange.py",
     "src/python/emuflow/physical/rapidwright/rapidwright_provider.py",
     "src/python/emuflow/physical/xilinx_primitives.py",
-    "src/python/emuflow/physical/xilinx_packing.py",
     "src/core/physical/openparf/prepare.cpp",
     "src/python/emuflow/physical/contracts.py",
     "src/python/emuflow/physical/rapidwright/xilinx_rwroute.py",

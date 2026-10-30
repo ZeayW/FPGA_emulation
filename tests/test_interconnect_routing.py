@@ -11,13 +11,9 @@ from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.ir.ir import EmuIR
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
 from emuflow.platform.platform import Platform
-from emuflow.routing.routing import (
-    build_directed_graph,
-    demands_from_assignment,
-    normalize_route_constraints,
-    route_hop_delay_ns, route_link_delay_ns,
-)
-from emuflow.scheduling.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
+from emuflow.routing.routing import build_directed_graph, normalize_route_constraints, route_link_delay_ns
+from tests.routing_validation_reference import demands_from_assignment, route_hop_delay_ns
+from tests.timing_routing_reference import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
 from tests.native_build import emuflow_native, tlr_router
 from tests import partition_pressure_fixture as pressure_fixture
 from tests.patron_kernel_fixture import run_pressure_kernel

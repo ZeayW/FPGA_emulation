@@ -11,7 +11,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.scheduling.tdm import validate_tdm_schedule, build_native_exact_schedule_request
+from emuflow.scheduling.tdm import build_native_exact_schedule_request
+from tests.tdm_reference import validate_tdm_schedule
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests.native_schedule_case import _case
@@ -74,7 +75,7 @@ def test_native_independent_validation_matches_host_oracle_without_host_records(
             )
         patches.enter_context(
             patch(
-                "emuflow.scheduling.tdm._exact_dependency_order",
+                'tests.tdm_reference._exact_dependency_order',
                 side_effect=AssertionError("Python dependency graph"),
             )
         )
@@ -269,7 +270,7 @@ def test_native_failure_never_retries_host_validator(tmp_path, monkeypatch):
     with (
         patch.object(NativeToolProcess, "finish", fail),
         patch(
-            "emuflow.scheduling.tdm._exact_dependency_order",
+            'tests.tdm_reference._exact_dependency_order',
             side_effect=AssertionError("host fallback"),
         ),
     ):

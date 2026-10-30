@@ -429,8 +429,8 @@ published database once: all selectors, summary and returned lazy views reuse
 one invocation-scoped file seal, checking its path, schema, bytes, digest and
 generation. Independent consumers still verify their input file; no global
 hash cache or persistent catalog is introduced. Phase 6 row construction and
-electrical/RTL/XDC checks retain their existing semantic owners and still require
-their own data-plane migration and qualification.
+electrical/RTL/XDC checks now execute through their native stage and independent
+validators; complete current-design qualification remains required.
 Pin-plan, position-hint, electrical-binding and retained Chimew bank input/report
 selectors use the common commit helper. Their existing independent view validators
 remain active. Typed bank-input relocation uses the same helper and the original

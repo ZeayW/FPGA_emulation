@@ -22,23 +22,23 @@ SLICE_LUT_BELS = tuple(f"{letter}6LUT" for letter in "ABCDEFGH")
 SLICE_FF_BELS = tuple(
     bel for letter in "ABCDEFGH" for bel in (f"{letter}FF", f"{letter}FF2")
 )
-from emuflow.physical.xilinx_packing import FF_TYPES
-from emuflow.physical.xilinx_packing import LUT_TYPES
-from emuflow.physical.xilinx_packing import DUAL_OUTPUT_LUT_TYPE
-from emuflow.physical.xilinx_packing import CONSTANT_TYPES
-from emuflow.physical.xilinx_packing import MUX_TYPES
+from tests.xilinx_packing_reference import FF_TYPES
+from tests.xilinx_packing_reference import LUT_TYPES
+from tests.xilinx_packing_reference import DUAL_OUTPUT_LUT_TYPE
+from tests.xilinx_packing_reference import CONSTANT_TYPES
+from tests.xilinx_packing_reference import MUX_TYPES
 HARD_BINDINGS = {
     "DSP48E2": (["DSP48E2"], ["DSP_ALU"]),
     "RAMB36E2": (["RAMB36"], ["RAMB36E2"]),
     "URAM288": (["URAM288"], ["URAM_288K_INST"]),
 }
-from emuflow.physical.xilinx_packing import CASCADE_PORTS
-from emuflow.physical.xilinx_packing import _select_module
-from emuflow.physical.xilinx_packing import _bits
-from emuflow.physical.xilinx_packing import _net_drivers
-from emuflow.physical.xilinx_packing import _pack_mux_cone
-from emuflow.physical.xilinx_packing import _mux_input_driver
-from emuflow.physical.xilinx_packing import _derive_cascade_chains
+from tests.xilinx_packing_reference import CASCADE_PORTS
+from tests.xilinx_packing_reference import _select_module
+from tests.xilinx_packing_reference import _bits
+from tests.xilinx_packing_reference import _net_drivers
+from tests.xilinx_packing_reference import _pack_mux_cone
+from tests.xilinx_packing_reference import _mux_input_driver
+from tests.xilinx_packing_reference import _derive_cascade_chains
 from emuflow.physical.contracts import XILINX_PLACEMENT_SCHEMA
 XILINX_GUIDANCE_SCHEMA = "emuflow.xilinx-global-placement-guidance/v1"
 XILINX_CONSTRAINTS_SCHEMA = "emuflow.xilinx-placement-constraints/v1"

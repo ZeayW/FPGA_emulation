@@ -26,7 +26,7 @@ from tests.system_timing_oracle import (
 )
 from emuflow.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
-from emuflow.scheduling.tdm import validate_tdm_schedule
+from tests.tdm_reference import validate_tdm_schedule
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
 from tests.schedule_reference import build_tdm_schedule
 from emuflow.scheduling.tdm_schedule_storage import (

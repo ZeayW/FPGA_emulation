@@ -13,7 +13,7 @@ from emuflow.ir.indexed_physical_ir import IndexedPhysicalIR
 from emuflow.validation.equivalence import _lut_definition
 def _vivado_mapped_name(value):
     return value.replace("\\", "\\\\")
-from emuflow.routing.routing import system_route_timing_paths
+from tests.routing_validation_reference import system_route_timing_paths
 _FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
 _VIVADO_FF_CONTROLS = {"FDRE": {"CE", "R"}, "FDSE": {"CE", "S"},
                        "FDCE": {"CE", "CLR"}, "FDPE": {"CE", "PRE"}}

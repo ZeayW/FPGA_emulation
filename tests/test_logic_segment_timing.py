@@ -42,7 +42,8 @@ from emuflow.timing.local_path_timing import (
 )
 from emuflow.timing.local_path_timing_storage import (LOCAL_PATH_TIMING_STORAGE_SCHEMA, read_local_path_timing_storage)
 from tests.timing_facts import local_timing_facts
-from emuflow.routing.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
+from emuflow.routing.routing import SYSTEM_ROUTES_SCHEMA
+from tests.routing_validation_reference import system_route_timing_paths
 from emuflow.platform.platform import Platform
 
 

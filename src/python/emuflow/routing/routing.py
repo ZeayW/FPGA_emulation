@@ -1,191 +1,49 @@
+"""Bounded BoardDB routing policy and current artifact-contract envelopes."""
+
 from __future__ import annotations
 
 import math
+
 from collections import defaultdict, deque
+
 from pathlib import Path
+
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from emuflow.common.errors import ValidationError
+
 from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_POLICIES, STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS, STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
+
 from emuflow.common.io import read_json
+
 from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
+
 from emuflow.platform.platform import BoardLink, Platform
 
-
 SYSTEM_ROUTES_SCHEMA = "emuflow.system-routes/v1"
+
 SYSTEM_ROUTE_CONSTRAINTS_SCHEMA = "emuflow.system-route-constraints/v1"
+
 RUNTIME_BARRIER_SLOTS = 1
+
 ArcKey = Tuple[str, str, str]
 
-
-def assignment_has_static_exact_contract(
-    assignment: Mapping[str, Any],
-) -> bool:
-    return assignment.get("semantic_contract") is not None or (
-        assignment.get("semantic_contract_indexed") is True
-    )
-
-
-def system_route_timing_paths(
-    routes: Mapping[str, Any],
-    *,
-    context: str = "system routes",
-) -> List[Mapping[str, Any]]:
-    """Return timing-path records, including the canonical zero-demand case."""
-
-    if routes.get("schema") != SYSTEM_ROUTES_SCHEMA:
-        raise ValidationError(
-            f"{context} schema: expected {SYSTEM_ROUTES_SCHEMA!r}"
-        )
-    raw_routes = routes.get("routes")
-    if not isinstance(raw_routes, list):
-        raise ValidationError(f"{context} demands are invalid")
-    timing = routes.get("timing")
-    if timing is None:
-        if raw_routes == []:
-            return []
-        raise ValidationError(f"{context} with demands require timing records")
-    if not isinstance(timing, Mapping) or not isinstance(
-        timing.get("paths"), list
-    ):
-        raise ValidationError(f"{context} timing records are invalid")
-    return timing["paths"]
-
-
-def static_exact_contract_from_assignment(
-    assignment: Mapping[str, Any],
-) -> Optional[Mapping[str, Any]]:
-    contract = assignment.get("semantic_contract")
-    if contract is None:
-        if assignment.get("semantic_contract_indexed") is not True:
-            return None
-        schema = assignment.get("semantic_contract_schema")
-        digest = assignment.get("semantic_contract_sha256")
-        raw_cuts = assignment.get("cut_nets")
-        if (
-            schema != STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
-            or not isinstance(digest, str)
-            or len(digest) != 64
-            or not isinstance(raw_cuts, list)
-        ):
-            raise ValidationError(
-                "indexed assignment semantic contract identity is incomplete"
-            )
-        for index, cut in enumerate(raw_cuts):
-            if not isinstance(cut, dict) or not isinstance(
-                cut.get("net"), str
-            ):
-                raise ValidationError(
-                    f"indexed assignment cut_nets[{index}] is invalid"
-                )
-            if cut.get("cut_class") == "combinational":
-                if (
-                    isinstance(cut.get("dependency_level"), bool)
-                    or not isinstance(cut.get("dependency_level"), int)
-                    or cut["dependency_level"] < 0
-                    or isinstance(
-                        cut.get("combinational_dependency_depth"), bool
-                    )
-                    or not isinstance(
-                        cut.get("combinational_dependency_depth"), int
-                    )
-                    or cut["combinational_dependency_depth"] < 0
-                    or not isinstance(cut.get("predecessor_cut_nets"), list)
-                    or not all(
-                        isinstance(item, str) and item
-                        for item in cut["predecessor_cut_nets"]
-                    )
-                ):
-                    raise ValidationError(
-                        "indexed assignment cut dependency is invalid"
-                    )
-        return {
-            "schema": schema,
-            "mode": "static-exact-combinational",
-            "qualification": "structural-partition-legality",
-            "indexed": True,
-        }
-    if not isinstance(contract, dict):
-        raise ValidationError("assignment.semantic_contract: expected an object")
-    if (
-        contract.get("schema") not in STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS
-        or contract.get("mode") != "static-exact-combinational"
-        or contract.get("qualification")
-        != "structural-partition-legality"
-    ):
-        raise ValidationError(
-            "assignment.semantic_contract is not a supported exact-cut contract"
-        )
-    if (
-        contract.get("schema") == STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
-        and contract.get("candidate_selection_policy")
-        not in STATIC_EXACT_CANDIDATE_POLICIES
-    ):
-        raise ValidationError(
-            "assignment structural exact-cut certificate is incomplete"
-        )
+def static_exact_contract_from_assignment(assignment):
+    """Resolve only current source-owned metadata; native stages audit cuts."""
+    if assignment.get("semantic_contract") is not None:
+        raise ValidationError("inline assignment semantic replay is retired")
+    if assignment.get("semantic_contract_indexed") is not True:
+        return None
+    from emuflow.partition.phase3_storage import IndexedCutNetRecords
     digest = assignment.get("semantic_contract_sha256")
-    if not isinstance(digest, str) or len(digest) != 64:
-        raise ValidationError(
-            "assignment semantic contract identity is incomplete"
-        )
-    raw_cuts = assignment.get("cut_nets")
-    raw_nodes = contract.get("cut_nodes")
-    if not isinstance(raw_cuts, list) or not isinstance(raw_nodes, list):
-        raise ValidationError(
-            "exact assignment cut and contract nodes must be arrays"
-        )
-    if not all(
-        isinstance(item, dict)
-        and isinstance(item.get("net"), str)
-        and bool(item["net"])
-        for item in raw_cuts + raw_nodes
-    ):
-        raise ValidationError(
-            "exact assignment cuts and contract nodes require non-empty net "
-            "identities"
-        )
-    cuts = {
-        item["net"]: item for item in raw_cuts
-    }
-    nodes = {
-        item["net"]: item for item in raw_nodes
-    }
-    if (
-        len(cuts) != len(raw_cuts)
-        or len(nodes) != len(raw_nodes)
-        or set(cuts) != set(nodes)
-    ):
-        raise ValidationError(
-            "exact semantic contract cut-node coverage is not exact"
-        )
-    for net_id in sorted(cuts):
-        cut = cuts[net_id]
-        node = nodes[net_id]
-        expected = {
-            "cut_class": cut.get("cut_class"),
-            "source_fpgas": cut.get("source_fpgas"),
-            "sink_fpgas": cut.get("sink_fpgas"),
-        }
-        for field, value in expected.items():
-            if node.get(field) != value:
-                raise ValidationError(
-                    f"exact semantic contract node {net_id!r}.{field} "
-                    "does not match assignment"
-                )
-        if cut.get("cut_class") == "combinational":
-            for field in (
-                "dependency_level",
-                "combinational_dependency_depth",
-                "predecessor_cut_nets",
-            ):
-                if cut.get(field) != node.get(field):
-                    raise ValidationError(
-                        f"exact semantic contract node {net_id!r}.{field} "
-                        "does not match assignment"
-                    )
-    return contract
-
+    if (assignment.get("semantic_contract_schema") != STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
+            or not isinstance(digest, str) or len(digest) != 64
+            or any(c not in "0123456789abcdef" for c in digest)
+            or not isinstance(assignment.get("cut_nets"), IndexedCutNetRecords)):
+        raise ValidationError("indexed assignment semantic contract identity is incomplete")
+    return {"schema": STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality", "indexed": True}
 
 def semantic_contract_for_routes(
     assignment: Mapping[str, Any],
@@ -221,7 +79,6 @@ def semantic_contract_for_routes(
             "routes semantic_contract binding does not match assignment"
         )
     return exact_contract
-
 
 def normalize_route_constraints(
     value: Optional[Mapping[str, Any]],
@@ -523,7 +380,6 @@ def normalize_route_constraints(
         **optimization_values,
     }
 
-
 def route_link_delay_ns(
     platform: Platform,
     link_id: str,
@@ -548,7 +404,6 @@ def route_link_delay_ns(
     link = next(link for link in platform.links if link.id == link_id)
     return link.latency_cycles * 1000.0 / link.fabric_clock_mhz
 
-
 def route_link_delay_coefficients_ns(
     platform: Platform, link_id: str, source: str, sink: str,
     constraints: Mapping[str, Any],
@@ -560,63 +415,8 @@ def route_link_delay_coefficients_ns(
              if link.tdm_delay_model is not None else 1000.0 / link.fabric_clock_mhz)
     return base, slope
 
-
-def route_hop_delay_ns(
-    platform: Platform, link_id: str, source: str, sink: str,
-    constraints: Mapping[str, Any], ratio: float,
-) -> float:
-    if (isinstance(ratio, bool) or not isinstance(ratio, (int, float))
-            or not math.isfinite(ratio) or ratio < 1):
-        raise ValidationError("net TDM ratio: expected finite value >= 1")
-    link = next(link for link in platform.links if link.id == link_id)
-    if link.tdm_delay_model is not None:
-        return link.tdm_delay_model.delay_ns(ratio)
-    base, slope = route_link_delay_coefficients_ns(
-        platform, link_id, source, sink, constraints)
-    return base + slope * (ratio - 1)
-
-
-def load_route_constraints(
-    path: Optional[Path],
-    platform: Platform,
-    frame_slots: Optional[int] = None,
-    max_iterations: Optional[int] = None,
-) -> Dict[str, Any]:
-    value = read_json(path) if path is not None else None
-    return normalize_route_constraints(
-        value,
-        platform,
-        frame_slots=frame_slots,
-        max_iterations=max_iterations,
-    )
-
-
 def _arc_key(link_id: str, source: str, sink: str) -> ArcKey:
     return (link_id, source, sink)
-
-
-def estimate_tdm_ratio(
-    signals: int,
-    lanes: int,
-    constraints: Mapping[str, Any],
-    *,
-    is_sll: bool = False,
-) -> int:
-    """Return the route/TDM proxy ratio for one capacity domain."""
-    if is_sll or signals <= 0:
-        return 1
-    minimum = int(constraints.get("tdm_min_ratio", 1))
-    raw = max(minimum, (signals + lanes - 1) // lanes)
-    if raw == 1:
-        return 1
-    quantum = int(constraints["tdm_ratio_quantum"])
-    quantized = ((raw + quantum - 1) // quantum) * quantum
-    return (
-        quantized
-        if minimum > 1
-        else min(int(constraints["tdm_max_ratio"]), quantized)
-    )
-
 
 def maximum_schedulable_tdm_ratio(
     constraints: Mapping[str, Any],
@@ -669,7 +469,6 @@ def maximum_schedulable_tdm_ratio(
         )
     return maximum
 
-
 def _capacity_key(
     link: BoardLink,
     source: str,
@@ -681,7 +480,6 @@ def _capacity_key(
     ):
         return f"{link.id}:shared"
     return f"{link.id}:{source}->{sink}"
-
 
 def build_directed_graph(
     platform: Platform,
@@ -774,328 +572,3 @@ def build_directed_graph(
             key=lambda arc: (arc["to"], arc["link"], arc["from"])
         )
     return adjacency, arcs, capacity_records
-
-
-def demands_from_assignment(
-    assignment: Mapping[str, Any],
-    platform: Platform,
-) -> List[Dict[str, Any]]:
-    if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
-        raise ValidationError(
-            f"assignment.schema: expected {PARTITION_ASSIGNMENT_SCHEMA!r}, "
-            f"got {assignment.get('schema')!r}"
-        )
-    if assignment.get("platform") != platform.name:
-        raise ValidationError(
-            f"assignment.platform: expected {platform.name!r}, "
-            f"got {assignment.get('platform')!r}"
-        )
-    fpga_ids = {fpga.id for fpga in platform.fpgas}
-    exact_contract = static_exact_contract_from_assignment(assignment)
-    contract_nodes = (
-        {item["net"]: item for item in exact_contract["cut_nodes"]}
-        if exact_contract is not None and not exact_contract.get("indexed")
-        else {}
-    )
-    raw_cuts = assignment.get("cut_nets")
-    if not isinstance(raw_cuts, list):
-        raise ValidationError("assignment.cut_nets: expected an array")
-
-    demands: List[Dict[str, Any]] = []
-    demand_ids: Set[str] = set()
-    for index, cut in enumerate(raw_cuts):
-        if not isinstance(cut, dict):
-            raise ValidationError(f"assignment.cut_nets[{index}]: expected an object")
-        net_id = cut.get("net")
-        sources = cut.get("source_fpgas")
-        sinks = cut.get("sink_fpgas")
-        if not isinstance(net_id, str) or not net_id:
-            raise ValidationError(
-                f"assignment.cut_nets[{index}].net: expected a non-empty string"
-            )
-        if net_id in demand_ids:
-            raise ValidationError(
-                f"assignment.cut_nets[{index}].net: duplicate {net_id!r}"
-            )
-        demand_ids.add(net_id)
-        if not isinstance(sources, list) or len(sources) != 1:
-            raise ValidationError(
-                f"assignment.cut_nets[{index}].source_fpgas: "
-                "expected exactly one source FPGA"
-            )
-        if (
-            not isinstance(sinks, list)
-            or not sinks
-            or not all(isinstance(sink, str) for sink in sinks)
-        ):
-            raise ValidationError(
-                f"assignment.cut_nets[{index}].sink_fpgas: "
-                "expected a non-empty string array"
-            )
-        source = sources[0]
-        unknown = sorted(({source} | set(sinks)) - fpga_ids)
-        if unknown:
-            raise ValidationError(
-                f"assignment.cut_nets[{index}]: unknown FPGAs {unknown}"
-            )
-        normalized_sinks = sorted(set(sinks) - {source})
-        if not normalized_sinks:
-            raise ValidationError(
-                f"assignment.cut_nets[{index}]: no remote sink FPGA"
-            )
-        raw_round = cut.get("transport_round", 0)
-        if (
-            isinstance(raw_round, bool)
-            or not isinstance(raw_round, int)
-            or raw_round < 0
-        ):
-            raise ValidationError(
-                f"assignment.cut_nets[{index}].transport_round: "
-                "expected a non-negative integer"
-            )
-        demand = {
-            "id": f"d{index:06d}",
-            "net": net_id,
-            "source": source,
-            "sinks": normalized_sinks,
-            "width_bits": 1,
-        }
-        if "transport_round" in cut:
-            demand["transport_round"] = raw_round
-        if exact_contract is not None:
-            node = cut if exact_contract.get("indexed") else contract_nodes[net_id]
-            demand.update(
-                {
-                    "cut_class": node["cut_class"],
-                    "dependency_level": node["dependency_level"],
-                    "combinational_dependency_depth": node[
-                        "combinational_dependency_depth"
-                    ],
-                    "predecessor_cut_nets": list(
-                        node["predecessor_cut_nets"]
-                    ),
-                }
-            )
-        demands.append(demand)
-    return sorted(demands, key=lambda demand: demand["net"])
-
-
-def _link_utilization_records(
-    capacity_records: Mapping[str, Mapping[str, Any]],
-    usage: Mapping[str, int],
-) -> List[Dict[str, Any]]:
-    records = []
-    for key in sorted(capacity_records):
-        capacity = capacity_records[key]
-        used_bits = usage.get(key, 0)
-        records.append(
-            {
-                **capacity,
-                "used_bits": used_bits,
-                "utilization": used_bits / capacity["capacity_bits"],
-            }
-        )
-    return records
-
-
-def _validate_route_tree(
-    route: Mapping[str, Any],
-    arcs: Mapping[ArcKey, Mapping[str, Any]],
-) -> Tuple[List[ArcKey], int, int]:
-    raw_edges = route.get("tree_edges")
-    if not isinstance(raw_edges, list):
-        raise ValidationError(
-            f"route {route.get('id')!r}.tree_edges: expected an array"
-        )
-    edge_keys: List[ArcKey] = []
-    graph: Dict[str, List[str]] = defaultdict(list)
-    indegree: Dict[str, int] = defaultdict(int)
-    latency_by_edge: Dict[Tuple[str, str], int] = {}
-    for index, edge in enumerate(raw_edges):
-        if not isinstance(edge, dict):
-            raise ValidationError(
-                f"route {route.get('id')!r}.tree_edges[{index}]: expected an object"
-            )
-        key = _arc_key(edge.get("link"), edge.get("from"), edge.get("to"))
-        if key not in arcs:
-            raise ValidationError(
-                f"route {route.get('id')!r}: illegal directed edge {key}"
-            )
-        if key in edge_keys:
-            raise ValidationError(
-                f"route {route.get('id')!r}: duplicate edge {key}"
-            )
-        edge_keys.append(key)
-        graph[key[1]].append(key[2])
-        indegree[key[2]] += 1
-        latency_by_edge[(key[1], key[2])] = arcs[key]["latency_cycles"]
-
-    source = route["source"]
-    reachable = {source}
-    queue = deque([source])
-    latency = {source: 0}
-    hops = {source: 0}
-    while queue:
-        node = queue.popleft()
-        for sink in sorted(graph.get(node, [])):
-            if sink in reachable:
-                raise ValidationError(
-                    f"route {route.get('id')!r}: tree contains a cycle or "
-                    f"multiple path to {sink!r}"
-                )
-            reachable.add(sink)
-            latency[sink] = latency[node] + latency_by_edge[(node, sink)]
-            hops[sink] = hops[node] + 1
-            queue.append(sink)
-
-    edge_nodes = {node for key in edge_keys for node in (key[1], key[2])}
-    if not edge_nodes <= reachable:
-        raise ValidationError(
-            f"route {route.get('id')!r}: tree has edges disconnected from source"
-        )
-    missing = sorted(set(route["sinks"]) - reachable)
-    if missing:
-        raise ValidationError(
-            f"route {route.get('id')!r}: sinks are unreachable {missing}"
-        )
-    for node, count in indegree.items():
-        if node != source and count != 1:
-            raise ValidationError(
-                f"route {route.get('id')!r}: node {node!r} has indegree {count}"
-            )
-    max_latency = max((latency[sink] for sink in route["sinks"]), default=0)
-    max_hops = max((hops[sink] for sink in route["sinks"]), default=0)
-    return edge_keys, max_latency, max_hops
-
-
-def validate_system_routes(
-    assignment: Mapping[str, Any],
-    platform: Platform,
-    routes_artifact: Mapping[str, Any],
-) -> Dict[str, Any]:
-    if routes_artifact.get("schema") != SYSTEM_ROUTES_SCHEMA:
-        raise ValidationError(
-            f"routes.schema: expected {SYSTEM_ROUTES_SCHEMA!r}, "
-            f"got {routes_artifact.get('schema')!r}"
-        )
-    constraints = normalize_route_constraints(
-        routes_artifact.get("constraints"),
-        platform,
-    )
-    expected_demands = demands_from_assignment(assignment, platform)
-    if routes_artifact.get("demands") != expected_demands:
-        raise ValidationError("routes.demands does not match partition cut nets")
-    exact_contract = semantic_contract_for_routes(assignment, routes_artifact)
-
-    adjacency, arcs, capacities = build_directed_graph(
-        platform,
-        constraints,
-        reserve_arrival_and_commit=exact_contract is not None,
-    )
-    del adjacency
-    raw_routes = routes_artifact.get("routes")
-    if not isinstance(raw_routes, list):
-        raise ValidationError("routes.routes: expected an array")
-    route_by_id = {
-        route.get("id"): route for route in raw_routes if isinstance(route, dict)
-    }
-    expected_by_id = {demand["id"]: demand for demand in expected_demands}
-    if set(route_by_id) != set(expected_by_id) or len(route_by_id) != len(raw_routes):
-        raise ValidationError("routes.routes: demand coverage is not exact")
-
-    usage = {key: 0 for key in capacities}
-    routed_sinks = 0
-    tree_edge_count = 0
-    maximum_observed_hops = 0
-    for demand_id in sorted(expected_by_id):
-        route = route_by_id[demand_id]
-        demand = expected_by_id[demand_id]
-        for field in ("id", "net", "source", "sinks", "width_bits"):
-            actual = route.get(field)
-            if actual != demand[field]:
-                raise ValidationError(
-                    f"route {demand_id!r}.{field}: does not match demand"
-                )
-        if route.get("transport_round", 0) != demand.get(
-            "transport_round", 0
-        ):
-            raise ValidationError(
-                f"route {demand_id!r}.transport_round: does not match demand"
-            )
-        edge_keys, max_latency, max_hops = _validate_route_tree(route, arcs)
-        hop_limit = constraints.get("max_route_hops")
-        if hop_limit is not None and max_hops > hop_limit:
-            raise ValidationError(
-                f"route {demand_id!r}: source-to-sink path uses {max_hops} "
-                f"hops, above maximum {hop_limit}"
-            )
-        if route.get("max_latency_cycles") != max_latency:
-            raise ValidationError(
-                f"route {demand_id!r}.max_latency_cycles: expected "
-                f"{max_latency}, got {route.get('max_latency_cycles')!r}"
-            )
-        for key in edge_keys:
-            usage[arcs[key]["capacity_key"]] += demand["width_bits"]
-        routed_sinks += len(demand["sinks"])
-        tree_edge_count += len(edge_keys)
-        maximum_observed_hops = max(maximum_observed_hops, max_hops)
-
-    expected_utilization = _link_utilization_records(capacities, usage)
-    if routes_artifact.get("link_utilization") != expected_utilization:
-        raise ValidationError(
-            "routes.link_utilization does not match independently recomputed usage"
-        )
-    overloaded = [
-        record
-        for record in expected_utilization
-        if record["used_bits"] > record["capacity_bits"]
-    ]
-    if overloaded:
-        raise ValidationError(f"routes exceed modeled link capacity: {overloaded}")
-
-    for link in platform.links:
-        if link.bank_count is None or link.id in constraints["unavailable_links"]:
-            continue
-        left, right = link.endpoints
-        per_bank = link.wires_per_bank * (
-            constraints["tdm_max_ratio"]
-            if link.tdm_delay_model is not None
-            else constraints["frame_slots"]
-        )
-        banks_needed = sum(
-            (usage[f"{link.id}:{source}->{sink}"] + per_bank - 1) // per_bank
-            for source, sink in ((left, right), (right, left))
-        )
-        if banks_needed > link.bank_count:
-            raise ValidationError(f"routes exceed shared bank capacity on {link.id}: "
-                                  f"need {banks_needed}, available {link.bank_count}")
-
-    expected_metrics = {
-        "demands": len(expected_demands),
-        "routed_sinks": routed_sinks,
-        "tree_edges": tree_edge_count,
-        "max_link_utilization": max(
-            (record["utilization"] for record in expected_utilization),
-            default=0.0,
-        ),
-        "total_link_bit_hops": sum(usage.values()),
-    }
-    if constraints.get("max_route_hops") is not None:
-        expected_metrics["max_route_hops_observed"] = maximum_observed_hops
-    metrics = routes_artifact.get("metrics")
-    if not isinstance(metrics, dict):
-        raise ValidationError("routes.metrics: expected an object")
-    for key, expected in expected_metrics.items():
-        if metrics.get(key) != expected:
-            raise ValidationError(
-                f"routes.metrics.{key}: expected {expected}, "
-                f"got {metrics.get(key)!r}"
-            )
-
-    return {
-        "status": "pass",
-        **expected_metrics,
-        "iterations": metrics.get("iterations"),
-        "overloaded_links": 0,
-        "link_utilization": expected_utilization,
-    }

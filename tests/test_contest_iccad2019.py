@@ -6,7 +6,7 @@ from emuflow_tools.contest_iccad2019 import evaluate_iccad2019_solution, import_
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
 from emuflow.routing.phase4 import run_phase4
-from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from tests.timing_routing_reference import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import tlr_router
 
 

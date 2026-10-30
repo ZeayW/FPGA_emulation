@@ -32,7 +32,6 @@
         "src/python/emuflow/physical/rapidwright/rapidwright_provider.py",
         "src/python/emuflow/physical/physical_regions.py",
         "src/python/emuflow/physical/xilinx_primitives.py",
-        "src/python/emuflow/physical/xilinx_packing.py",
         "schemas/archdb-v1.schema.json",
         "schemas/rapidwright-device-provider-v1.schema.json",
         "schemas/rapidwright-route-resource-certificate-v1.schema.json",
@@ -59,7 +58,7 @@
       "id": "rapidwright-site-packing",
       "stage": "Route A single-FPGA physical backend",
       "source_paths": [
-        "src/python/emuflow/physical/xilinx_packing.py",
+        "src/core/physical/openparf/prepare.cpp",
         "src/core/physical/handoff.cpp",
         "src/python/emuflow/physical/rapidwright/xilinx_rwroute.py",
         "src/core/physical/rapidwright/partition.cpp",
@@ -173,7 +172,10 @@
       "stage": "Phase 4/5 route-TDM co-optimization",
       "source_paths": [
         "src/core/routing/global_router.cpp",
-        "src/python/emuflow/scheduling/timing_routing.py"
+        "src/core/routing/phase4.cpp",
+        "src/core/routing/route_seal.cpp",
+        "src/python/emuflow/routing/phase4.py",
+        "src/python/emuflow/routing/phase4_native.py"
       ],
       "build_targets": [
         "emuflow_native"
@@ -191,8 +193,9 @@
         "src/python/emuflow/scheduling/tdm.py",
         "src/python/emuflow/scheduling/phase5.py",
         "src/python/emuflow/scheduling/tdm_schedule_storage.py",
-        "src/python/emuflow/scheduling/frame_search.py",
-        "schemas/frame-search-v5.schema.json"
+        "src/core/scheduling/phase5.cpp",
+        "src/core/scheduling/schedule_store.cpp",
+        "src/core/scheduling/schedule_validation.cpp"
       ],
       "build_targets": [
         "emuflow_native",

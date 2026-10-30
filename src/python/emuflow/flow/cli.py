@@ -71,7 +71,7 @@ from emuflow.frontend.policy import VALID_XILINX_MAPPING_STRATEGIES
 from emuflow.timing.sta import derive_partition_net_weights, validate_sta_path_database
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from emuflow.routing.phase4 import GLOBAL_CANDIDATE_PROVIDER
 from emuflow.frontend.verilog import emit_mapped_verilog
 
 def _print_json(value: Dict[str, Any]) -> None:

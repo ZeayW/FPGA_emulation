@@ -10,7 +10,7 @@ from emuflow.common.errors import ValidationError
 from emuflow.platform.architecture import ArchitectureDB
 from emuflow.common.native_tools import resolve_native_stage_command
 from emuflow.physical.xilinx_netlist import _IndexedCells
-from emuflow.physical.xilinx_packing import LUT_TYPES, FF_TYPES, DUAL_OUTPUT_LUT_TYPE
+from tests.xilinx_packing_reference import LUT_TYPES, FF_TYPES, DUAL_OUTPUT_LUT_TYPE
 from tests import openparf_placement_reference as runtime
 _fsync_directory = runtime._fsync_directory
 import errno

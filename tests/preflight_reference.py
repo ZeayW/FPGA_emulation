@@ -18,7 +18,7 @@ from emuflow.frontend.policy import VALID_XILINX_MAPPING_STRATEGIES
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.partition.partition import CUT_MODE_STATIC_EXACT, CUT_MODE_SEQUENTIAL_ONLY
-from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from tests.timing_routing_reference import GLOBAL_CANDIDATE_PROVIDER
 from emuflow.timing.xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
 from emuflow.flow.multi_fpga_physical_flow import _backend_sources
 import json

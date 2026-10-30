@@ -531,7 +531,9 @@ rereading the ArchitectureDB site population; retain and check the original
 source generation. Changed/missing sources, malformed geometry, boolean or
 negative coordinates, oversized pin counts and duplicate baseline report owners
 must reject. The C++ multi-process controller must stop on such a rejection and
-must keep `native_data_plane_complete=false` while Python phase adapters remain.
+must keep `native_data_plane_complete=false` until maintained-entry ownership,
+superseded-path retirement and current-source NVDLA physical/global timing
+qualification have all passed.
 
 
 ### Native Yosys hierarchy validation
@@ -630,3 +632,26 @@ private workspace. Native compiler tests must execute the real partition stage
 and reject a Python partition adapter rather than simulate that boundary.
 These are component and control gates; only real complete NVDLA runs establish
 whole-design Phase 7/7C correctness and runtime/RSS/disk acceptance.
+
+
+### Published routing and terminal replay
+
+The independent Phase 4 validator reopens the current RouteStore selector and
+payload with the original assignment, BoardDB and timing inputs. It must verify
+record/logical seals, complete demand/dependency/sink coverage, directed trees,
+half-duplex locks, capacities/banks, latency/delay, original timing membership,
+route signatures, normalization, TDM proxy metrics and refinement batch legality.
+It must not invoke routing, construct Python graph/path populations or treat the
+producer report as the independent proof. Resealed malformed fixtures exercise
+semantic rejection independently of file/section digest failures.
+
+Current Phase 5 validation requires typed RouteStore and ScheduleStore owners.
+Inline replay and whole-schedule materialization must reject before a native
+request is issued. Independent fixture scheduling and routing algorithms remain
+test-only; production imports and installed modules must not expose the retired
+graph/certificate implementations or automatic frame-search flow.
+
+Complete-flow physical report replay passes the original bounded summary file
+to its native validator. A finite namespace/census mapping may not iterate or
+serialize unrelated endpoint/path evidence. Replacing the source file during
+validation, including with identical bytes in another generation, must reject.

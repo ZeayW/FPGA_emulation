@@ -20,7 +20,8 @@ def write_request(directory, ir_path, platform_path, *, constraints_path=None,
     from emuflow.partition.structural_policy import _pattern_range_policy
     from emuflow.partition.partition import LEGAL_CUT_CLASSES, REPLICATED_NET_CLASSES, HARD_MACRO_RESOURCES
     from emuflow.partition.partition_topology import _shortest_routes, _capacity_key_by_arc
-    from emuflow.routing.routing import load_route_constraints, build_directed_graph, route_link_delay_coefficients_ns, route_link_delay_ns
+    from emuflow.routing.routing import build_directed_graph, route_link_delay_coefficients_ns, route_link_delay_ns
+    from tests.routing_validation_reference import load_route_constraints
     from emuflow.timing.sta import sta_path_database_payload_path, partition_net_weights_payload_path
     from emuflow.timing.sta_weights_native import _selector
     from emuflow.partition.combinational_cut import _canonical_sha256, STATIC_EXACT_DEFAULT_CANDIDATE_POLICY

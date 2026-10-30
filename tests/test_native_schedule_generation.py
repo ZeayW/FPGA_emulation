@@ -71,8 +71,8 @@ def test_complete_native_producer_matches_reference_records_certificates_and_has
 
     with patch.object(type(routes["routes"]), "iter_native_exact_metadata", side_effect=AssertionError("Python R metadata")), \
          patch.object(type(routes["routes"]), "iter_native_exact_records", side_effect=AssertionError("Python H metadata")), \
-         patch("emuflow.scheduling.tdm._indexed_certificate", side_effect=AssertionError("Python readiness certificate")), \
-         patch("emuflow.scheduling.tdm._baseline_ratio_hops", side_effect=AssertionError("Python wire map")), \
+         patch("tests.tdm_reference._indexed_certificate", side_effect=AssertionError("Python readiness certificate")), \
+         patch("tests.tdm_reference._baseline_ratio_hops", side_effect=AssertionError("Python wire map")), \
          patch("tests.schedule_store_fixture._publish_fixture_records", side_effect=AssertionError("Python record publisher")), \
          patch("emuflow.scheduling.phase5_native.NativeToolProcess", side_effect=record):
         request = build_native_exact_schedule_request(routes, case.platform)
@@ -142,3 +142,17 @@ def test_empty_indexed_production_uses_native_and_matches_reference(tmp_path, mo
                side_effect=AssertionError("empty production retried Python")):
         write_tdm_schedule_storage(output, request)
     assert read_tdm_schedule(output, materialize=True) == reference
+
+
+def test_installed_schedule_api_rejects_inline_replay_before_any_native_invocation(tmp_path):
+    import emuflow.scheduling.tdm as installed
+    case, routes = _case(tmp_path, False, False)
+    inline = build_tdm_schedule(routes, case.platform)
+    assert inline['entries']
+    for name in ('_indexed_certificate', '_baseline_ratio_hops', '_exact_dependency_order',
+                 '_independently_reconstruct_exact_source_readiness', '_independently_reconstruct_exact_captures'):
+        assert not hasattr(installed, name)
+    with patch('emuflow.scheduling.tdm_schedule_validation.validate_native_exact_schedule',
+               side_effect=AssertionError('inline replay reached the native protocol')):
+        with pytest.raises(ValidationError, match='current typed ScheduleStore'):
+            installed.validate_tdm_schedule(routes, case.platform, inline)
