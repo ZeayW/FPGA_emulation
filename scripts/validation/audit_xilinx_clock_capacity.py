@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
 def _is_clock_sink_pin(pin: str) -> bool:
     return pin in {"C", "CLK", "CLKARDCLK", "CLKBWRCLK"}
 

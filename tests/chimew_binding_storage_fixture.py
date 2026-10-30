@@ -9,9 +9,10 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Callable
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.document_io import read_json
 from emuflow.storage.store_publication import publish_sqlite_store, commit_store_selector, require_store_sources_unchanged, bind_store_source
-from emuflow.transport.chimew.chimew_binding_storage import ChimewBindingView
+from emuflow_tools.transport.chimew.chimew_binding_storage import ChimewBindingView
 
 CHIMEW_BINDING_STORAGE_SCHEMA = "emuflow.chimew-binding-storage/v1"
 CHIMEW_BINDING_APPLICATION_ID = 0x454D5542

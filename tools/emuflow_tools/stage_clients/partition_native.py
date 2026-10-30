@@ -22,8 +22,8 @@ def _configuration_value(ir_path, platform_path, *, constraints_path=None,
     from emuflow.partition.structural_policy import _pattern_range_policy
     from emuflow.common.paths import DATA_ROOT
     from emuflow.common.errors import EmuFlowError
-    from emuflow.timing.sta import sta_path_database_payload_path, partition_net_weights_payload_path
-    from emuflow.timing.sta_weights_native import _selector
+    from emuflow_tools.timing.sta import sta_path_database_payload_path, partition_net_weights_payload_path
+    from emuflow_tools.timing.sta_weights_native import _selector
     require_native_schema('phase3-configuration-request-v1')
     tool = resolve_native_executable('emuflow-native')
     engine = ''

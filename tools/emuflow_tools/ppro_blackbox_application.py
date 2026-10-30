@@ -10,7 +10,7 @@ from typing import Any, Dict
 
 from .benchmark import BenchmarkRun
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_runner import RUN_SPEC_SCHEMA, validate_run_spec
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE

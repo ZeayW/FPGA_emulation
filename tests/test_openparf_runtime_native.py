@@ -141,15 +141,15 @@ def test_native_metrics_rejects_invalid_evidence(tmp_path,damage):
 @pytest.mark.parametrize("clocks",[False,True])
 def test_qualified_import_uses_native_solver_and_preserves_checkpoint_pair(tmp_path,clocks):
     from tests.test_openparf_placement_import_native import case
-    from emuflow.physical.openparf.qualification_native import run_qualification
+    from emuflow_tools.physical.openparf.qualification_native import run_qualification
     with case(tmp_path,clocks=clocks) as (source,owner):
         tool_root=tmp_path/'tool';tool_root.mkdir()
         options,count,_=executable(tool_root,source['placement_path'].read_text())
         kwargs=dict(mapped_path=source['mapped_path'],packed_path=source['packed_path'],
             architecture_path=source['architecture_path'],output_dir=source['name_map_path'].parent,
             mapped_value=owner,openparf_install=options['install_root'],openparf_python=options['python_executable'])
-        from emuflow.platform.architecture import ArchitectureDB
-        from emuflow.physical.openparf import input_native
+        from emuflow_tools.platform.architecture import ArchitectureDB
+        from emuflow_tools.physical.openparf import input_native
         with (mock.patch.object(ArchitectureDB,'load',side_effect=AssertionError('Python device graph')),
               mock.patch.object(input_native,'prepare_atomic_input',side_effect=AssertionError('Python stage coordinator'))):
             result=run_qualification(**kwargs)
@@ -168,7 +168,7 @@ def test_qualified_import_uses_native_solver_and_preserves_checkpoint_pair(tmp_p
 def test_complete_native_region_admission_matches_the_independent_policy(tmp_path,failure):
     from tests.test_openparf_placement_import_native import case
     from tests.openparf_region_reference import _select_xilinx_slr_window
-    from emuflow.physical.openparf.qualification_native import run_qualification
+    from emuflow_tools.physical.openparf.qualification_native import run_qualification
     with case(tmp_path) as (source,owner):
         architecture=json.loads(source['architecture_path'].read_text())
         for site in architecture['sites']:
@@ -210,7 +210,7 @@ def test_retired_placement_policy_is_rejected_before_tool_launch(tmp_path):
 
 def test_complete_stage_failed_retry_preserves_prior_physical_owner(tmp_path):
     from tests.test_openparf_placement_import_native import case
-    from emuflow.physical.openparf.qualification_native import run_qualification
+    from emuflow_tools.physical.openparf.qualification_native import run_qualification
     with case(tmp_path) as (source,owner):
         tool=tmp_path/'tool';tool.mkdir()
         options,count,control=executable(tool,source['placement_path'].read_text())

@@ -37,7 +37,7 @@ def coordinates(generation=0):
 
 def setup_case(kind, root):
     from tests.yosys_reference import import_yosys_json
-    from emuflow.timing import sta
+    from emuflow_tools.timing import sta
 
     ir = import_yosys_json(
         ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
@@ -50,11 +50,11 @@ def setup_case(kind, root):
     output = root / ("result.emuir.sqlite" if kind == "emuir" else "result.json")
     module_name = {
         "emuir": "emuflow.ir.emuir_compact",
-        "routes": "emuflow.routing.system_route_storage",
-        "paths": "emuflow.timing.sta",
-        "weights": "emuflow.timing.sta",
-        "qor": "emuflow.timing.qor_storage",
-        "functions": "emuflow.physical.vivado.vivado_indexed_netlist",
+        "routes": "emuflow_tools.routing.system_route_storage",
+        "paths": "emuflow_tools.timing.sta",
+        "weights": "emuflow_tools.timing.sta",
+        "qor": "emuflow_tools.timing.qor_storage",
+        "functions": "emuflow_tools.physical.vivado.vivado_indexed_netlist",
         "sites": "tests.openparf_input_reference",
     }[kind]
     module = importlib.import_module(module_name)
@@ -218,7 +218,7 @@ def test_sta_selector_failure_preserves_old_payload_and_retires_uncommitted_gene
 
 def test_site_alias_failure_keeps_prior_target_and_shares_successful_bytes(tmp_path):
     from tests import openparf_input_reference as sites
-    from emuflow.common.io import file_sha256
+    from emuflow.common.json_io import file_sha256
     from emuflow.common.native_tools import native_file_generation
 
     source, target = tmp_path / "source.sqlite", tmp_path / "alias.sqlite"

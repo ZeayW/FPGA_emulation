@@ -153,7 +153,7 @@ def fixture_request(tmp_path, *, fail=None, waiting=False, prepared_timing=True)
     case, _, _, _ = native_inputs(native_root)
     from emuflow.ir.emuir_compact import write_compact_emuir
     from tests.native_partition_facts import (build_clusters)
-    from emuflow.partition.partition_ir import load_partition_ir
+    from emuflow_tools.partition.partition_ir import load_partition_ir
     source_ir = native_root / "source.emuir.sqlite"
     write_compact_emuir(source_ir, case.ir.value)
     limits = dict(case._phase5_assignment['constraints'], balance_dimensions=[], balance_tolerance=1.0)
@@ -398,9 +398,9 @@ def test_native_controller_completes_existing_nonphysical_contract_fixture(tmp_p
         architecture_timing_db=write_mock_xilinx_timing_contract(tmp_path / "mock-timing.json"),
     )
     from contextlib import closing
-    from emuflow.timing.indexed_timing import IndexedTimingView
+    from emuflow_tools.timing.indexed_timing import IndexedTimingView
     from emuflow.partition.phase3_storage import read_phase3_cut_timing_view
-    from emuflow.timing.sta import iter_sta_path_database_paths
+    from emuflow_tools.timing.sta import iter_sta_path_database_paths
     from emuflow_tools.stage_clients.opensta import DEFAULT_TIMING_MODEL
     from tests.cut_qualification_reference import _build_indexed_cut_segment_qualification
     path_database=output/'timing/path-database.json'

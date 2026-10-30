@@ -3,9 +3,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from emuflow.common.errors import ValidationError
-from emuflow.frontend.verilog import emit_mapped_verilog, mapped_verilog, write_mapped_verilog
+from emuflow_tools.frontend.verilog import emit_mapped_verilog, mapped_verilog, write_mapped_verilog
 from tests.yosys_reference import import_yosys_json
 
 
@@ -41,7 +41,7 @@ class MappedVerilogTest(unittest.TestCase):
                 expected = mapped_verilog(ir, **options).encode()
                 output = Path(temp) / "mapped.v"
                 with patch(
-                    "emuflow.frontend.verilog.mapped_verilog",
+                    "emuflow_tools.frontend.verilog.mapped_verilog",
                     side_effect=AssertionError("whole-document string emission"),
                 ):
                     write_mapped_verilog(ir, output, **options)

@@ -2,7 +2,7 @@
 import math
 from emuflow.common.errors import ValidationError
 from emuflow.partition.partition import TRANSPORTED_CUT_CLASSES, summarize_balance_observation
-from emuflow.partition.partition_limits import planning_resource_capacities, strict_balance_limits
+from emuflow_tools.partition.partition_limits import planning_resource_capacities, strict_balance_limits
 from emuflow.ir.resources import RESOURCE_FIELDS
 from tests.partition_views import ClusterColumns
 

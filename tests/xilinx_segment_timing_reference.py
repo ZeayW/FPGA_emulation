@@ -7,27 +7,16 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
-from emuflow.timing.boundary_timing import (
-    boundary_timing_header,
-    validate_boundary_timing_database,
-)
-from emuflow.timing.boundary_identity_storage import read_boundary_identity_storage
+from emuflow_tools.timing.boundary_timing import boundary_timing_header, validate_boundary_timing_database
+from emuflow_tools.timing.boundary_identity_storage import read_boundary_identity_storage
 from tests.timing_facts import boundary_timing_facts
 from emuflow.common.errors import ValidationError
 from emuflow.storage.store_publication import bind_view_sources
 from emuflow.ir.emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
-from emuflow.common.io import read_json, write_json
-from emuflow.timing.logic_segment_timing import (
-    LOGIC_SEGMENT_TIMING_SCHEMA,
-    validate_logic_segment_identity,
-    validate_logic_segment_timing,
-)
-from emuflow.timing.local_path_timing import (
-    local_path_timing_header,
-    read_local_path_identity,
-    validate_local_path_identity,
-    validate_local_path_timing,
-)
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
+from emuflow_tools.timing.logic_segment_timing import LOGIC_SEGMENT_TIMING_SCHEMA, validate_logic_segment_identity, validate_logic_segment_timing
+from emuflow_tools.timing.local_path_timing import local_path_timing_header, read_local_path_identity, validate_local_path_identity, validate_local_path_timing
 from tests.timing_facts import local_timing_facts
 from tests.routed_timing_adapter import (
     iter_xilinx_routed_timing_endpoints,
@@ -419,10 +408,7 @@ def build_xilinx_logic_segment_timing(
     *,
     _timing_graph: Optional[_TimingGraph] = None,
 ) -> Dict[str, Any]:
-    from emuflow.timing.logic_segment_identity_storage import (
-        LogicSegmentIdentityView,
-        read_logic_segment_identity_storage,
-    )
+    from emuflow_tools.timing.logic_segment_identity_storage import LogicSegmentIdentityView, read_logic_segment_identity_storage
 
     identity = read_logic_segment_identity_storage(
         identity_path

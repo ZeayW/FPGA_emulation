@@ -2,13 +2,13 @@
 import copy
 import hashlib
 from pathlib import Path
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from tests.chimew_grouping_fixture import build_chimew_initial_groups
 from tests.chimew_refinement_fixture import refine_chimew_groups
 from tests.test_chimew_qualification import ChimewQualificationTest
 from tests.schedule_store_fixture import write_tdm_schedule_storage
-from emuflow.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
-from emuflow.transport.chimew.chimew_qualification import canonical_sha256
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew.chimew_qualification import canonical_sha256
 
 
 def pipeline_inputs(root, *, byte_bound=True, opaque_prefix=b"fixture source "):

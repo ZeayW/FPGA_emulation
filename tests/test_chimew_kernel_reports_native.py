@@ -9,8 +9,8 @@ from unittest import mock
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import write_json
-from emuflow.transport.chimew.kernel_reports_native import build_chimew_kernel_reports
+from emuflow.common.json_io import write_json
+from emuflow_tools.transport.chimew.kernel_reports_native import build_chimew_kernel_reports
 from tests import test_chimew_qualification as qualification_fixture
 from tests.chimew_grouping_fixture import build_chimew_initial_groups
 from tests.chimew_refinement_fixture import refine_chimew_groups
@@ -82,7 +82,7 @@ def test_native_reports_equal_independent_kernel_replay(case, tmp_path, seed):
         summary = run(sources, output)
     for role, expected in (("initial_grouping", initial), ("refined_grouping", refined), ("rudy_report", rudy)):
         assert json.loads((output / (role + ".json")).read_text()) == expected
-    from emuflow.transport.chimew.chimew_qualification import canonical_sha256
+    from emuflow_tools.transport.chimew.chimew_qualification import canonical_sha256
     assert summary["refined_grouping_sha256"] == canonical_sha256(refined)
 
 

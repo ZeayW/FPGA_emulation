@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.document_io import read_json
 from emuflow.storage.store_publication import bind_store_source, require_store_sources_unchanged, publish_sqlite_store, commit_store_selector
-from emuflow.transport.position_hints_storage import PositionHintsView
+from emuflow_tools.transport.position_hints_storage import PositionHintsView
 
 POSITION_HINTS_LOGICAL_SCHEMA = "emuflow.signal-position-hints/v1"
 POSITION_HINTS_STORAGE_SCHEMA = "emuflow.signal-position-hints-storage/v1"

@@ -13,9 +13,9 @@ def test_public_host_hands_entire_flow_to_native_without_python_graph_stages(tmp
     request=setup(tmp_path)
     paths={r['role']:Path(r['path']) for r in request['sources']}
     with patch('emuflow.ir.ir.EmuIR.load',side_effect=AssertionError('host graph load')), \
-         patch('emuflow.physical.lowering.run_placement_ir_lowering_from_split',side_effect=AssertionError('host lowering')), \
-         patch('emuflow.physical.transport_synthesis.synthesize_transport',side_effect=AssertionError('host synthesis')), \
-         patch('emuflow.physical.vivado.vivado_physical.run_indexed_vivado_partition',side_effect=AssertionError('host backend')):
+         patch('emuflow_tools.physical.lowering.run_placement_ir_lowering_from_split',side_effect=AssertionError('host lowering')), \
+         patch('emuflow_tools.physical.transport_synthesis.synthesize_transport',side_effect=AssertionError('host synthesis')), \
+         patch('emuflow_tools.physical.vivado.vivado_physical.run_indexed_vivado_partition',side_effect=AssertionError('host backend')):
         result=run_multi_fpga_physical_flow(tmp_path/'split',paths['board'],paths['schedule-selector'],tmp_path/'physical',
             backend='vivado',yosys=str(paths['yosys']),vivado=str(paths['backend.tool']),workers=2)
     assert result['implementation_id']=='native-multi-fpga-physical-v1'

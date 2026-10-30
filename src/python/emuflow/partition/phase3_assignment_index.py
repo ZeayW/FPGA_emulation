@@ -20,7 +20,6 @@ from typing import Any, Iterator, Mapping
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.common.errors import ValidationError
 from emuflow.partition.phase3_exact_binary import iter_phase3_exact_node_sources, iter_phase3_exact_segments, phase3_exact_binary_counts, validate_phase3_exact_binary
-from emuflow.partition.phase3_runtime import phase3_runtime_call
 
 
 PACKED_EXACT_ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v3"
@@ -490,9 +489,7 @@ def validate_phase3_assignment_index(
                 )
             from emuflow.partition.phase3_assignment_native import validate_native_assignment_cuts
 
-            cuts = phase3_runtime_call(
-                "assignment_index.validate_cuts", validate_native_assignment_cuts, path
-            )
+            cuts = validate_native_assignment_cuts(path)
             cut_records, cut_records_sha256 = cuts["records"], cuts["sha256"]
             if cut_records != metadata.get(
                 "cut_records"

@@ -12,7 +12,7 @@ import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
 from tests.yosys_reference import import_yosys_json
-from emuflow.physical.transport_synthesis import synthesize_transport
+from emuflow_tools.physical.transport_synthesis import synthesize_transport
 from tests.transport_fanout_reference import buffer_transport_high_fanout_records as reference_buffer
 
 
@@ -159,19 +159,19 @@ def test_unflattened_transport_output_is_rejected_without_a_hierarchy_fallback(t
 
 def test_changed_published_generation_cannot_be_consumed_by_the_host(tmp_path):
     options,*_=case(tmp_path)
-    from emuflow.physical import transport_synthesis as host
-    read=host._small
+    from emuflow_tools.physical import transport_synthesis as host
+    read=host.read_small_object
     def damage(path,*args):
         value=read(path,*args)
         if Path(path).name=='operation.json':
             target=Path(value['outputs'][1]['path']);target.chmod(target.stat().st_mode^0o100)
         return value
-    with mock.patch.object(host,'_small',side_effect=damage),pytest.raises(ValidationError,match='output generation changed'):
+    with mock.patch.object(host,'read_small_object',side_effect=damage),pytest.raises(ValidationError,match='output generation changed'):
         synthesize_transport(**options)
 
 
 def test_an_ambient_container_binary_cannot_reidentify_a_direct_yosys(tmp_path,monkeypatch):
-    from emuflow.common.io import file_sha256
+    from emuflow.common.json_io import file_sha256
     options,*_=case(tmp_path)
     monkeypatch.setenv('EMUFLOW_YOSYS_CONTAINER_BINARY',str(tmp_path/'absent'))
     result=synthesize_transport(**options)

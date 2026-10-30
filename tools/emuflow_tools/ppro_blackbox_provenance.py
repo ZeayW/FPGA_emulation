@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any, Dict
 
 from emuflow.common.errors import ValidationError
-from emuflow.common import io as core_io
+from emuflow.common import json_io
+from emuflow_tools import document_io
 
 
 RUNNER_SOURCE_BUNDLE_SCHEMA = "emuflow.ppro-runner-source-bundle/v1"
 RUNNER_SOURCE_MEMBERS = (
-    "io.py",
+    "document_io.py",
+    "json_io.py",
     "ppro_blackbox_calibration.py",
     "ppro_blackbox_campaign.py",
     "ppro_blackbox_constraints.py",
@@ -40,9 +42,11 @@ def runner_source_bundle(package_root: Path | None = None) -> Dict[str, Any]:
     )
     if not root.is_dir():
         raise ValidationError("PPro runner source package root does not exist")
+    external_members = {"document_io.py": document_io, "json_io.py": json_io}
     members = []
     for relative in RUNNER_SOURCE_MEMBERS:
-        path = (Path(core_io.__file__).resolve() if package_root is None and relative == "io.py" else root / relative)
+        path = (Path(external_members[relative].__file__).resolve()
+                if package_root is None and relative in external_members else root / relative)
         if path.is_symlink() or not path.is_file():
             raise ValidationError(
                 f"PPro runner source member is missing or unsafe: {relative}"

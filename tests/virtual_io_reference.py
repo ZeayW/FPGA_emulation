@@ -11,12 +11,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Protocol
 from emuflow.common.errors import ValidationError
 from emuflow.platform.platform import Platform
-from emuflow.transport.netlist import transport_endpoint_port
+from emuflow_tools.transport.netlist import transport_endpoint_port
 from emuflow.scheduling.tdm_schedule_storage import canonical_tdm_schedule_sha256
-from emuflow.transport.virtual_board import (
-    BINDING_SCHEMA, IO_CONTRACT_SCHEMA, IO_CONTRACT_STORAGE_SCHEMA,
-    _digest, validate_virtual_board,
-)
+from emuflow_tools.transport.virtual_board import BINDING_SCHEMA, IO_CONTRACT_SCHEMA, IO_CONTRACT_STORAGE_SCHEMA, _digest, validate_virtual_board
 
 from tests.board_wiring_reference import _name, _file_sha256
 

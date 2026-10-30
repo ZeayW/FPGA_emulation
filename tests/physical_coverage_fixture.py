@@ -7,7 +7,7 @@ import tempfile
 import weakref
 
 from emuflow.common.errors import ValidationError
-from emuflow.physical.physical_coverage import build_physical_coverage, audit_physical_coverage
+from emuflow_tools.physical.physical_coverage import build_physical_coverage, audit_physical_coverage
 
 
 def _identity(contract,schedule,physical):
@@ -17,7 +17,7 @@ def _identity(contract,schedule,physical):
 def build_cross_layer_physical_binding(contract,schedule,physical,platform,assignment_index_path=None,*,output_path=None):
     from tests.schedule_store_fixture import write_tdm_schedule_storage
     from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule, TDMScheduleView
-    from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+    from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
     from tests.timing_facts import boundary_timing_facts
     from tests.timing_facts import logic_timing_facts
     if isinstance(schedule,TDMScheduleView):
@@ -74,7 +74,7 @@ def build_cross_layer_physical_binding(contract,schedule,physical,platform,assig
 
 
 def validate_cross_layer_physical_binding(contract,schedule,physical,platform,binding,assignment_index_path=None):
-    from emuflow.physical.physical_coverage import PhysicalCoverageView
+    from emuflow_tools.physical.physical_coverage import PhysicalCoverageView
     if not isinstance(binding,PhysicalCoverageView):
         raise ValidationError('cross-layer physical binding does not match canonical inputs')
     try:stored_contract,stored_schedule,stored_physical,identity=binding._fixture_inputs

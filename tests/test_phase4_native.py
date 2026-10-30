@@ -10,11 +10,11 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow_tools.stage_clients.routing import run_phase4
 from emuflow_tools.stage_clients.routing_native import prepare_policy, run_native_phase4
 from tests.routing_validation_reference import demands_from_assignment
-from emuflow.routing.system_route_storage import read_system_routes
+from emuflow_tools.routing.system_route_storage import read_system_routes
 from tests.timing_routing_reference import load_sta_paths, validate_native_system_routes
 from tests.native_build import emuflow_native
 from tests.native_schedule_case import _case

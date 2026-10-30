@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, json_writes_are_durable, write_json
+from emuflow.common.json_io import file_sha256, json_writes_are_durable, write_json
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import native_file_generation, resolve_native_executable
 from emuflow.common.tool_runtime import NativeToolProcess

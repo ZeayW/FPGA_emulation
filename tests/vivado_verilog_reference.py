@@ -15,8 +15,8 @@ from emuflow.storage.store_publication import (
     publish_sqlite_store,
     validate_store_destination,
 )
-from emuflow.common.io import file_sha256, write_json
-from emuflow.frontend.verilog import _emittable_parameters, _identifier, _parameter
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.frontend.verilog import _emittable_parameters, _identifier, _parameter
 from emuflow.physical.vivado.vivado_lineage import LINEAGE_POLICY
 
 
@@ -38,8 +38,8 @@ def emit_indexed_vivado_verilog_reference(
     ir_path: Path, output_path: Path, report_path: Path | None = None, *, mapped_index=None,
 ) -> Mapping[str, Any]:
     # Lazy import avoids the legacy lowerer's import cycle.
-    from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
-    from emuflow.physical.vivado.vivado_source import validate_vivado_source
+    from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+    from emuflow_tools.physical.vivado.vivado_source import validate_vivado_source
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if mapped_index is None:

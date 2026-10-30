@@ -6,19 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.platform.architecture import ArchitectureDB
+from emuflow_tools.platform.architecture import ArchitectureDB
 from emuflow.common.errors import ValidationError
-from emuflow.platform.fpga_interchange import architecture_from_fpga_interchange_extract
-from emuflow.common.io import read_json
-from emuflow.physical.rapidwright.rapidwright_provider import (
-    RAPIDWRIGHT_GENERATOR_QUALIFICATION,
-    bind_rapidwright_route_certificate,
-    rapidwright_producer_record,
-    run_rapidwright_device_import,
-    validate_rapidwright_route_certificate,
-    validate_rapidwright_architecture,
-    validate_rapidwright_provider_manifest,
-)
+from emuflow_tools.platform.fpga_interchange import architecture_from_fpga_interchange_extract
+from emuflow_tools.document_io import read_json
+from emuflow_tools.physical.rapidwright.rapidwright_provider import RAPIDWRIGHT_GENERATOR_QUALIFICATION, bind_rapidwright_route_certificate, rapidwright_producer_record, run_rapidwright_device_import, validate_rapidwright_route_certificate, validate_rapidwright_architecture, validate_rapidwright_provider_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -133,7 +133,7 @@ def qualify(request_path, output):
     from emuflow.common.errors import ValidationError
     from emuflow.ir.ir import EmuIR
     from emuflow.ir.emuir_compact import read_compact_emuir
-    from emuflow.common.io import write_json
+    from emuflow.common.json_io import write_json
     from emuflow.validation.equivalence import simulate_partition_equivalence
     from emuflow.transport.split_netlist_storage import read_compact_emuir_control_metadata
     from emuflow.scheduling.tdm import is_sampled_virtual_wire_schedule

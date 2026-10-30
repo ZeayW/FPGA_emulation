@@ -8,7 +8,7 @@ import sqlite3
 import struct
 
 from emuflow.common.errors import ValidationError
-from emuflow.timing.global_event_store import _Owner, EventChecks, PathMetadata
+from emuflow_tools.timing.global_event_store import _Owner, EventChecks, PathMetadata
 
 _ROLES = ('target', 'runtime', 'tx', 'commit')
 
@@ -24,7 +24,7 @@ class EventFacts:
         self._finished = False
 
     def append_values(self, path, role, event, launch, arcs, required):
-        from emuflow.timing.global_sta import EventCheck
+        from emuflow_tools.timing.global_sta import EventCheck
         self.append(EventCheck(path, role, event, launch, arcs, required))
 
     def append(self, row):

@@ -19,7 +19,7 @@ from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
 from tests.native_partition_facts import (normalize_partition_constraints)
-from emuflow.partition.partition_ir import load_partition_ir
+from emuflow_tools.partition.partition_ir import load_partition_ir
 from emuflow.platform.platform import Platform, FpgaNode, BoardLink
 from emuflow.ir.resources import RESOURCE_FIELDS
 from tests.native_build import emuflow_native

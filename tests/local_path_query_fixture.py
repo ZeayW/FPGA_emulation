@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.ir.ir import EmuIR
-from emuflow.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
+from emuflow_tools.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
 from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
 from tests.native_route_seal_fixture import write_route_store_fixture
 
@@ -71,11 +71,11 @@ def sources(root, *, value=None, owners=None, paths=None, cross=()):
 
 
 def prepare(value):
-    from emuflow.timing.local_path_timing import prepare_local_path_query_inputs
+    from emuflow_tools.timing.local_path_timing import prepare_local_path_query_inputs
     return prepare_local_path_query_inputs(value.original, value.assignment, value.paths, value.routes)
 
 
 def query(value, root, *, backend='xilinx', fpga='fpga0', prepared=None):
-    from emuflow.timing.local_path_query_native import write_native_local_path_query
+    from emuflow_tools.timing.local_path_query_native import write_native_local_path_query
     return write_native_local_path_query(value.merged[fpga], fpga, Path(root)/'query.tsv',
         Path(root)/'identity.json', prepared or prepare(value), backend=backend)

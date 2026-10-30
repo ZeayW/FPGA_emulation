@@ -12,15 +12,9 @@ import pytest
 
 from tests.event_facts import EventFacts as EventBuilder, MetadataFacts as MetadataBuilder
 from emuflow.common.errors import ValidationError
-from emuflow.timing.global_event_store import (
-    event_model_sources,
-    export_event_model,
-)
-from emuflow.timing.global_sta import (
-    EventCheck, bind_physical_checks,
-    export_event_checks, run_event_checks,
-)
-from emuflow.timing.global_measurements import import_measurements
+from emuflow_tools.timing.global_event_store import event_model_sources, export_event_model
+from emuflow_tools.timing.global_sta import EventCheck, bind_physical_checks, export_event_checks, run_event_checks
+from emuflow_tools.timing.global_measurements import import_measurements
 from emuflow.common.native_tools import resolve_native_executable
 from tests.test_global_sta import example
 
@@ -92,7 +86,7 @@ def test_native_independent_validation_rejects_untrusted_store(tmp_path, corrupt
 
 
 def test_bound_events_share_metadata_owner_and_unicode_identity(tmp_path):
-    from emuflow.timing.local_path_timing import path_id_set_sha256
+    from emuflow_tools.timing.local_path_timing import path_id_set_sha256
     builder = EventBuilder(bound=True)
     metadata = MetadataBuilder(builder)
     names = ['路径😀\x7f\n"\\', 'a', '雪']
@@ -175,14 +169,14 @@ def test_signed_zero_and_bundle_events_preserve_numerical_compression():
 
 
 def test_inline_binding_is_rejected_without_allocating_an_owner():
-    from emuflow.timing.global_event_store import _Owner
+    from emuflow_tools.timing.global_event_store import _Owner
     with patch.object(_Owner, '__init__', side_effect=AssertionError('retired inline owner')):
         with pytest.raises(ValidationError, match='typed physical owners'):
             bind_physical_checks(None, None, None, None, None)
 
 
 def test_native_event_execution_restores_all_original_identities(tmp_path, monkeypatch):
-    import emuflow.timing.global_sta as sta
+    import emuflow_tools.timing.global_sta as sta
     first = example()
     reference = first+[EventCheck('q', r.role, 'q-'+r.event,r.launch_ns,r.arcs_ns,r.required_ns) for r in first]
     rows = _rows(reference)
@@ -197,7 +191,7 @@ def test_native_event_execution_restores_all_original_identities(tmp_path, monke
     monkeypatch.setattr(sta, 'require_opensta_engine', lambda _: {'executable_sha256': 'a'*64})
     try:
         measured = run_event_checks(rows, tmp_path / 'run', str(engine))
-        from emuflow.timing.global_measurements import read_native_measurements
+        from emuflow_tools.timing.global_measurements import read_native_measurements
         saved = read_native_measurements(tmp_path / 'run/measurements.json', rows)
         try:
             assert list(measured) == list(saved)
@@ -222,7 +216,7 @@ def test_closed_borrowed_cursor_releases_storage_after_rejection():
 
 
 def test_measurement_import_binds_generations_at_iteration_boundaries(tmp_path):
-    from emuflow.timing import global_event_store
+    from emuflow_tools.timing import global_event_store
     rows = _rows([EventCheck(f'p{i}', role, 'capture', 0, (1,), deadline)
                   for i in range(100) for role,deadline in [('target', 10),('runtime', 100)]])
     tsv = tmp_path / 'measurements.tsv'
@@ -266,7 +260,7 @@ def test_export_rejects_mixed_primary_index_and_preserves_manifest(tmp_path):
 
 @pytest.mark.skipif(not os.environ.get('EMUFLOW_TEST_OPENSTA'), reason='real OpenSTA not configured')
 def test_real_opensta_native_store_preserves_full_original_path_tns(tmp_path):
-    from emuflow.timing.global_sta import build_opensta_timing
+    from emuflow_tools.timing.global_sta import build_opensta_timing
     builder = EventBuilder(bound=True)
     metadata = MetadataBuilder(builder)
     for i in range(50):

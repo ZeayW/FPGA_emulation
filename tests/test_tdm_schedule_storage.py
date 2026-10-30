@@ -11,7 +11,7 @@ import pytest
 
 import emuflow.scheduling.tdm_schedule_storage as tdm_schedule_storage
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.scheduling.tdm_schedule_storage import (
     TDM_SCHEDULE_USER_VERSION,
     TDM_SCHEDULE_STORAGE_SCHEMA,

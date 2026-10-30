@@ -8,7 +8,7 @@ from emuflow_tools.contest_eda2024 import (
     materialize_eda2024_rtl_boarddb,
 )
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 
 
 INFO = """\

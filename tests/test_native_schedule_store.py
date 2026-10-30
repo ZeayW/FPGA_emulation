@@ -19,7 +19,7 @@ from tests.native_build import emuflow_native
 
 def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch):
     from tests.test_combinational_cut import StaticExactCombinationalCutPartitionTest
-    from emuflow.routing.system_route_storage import read_system_routes
+    from emuflow_tools.routing.system_route_storage import read_system_routes
     from tests.native_route_seal_fixture import write_route_store_fixture
     from tests.schedule_reference import build_tdm_schedule
     case=StaticExactCombinationalCutPartitionTest();case.setUp()

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.common.paths import REPOSITORY_ROOT
 from emuflow.common.process_output import run_with_bounded_output
 

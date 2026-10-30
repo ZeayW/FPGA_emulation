@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.phase3_store_fixture import write_cluster_fixture, cluster_column_facts
 from tests.native_partition_facts import materialize_facts

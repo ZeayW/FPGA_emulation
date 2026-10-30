@@ -13,7 +13,7 @@ from emuflow_tools.stage_clients.partition import run_phase3
 
 @pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart", "greedy"])
 def test_retired_provider_rejected_before_phase_input(tmp_path, provider):
-    with patch("emuflow.partition.partition_ir.load_partition_ir", side_effect=AssertionError("circuit loaded")):
+    with patch("emuflow_tools.partition.partition_ir.load_partition_ir", side_effect=AssertionError("circuit loaded")):
         with pytest.raises(ValidationError, match="unsupported Phase 3 provider"):
             run_phase3(tmp_path / "missing.ir", tmp_path / "missing.platform",
                        tmp_path / "partition", provider=provider)
@@ -22,7 +22,7 @@ def test_retired_provider_rejected_before_phase_input(tmp_path, provider):
 
 @pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart", "greedy"])
 def test_retired_provider_rejected_before_compile_frontend(tmp_path, provider):
-    with patch("emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")):
+    with patch("emuflow_tools.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")):
         with pytest.raises(EmuFlowError, match="unsupported Phase 3 provider"):
             run_preflight(output_dir=tmp_path / "flow", partition_provider=provider)
     assert not (tmp_path / "flow").exists()
@@ -49,7 +49,7 @@ def test_chimew_and_fixed_binding_entry_remain_available():
     ])
     assert args.phase6_provider == "chimew"
     from emuflow_tools.stage_clients.transport import run_phase6
-    from emuflow.transport.chimew.chimew_phase6 import run_chimew_phase6_adapter
+    from emuflow_tools.transport.chimew.chimew_phase6 import run_chimew_phase6_adapter
     assert callable(run_phase6) and callable(run_chimew_phase6_adapter)
 
 
@@ -57,8 +57,8 @@ def test_chimew_and_fixed_binding_entry_remain_available():
 @pytest.mark.parametrize("version", [6, 7, 8, 9, 10, 11])
 def test_retired_patron_version_is_rejected_before_any_frontend_or_graph_loading(tmp_path, entry, version):
     from emuflow.flow.native_compile import _request
-    with patch("emuflow.partition.partition_ir.load_partition_ir", side_effect=AssertionError("graph loaded")), patch(
-        "emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")
+    with patch("emuflow_tools.partition.partition_ir.load_partition_ir", side_effect=AssertionError("graph loaded")), patch(
+        "emuflow_tools.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")
     ), pytest.raises(EmuFlowError, match="version|only PATRON"):
         if entry == "phase3":
             run_phase3(tmp_path / "missing.ir", tmp_path / "missing.platform",
@@ -97,12 +97,12 @@ def test_retired_phase3_snapshot_routes_are_absent_from_public_api(tmp_path, opt
 
 
 def test_plain_graph_phase3_has_no_python_fallback(tmp_path):
-    from emuflow.common.io import write_json
+    from emuflow.common.json_io import write_json
     from tests.yosys_reference import import_yosys_json
     root = Path(__file__).parents[1]
     graph = tmp_path/'design.json'
     write_json(graph, import_yosys_json(root/'examples/yosys/counter.json', top='counter', clocks=['clk']).value)
-    with patch('emuflow.partition.partition_ir.load_partition_ir', side_effect=AssertionError('Python graph route')):
+    with patch('emuflow_tools.partition.partition_ir.load_partition_ir', side_effect=AssertionError('Python graph route')):
         with pytest.raises(ValidationError, match='compact EmuIR'):
             run_phase3(graph, root/'platforms/virtual/xcvu3p_2fpga_p2p.json', tmp_path/'partition')
     assert not (tmp_path/'partition/assignment.json').exists()

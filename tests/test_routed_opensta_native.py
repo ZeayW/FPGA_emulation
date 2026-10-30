@@ -11,8 +11,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
-from emuflow.timing.indexed_timing import IndexedTimingView
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.timing.indexed_timing import IndexedTimingView
 from emuflow_tools.stage_clients.opensta import validate_timing_model_coverage
 from tests.routed_opensta_stage_reference import RoutedTimingModel
 from tests.routed_opensta_reference import build_xilinx_routed_opensta_indexed_inputs
@@ -218,10 +218,10 @@ def test_bound_model_cannot_fall_back_to_inline_graph_loading(tmp_path):
 
 def test_optional_routed_opensta_client_uses_typed_sources_and_old_cli_is_retired(tmp_path):
     from emuflow.flow.cli import main
-    from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta
+    from emuflow_tools.timing.xilinx_opensta import run_xilinx_routed_opensta
     mapped, timing, _ = fixture(tmp_path)
     output, summary = tmp_path / "paths.json", tmp_path / "summary.json"
-    with patch("emuflow.timing.xilinx_opensta._invoke", return_value={"status": "pass"}) as run:
+    with patch("emuflow_tools.timing.xilinx_opensta._invoke", return_value={"status": "pass"}) as run:
         assert run_xilinx_routed_opensta(mapped, timing, output, summary, clocks={"clk": 10.0}, executable=__import__("sys").executable) == {"status": "pass"}
     assert run.call_args.args[0] == "run"
     sources = {role: path for role, path, _ in run.call_args.args[1]}

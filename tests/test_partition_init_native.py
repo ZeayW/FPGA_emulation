@@ -232,7 +232,7 @@ def test_native_initializer_runs_through_patron_without_host_ownership_rewrite(p
 
 @pytest.mark.skipif(not os.environ.get('EMUFLOW_TEST_OPENROAD'),reason='qualified OpenROAD runtime is not configured')
 def test_real_tritonpart_initializer_reaches_final_phase3_publication(pressure_inputs,tmp_path):
-    from emuflow.common.io import write_json
+    from emuflow.common.json_io import write_json
     from emuflow_tools.stage_clients.partition import run_phase3, validate_phase3_indexed
     args,_,timing=pressure_inputs
     platform=tmp_path/'platform.json';write_json(platform,args[1].to_dict())

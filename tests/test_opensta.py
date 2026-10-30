@@ -22,13 +22,8 @@ from emuflow_tools.stage_clients.opensta import (
     run_opensta_path_database,
     validate_timing_model_coverage,
 )
-from emuflow.timing.sta import (
-    import_sta_path_database_tsv_streaming,
-    iter_sta_path_database_paths,
-    sta_path_database_qor,
-    validate_sta_path_database,
-)
-from emuflow.frontend.verilog import mapped_verilog
+from emuflow_tools.timing.sta import import_sta_path_database_tsv_streaming, iter_sta_path_database_paths, sta_path_database_qor, validate_sta_path_database
+from emuflow_tools.frontend.verilog import mapped_verilog
 from tests.yosys_reference import import_yosys_json
 from tests.sta_path_reference import endpoint_facts
 

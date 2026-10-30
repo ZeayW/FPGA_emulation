@@ -14,7 +14,7 @@ from emuflow.common.errors import ValidationError
 
 from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_POLICIES, STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS, STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
 
-from emuflow.common.io import read_json
+from emuflow.common.json_io import read_json
 
 from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
 

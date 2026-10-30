@@ -10,11 +10,11 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.timing.indexed_timing import IndexedTimingView, _TimingTypes
+from emuflow_tools.timing.indexed_timing import IndexedTimingView, _TimingTypes
 from emuflow.ir.ir import EmuIR
-from emuflow.timing.opensta_export_native import export_opensta_inputs
-from emuflow.timing.sta import write_emuir_net_map
-from emuflow.frontend.verilog import mapped_verilog, write_mapped_verilog
+from emuflow_tools.timing.opensta_export_native import export_opensta_inputs
+from emuflow_tools.timing.sta import write_emuir_net_map
+from emuflow_tools.frontend.verilog import mapped_verilog, write_mapped_verilog
 from tests.yosys_reference import import_yosys_json
 
 ROOT = Path(__file__).parents[1]
@@ -40,7 +40,7 @@ def test_combined_producer_does_not_iterate_python_graph_or_endpoints(tmp_path):
     write_emuir_net_map(path, tmp_path/"reference.tsv", _ir=ir)
     with closing(IndexedTimingView(path)) as view, \
          patch.object(IndexedTimingView, "timing_connections", side_effect=AssertionError("Python endpoints")), \
-         patch("emuflow.timing.indexed_timing._timing_instances", side_effect=AssertionError("Python cells")), \
+         patch("emuflow_tools.timing.indexed_timing._timing_instances", side_effect=AssertionError("Python cells")), \
          patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("Python graph")):
         report = export_opensta_inputs(view, verilog=tmp_path/"actual.v", net_map=tmp_path/"actual.tsv")
     assert report["implementation_id"] == "native-opensta-export-v1"
@@ -88,7 +88,7 @@ def test_corruption_restores_previous_text_outputs(tmp_path, damage):
     }
     if damage in sql:
         with sqlite3.connect(path) as db:db.execute(sql[damage])
-    from emuflow.timing import opensta_export_native as native
+    from emuflow_tools.timing import opensta_export_native as native
     finish = native.CheckedRequestWriter.finish
     def corrupt(writer):
         p = Path(writer.stream.name);finish(writer);data = bytearray(p.read_bytes());data[-1] ^= 1;p.write_bytes(data)

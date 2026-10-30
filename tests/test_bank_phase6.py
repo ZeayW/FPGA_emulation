@@ -7,13 +7,13 @@ import copy
 
 import pytest
 
-from emuflow.transport.chimew.chimew_phase6 import CHIMEW_PHASE6_BINDING_PROVIDER
+from emuflow_tools.transport.chimew.chimew_phase6 import CHIMEW_PHASE6_BINDING_PROVIDER
 from tests.chimew_pin_reference import _canonical_sha256
 from tests.pin_contract_fixture import validate_chimew_phase6_binding
-from emuflow.transport.chimew.chimew_fixed_wiring import FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels
+from emuflow_tools.transport.chimew.chimew_fixed_wiring import FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.common.errors import ValidationError
-from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA, SIGNAL_POSITION_HINTS_SCHEMA
+from emuflow_tools.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA, SIGNAL_POSITION_HINTS_SCHEMA
 from tests.pin_planning_reference import _assignment_metrics, _baseline_assignment, validate_bank_pin_assignment
 from tests.pin_contract_fixture import validate_pin_plan
 from tests.pin_plan_storage_fixture import write_pin_plan_storage

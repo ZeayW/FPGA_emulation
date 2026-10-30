@@ -13,12 +13,12 @@ from tests.native_build import emuflow_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.platform.platform import Platform
-from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels
-from emuflow.transport.chimew.chimew_bank_channel_storage import BankChannelInputView, write_chimew_bank_channel_storage
-from emuflow.transport.pin_artifacts_native import _board_sources, build_pin_artifacts
-from emuflow.transport.pin_plan_storage import PinPlanEntrySequence, read_pin_plan
-from emuflow.transport.position_hints_storage import PositionHintEntrySequence, read_position_hints
-from emuflow.transport.chimew.chimew_binding_storage import ChimewBindingEntrySequence, read_chimew_binding
+from emuflow_tools.transport.chimew.chimew_fixed_wiring import FixedWiringChannels
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import BankChannelInputView, write_chimew_bank_channel_storage
+from emuflow_tools.transport.pin_artifacts_native import _board_sources, build_pin_artifacts
+from emuflow_tools.transport.pin_plan_storage import PinPlanEntrySequence, read_pin_plan
+from emuflow_tools.transport.position_hints_storage import PositionHintEntrySequence, read_position_hints
+from emuflow_tools.transport.chimew.chimew_binding_storage import ChimewBindingEntrySequence, read_chimew_binding
 from emuflow.scheduling.tdm_schedule_storage import TypedScheduleEntrySequence
 
 

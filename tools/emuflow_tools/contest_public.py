@@ -18,7 +18,8 @@ from .contest_validation_matrix import (
     load_contest_validation_matrix,
 )
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from .contest_eda2023 import (
     import_eda2023_case,
     materialize_eda2023_official_outputs,

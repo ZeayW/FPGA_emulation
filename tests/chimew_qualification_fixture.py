@@ -2,9 +2,9 @@
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 import tempfile
-from emuflow.transport.chimew import chimew_qualification as production
-from emuflow.transport.chimew.chimew_bank_channel_storage import BankChannelInputView, write_chimew_bank_channel_storage
-from emuflow.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView
+from emuflow_tools.transport.chimew import chimew_qualification as production
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import BankChannelInputView, write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView
 from tests.chimew_bank_report_fixture import write_chimew_bank_channel_report_storage
 
 

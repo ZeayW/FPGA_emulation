@@ -3,7 +3,7 @@ import math
 from collections import defaultdict
 from typing import Any, Dict, Mapping, Optional, Tuple
 from pathlib import Path
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.common.errors import ValidationError
 
 def _crossed_boundaries(value: float, anchor: float, count: int) -> list[int]:

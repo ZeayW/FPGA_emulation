@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
-from emuflow.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
-from emuflow.physical.contracts import XILINX_PLACEMENT_SCHEMA
-from emuflow.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
-from emuflow.physical.rapidwright.xilinx_rwroute import _sha256
+from emuflow_tools.document_io import read_json
+from emuflow_tools.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
+from emuflow_tools.physical.contracts import XILINX_PLACEMENT_SCHEMA
+from emuflow_tools.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import _sha256
 
 class _TsvSpool:
     """Append a large route contract without retaining its text in memory."""
@@ -904,7 +904,7 @@ _CLOCK_SINK_PINS = frozenset({
 
 # This streaming reader is used only by the explicit timing oracle. Production
 # route traversal and certification are native and have no Python fallback.
-from emuflow.physical.rapidwright.xilinx_rwroute import _route_payload_path, XILINX_ROUTE_NET_PAYLOAD_FORMAT
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import _route_payload_path, XILINX_ROUTE_NET_PAYLOAD_FORMAT
 XILINX_ROUTE_DB_SCHEMA = "emuflow.xilinx-route-db/v1"
 XILINX_ROUTE_DB_STREAM_SCHEMA = "emuflow.xilinx-route-db/v2"
 XILINX_ROUTE_PIP_PAYLOAD_FORMAT = "jsonl-array/v1"

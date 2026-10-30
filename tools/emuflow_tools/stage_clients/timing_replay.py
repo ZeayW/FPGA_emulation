@@ -6,16 +6,17 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from emuflow.scheduling.cross_layer_timing import build_cross_layer_physical_binding, build_cross_layer_timing_contract, validate_cross_layer_timing_contract
+from emuflow_tools.scheduling.cross_layer_timing import build_cross_layer_physical_binding, build_cross_layer_timing_contract, validate_cross_layer_timing_contract
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow.platform.platform import Platform
-from emuflow.physical.physical_summary_storage import read_physical_summary
+from emuflow_tools.physical.physical_summary_storage import read_physical_summary
 from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from emuflow_tools.stage_clients.schedule import validate_phase5_generation
-from emuflow.timing.qor_storage import write_qor_report
+from emuflow_tools.timing.qor_storage import write_qor_report
 from emuflow.routing.routing import semantic_contract_for_routes
-from emuflow.routing.system_route_storage import pretty_system_routes_sha256, read_system_routes
+from emuflow_tools.routing.system_route_storage import pretty_system_routes_sha256, read_system_routes
 from emuflow.transport.runtime import aggregate_qor, build_virtual_runtime, runtime_controller_testbench, runtime_timing_xdc, validate_virtual_runtime, virtual_runtime_controller_to_systemverilog
 from emuflow.scheduling.tdm_schedule_storage import canonical_tdm_schedule_sha256, read_tdm_schedule
 
@@ -219,7 +220,7 @@ def run_phase7c(
                 raise ValidationError("choose live OpenSTA or explicit saved-result validation")
             if physical_summary is None or routes is None:
                 raise ValidationError("global OpenSTA requires physical Phase 7 inputs")
-            from emuflow.timing.global_sta import bind_physical_checks, build_opensta_timing, read_engine_identity, run_event_checks
+            from emuflow_tools.timing.global_sta import bind_physical_checks, build_opensta_timing, read_engine_identity, run_event_checks
             metadata = {}
             checks = bind_physical_checks(runtime, routes, schedule, physical_summary, platform,
                                           metadata=metadata, routes_artifact_sha256=routes_artifact_sha256)
@@ -230,7 +231,7 @@ def run_phase7c(
                 sta_dir = global_sta_results_dir
                 # Explicit terminal artifact validation checks raw arcs, not the
                 # former system-timing composer, and never launches STA again.
-                from emuflow.timing.global_measurements import read_native_measurements
+                from emuflow_tools.timing.global_measurements import read_native_measurements
                 measurements = read_native_measurements(sta_dir / "measurements.json", checks)
             sta_timing = build_opensta_timing(runtime, metadata, measurements)
             sta_timing["global_opensta"]["engine"] = read_engine_identity(sta_dir / "opensta.log")

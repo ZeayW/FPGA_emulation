@@ -10,13 +10,11 @@ from unittest import mock
 
 
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.transport.pin_plan_storage import PinPlanEntrySequence
+from emuflow_tools.transport.pin_plan_storage import PinPlanEntrySequence
 from tests.pin_plan_storage_fixture import write_pin_plan_storage
-from emuflow.transport.position_hints_storage import PositionHintEntrySequence
+from emuflow_tools.transport.position_hints_storage import PositionHintEntrySequence
 from tests.position_hints_storage_fixture import write_position_hints_storage
-from emuflow.transport.pin_planning import (
-    SIGNAL_POSITION_HINTS_SCHEMA,
-)
+from emuflow_tools.transport.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm_schedule_storage import (
     ScheduleRecordSequence,

@@ -152,8 +152,8 @@ CLK ADDR_A[0] 500
             ):
                 reference = build_architecture_opensta_timing_model(ir, database)
             assert (model, types) == reference
-            from emuflow.timing.indexed_timing import IndexedTimingView
-            from emuflow.frontend.verilog import mapped_verilog, write_mapped_verilog
+            from emuflow_tools.timing.indexed_timing import IndexedTimingView
+            from emuflow_tools.frontend.verilog import mapped_verilog, write_mapped_verilog
             compact = root / "design.emuir.sqlite"
             ir.save(compact)
             view = IndexedTimingView(compact)

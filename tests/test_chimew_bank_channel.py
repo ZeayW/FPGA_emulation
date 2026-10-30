@@ -15,31 +15,12 @@ from pathlib import Path
 from unittest import mock
 
 from tests import chimew_bank_channel_reference as bank_channel_module
-from emuflow.transport.chimew import chimew_bank_channel_storage as storage_module
+from emuflow_tools.transport.chimew import chimew_bank_channel_storage as storage_module
 from tests import chimew_bank_report_fixture as report_storage_module
-from emuflow.transport.chimew import chimew_qualification as qualification_module
-from emuflow.transport.chimew.chimew_bank_channel import (
-    CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
-    CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
-    CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1,
-    CHIMEW_BANK_CHANNEL_PROVIDER,
-    validate_chimew_bank_channel_input,
-)
-from emuflow.transport.chimew.chimew_bank_channel_storage import (
-    BANK_CHANNEL_APPLICATION_ID,
-    BANK_CHANNEL_STORAGE_SCHEMA,
-    BANK_CHANNEL_USER_VERSION,
-    BankChannelInputView,
-    canonical_bank_channel_input_sha256,
-    copy_chimew_bank_channel_storage,
-    read_chimew_bank_channel_input,
-    write_chimew_bank_channel_storage,
-)
-from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
-    BankChannelReportView,
-    canonical_bank_channel_report_sha256,
-    read_chimew_bank_channel_report,
-)
+from emuflow_tools.transport.chimew import chimew_qualification as qualification_module
+from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_INPUT_PROVIDER, CHIMEW_BANK_CHANNEL_INPUT_SCHEMA, CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1, CHIMEW_BANK_CHANNEL_PROVIDER, validate_chimew_bank_channel_input
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import BANK_CHANNEL_APPLICATION_ID, BANK_CHANNEL_STORAGE_SCHEMA, BANK_CHANNEL_USER_VERSION, BankChannelInputView, canonical_bank_channel_input_sha256, copy_chimew_bank_channel_storage, read_chimew_bank_channel_input, write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView, canonical_bank_channel_report_sha256, read_chimew_bank_channel_report
 from emuflow.common.errors import EmuFlowError, ValidationError
 from tests.chimew_qualification_fixture import validate_chimew_bank_channel_report_artifact
 from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
@@ -387,7 +368,7 @@ class ChimewBankChannelTest(unittest.TestCase):
             changed = copy.deepcopy(self.document)
             changed["provenance"]["producer_version"] = "2"
             with mock.patch(
-                "emuflow.transport.chimew.chimew_bank_channel_storage._open_validated_view",
+                "emuflow_tools.transport.chimew.chimew_bank_channel_storage._open_validated_view",
                 side_effect=ValidationError("injected post-publish failure"),
             ):
                 with self.assertRaisesRegex(ValidationError, "injected"):
@@ -560,7 +541,7 @@ class ChimewBankChannelTest(unittest.TestCase):
                     completed.set()
 
             with mock.patch(
-                "emuflow.transport.chimew.chimew_bank_channel_storage."
+                "emuflow_tools.transport.chimew.chimew_bank_channel_storage."
                 "_write_chimew_bank_channel_storage_locked",
                 side_effect=instrumented_writer,
             ):

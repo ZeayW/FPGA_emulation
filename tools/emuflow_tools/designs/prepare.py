@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 
 from emuflow.common.errors import EmuFlowError
-from emuflow.common.io import file_sha256, write_json
+from emuflow.common.json_io import file_sha256, write_json
 from emuflow.flow.benchmark_inputs import BenchmarkRun
 from emuflow.flow.environment import load_environment, read_control, resolve_path, resolve_environment_path
 from emuflow.flow.run_config import (
@@ -161,7 +161,7 @@ def prepare_nvdla_run(
     # Source-owned overlays are immutable once published. Re-preparing another
     # run reuses a checked generation and cannot rewrite an active compile's RTL.
     from emuflow_tools.designs import nvdla as generator
-    from emuflow.common.io import read_json
+    from emuflow_tools.document_io import read_json
     from emuflow_tools.designs.nvdla_memory import __file__ as memory_source
 
     seed = [

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.platform.architecture import ArchitectureDB, compatible_cells_for_bel
+from emuflow_tools.platform.architecture import ArchitectureDB, compatible_cells_for_bel
 from emuflow.physical.openparf.openparf import (
     _openparf_environment,
     resolve_openparf_install,

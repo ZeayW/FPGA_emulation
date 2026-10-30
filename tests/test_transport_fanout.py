@@ -7,10 +7,7 @@ from emuflow.ir.ir import EmuIR
 from tests.transport_fanout_reference import (
     buffer_transport_high_fanout_records,
 )
-from emuflow.physical.xilinx_netlist import (
-    emit_xilinx_mapped_index,
-    open_xilinx_mapped_index,
-)
+from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
 
 
 def _transport_ir(fanout: int, *, cut_class: str = "combinational") -> EmuIR:

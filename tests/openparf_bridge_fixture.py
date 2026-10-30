@@ -12,11 +12,10 @@ import shutil
 from tests.physical_handoff_native_fixture import encode_typed_bridge_facts
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
 from tests.openparf_placement_reference import (write_xilinx_openparf_atomic_placement_certificate)
-from emuflow.physical.handoff import (
-    materialize_xilinx_openparf_atomic_contract as materialize_typed,
-)
+from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract as materialize_typed
 
 
 def _snapshot(value):
@@ -76,9 +75,7 @@ def materialize_bridge_fixture(
         if physical_handoff_path is not None:
             # A bounded downstream fixture snapshot has a caller-selected path.
             # Production always consumes the native generation path in its report.
-            from emuflow.physical.xilinx_physical_handoff import (
-                open_xilinx_physical_handoff,
-            )
+            from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
 
             target = Path(physical_handoff_path)
             shutil.copyfile(result["physical_handoff"], target)

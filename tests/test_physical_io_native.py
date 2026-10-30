@@ -9,11 +9,11 @@ import subprocess
 import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.common.native_tools import native_file_generation
-from emuflow.physical.fixed_io import prepare_fixed_io
+from emuflow_tools.physical.fixed_io import prepare_fixed_io
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.platform.platform import Platform
-from emuflow.transport.transport_storage import _RecordSequence
-from emuflow.transport.virtual_board import build_virtual_board
+from emuflow_tools.transport.transport_storage import _RecordSequence
+from emuflow_tools.transport.virtual_board import build_virtual_board
 from tests.native_build import emuflow_native
 from tests.test_virtual_board import schedule_and_ports
 from tests.virtual_binding_fixture import native_binding
@@ -152,15 +152,15 @@ def test_empty_schedule_keeps_both_fixed_io_partition_contracts(tmp_path):
 
 
 def test_replaced_python_contract_builder_is_absent():
-    import emuflow.transport.virtual_board as module
+    import emuflow_tools.transport.virtual_board as module
     assert not hasattr(module,'build_virtual_io_physical_contract')
 
 
 @pytest.mark.parametrize('damage', ['contract','source'])
 def test_adoption_rejects_a_generation_changed_while_reading_contracts(case,monkeypatch,damage):
-    import emuflow.physical.fixed_io as host
+    import emuflow_tools.physical.fixed_io as host
     _,args=case
-    read=host._small
+    read=host.read_small_object
     changed=[]
     def mutate(path,*bounds):
         value=read(path,*bounds)
@@ -169,7 +169,7 @@ def test_adoption_rejects_a_generation_changed_while_reading_contracts(case,monk
             target=Path(path) if damage=='contract' else next(iter(args[4].values()))
             target.write_bytes(target.read_bytes()+b'\n')
         return value
-    monkeypatch.setattr(host,'_small',mutate)
+    monkeypatch.setattr(host,'read_small_object',mutate)
     with pytest.raises(ValidationError,match='generation changed'):
         prepare_fixed_io(*args)
     assert changed

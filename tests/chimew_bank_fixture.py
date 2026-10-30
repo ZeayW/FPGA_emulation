@@ -4,12 +4,8 @@ from contextlib import ExitStack
 from pathlib import Path
 import tempfile
 
-from emuflow.transport.chimew.chimew_bank_channel import (
-    evaluate_chimew_bank_channel_assignment as assign_typed,
-)
-from emuflow.transport.chimew.chimew_bank_channel_storage import (
-    BankChannelInputView, write_chimew_bank_channel_storage,
-)
+from emuflow_tools.transport.chimew.chimew_bank_channel import evaluate_chimew_bank_channel_assignment as assign_typed
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import BankChannelInputView, write_chimew_bank_channel_storage
 
 
 def evaluate_chimew_bank_channel_assignment(document, *, executable=None, output_path=None):
@@ -27,11 +23,11 @@ def evaluate_chimew_bank_channel_assignment(document, *, executable=None, output
 
 def build_chimew_phase6_pin_plan(schedule, platform, bank_input, electrical, **options):
     import json
-    from emuflow.transport.pin_artifacts_native import build_pin_artifacts, copy_pin_artifact
-    from emuflow.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView, copy_chimew_bank_channel_report_storage, read_chimew_bank_channel_report
-    from emuflow.transport.pin_plan_storage import read_pin_plan
-    from emuflow.transport.position_hints_storage import read_position_hints
-    from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
+    from emuflow_tools.transport.pin_artifacts_native import build_pin_artifacts, copy_pin_artifact
+    from emuflow_tools.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView, copy_chimew_bank_channel_report_storage, read_chimew_bank_channel_report
+    from emuflow_tools.transport.pin_plan_storage import read_pin_plan
+    from emuflow_tools.transport.position_hints_storage import read_position_hints
+    from emuflow_tools.transport.chimew.chimew_binding_storage import read_chimew_binding
     with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
         root = Path(temporary).resolve()
         source = bank_input if isinstance(bank_input, BankChannelInputView) else stack.enter_context(

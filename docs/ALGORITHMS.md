@@ -303,8 +303,8 @@ adapter.
 | Chimew integration | Native baseline physical/timing comparison, placed lookahead, pipeline publication and independent electrical/slot qualification | [chimew.cpp](../src/core/flow/chimew.cpp), [pipeline.cpp](../src/core/transport/chimew/pipeline.cpp) |
 | Split netlists and transport | EmuFlow runtime implementation and validation | [phase6.py](../tools/emuflow_tools/stage_clients/transport.py) |
 | OpenPARF/RWRoute / Vivado | Physical-tool integrations selected by backend and device contract | [physical_backend.py](../src/python/emuflow/physical/physical_backend.py) |
-| RapidWright / RWRoute | Device-resource, site/BEL, and native routing integration | [rapidwright_provider.py](../src/python/emuflow/physical/rapidwright/rapidwright_provider.py) |
-| Global OpenSTA | EmuFlow timing-model exporter and upstream STA execution | [global_sta.py](../src/python/emuflow/timing/global_sta.py) |
+| RapidWright / RWRoute | Device-resource, site/BEL, and native routing integration | [rapidwright_provider.py](../tools/emuflow_tools/physical/rapidwright/rapidwright_provider.py) |
+| Global OpenSTA | EmuFlow timing-model exporter and upstream STA execution | [global_sta.py](../tools/emuflow_tools/timing/global_sta.py) |
 
 In particular, neither the Chimew paper's reported timing gains nor a placement
 engine's published benchmark results transfer automatically to EmuFlow. Those

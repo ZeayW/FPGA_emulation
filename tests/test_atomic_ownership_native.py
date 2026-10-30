@@ -10,15 +10,15 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.physical import physical_cells_native
+from emuflow_tools.physical import physical_cells_native
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import native_file_generation
-from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
 from tests.openparf_placement_reference import (OPENPARF_ATOMIC_PLACEMENT_SCHEMA, open_xilinx_openparf_atomic_placement, write_xilinx_openparf_atomic_placement_certificate)
 from tests.openparf_source_fixture import write_xilinx_openparf_atomic_source_storage
-from emuflow.physical.openparf.xilinx_openparf_source_storage import XilinxOpenparfAtomicSourceView
+from emuflow_tools.physical.openparf.xilinx_openparf_source_storage import XilinxOpenparfAtomicSourceView
 from tests.native_build import emuflow_native
 from tests.test_rwroute_native import fixture
 from tests.test_xilinx_openparf_source_storage import _macro
@@ -122,7 +122,7 @@ def test_millionth_singleton_rank_is_streamed_and_includes_constants(tmp_path):
         )
     digest = file_sha256(mapped)
     with open_xilinx_mapped_index(mapped) as indexed:
-        from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
+        from emuflow_tools.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
         source = build_xilinx_openparf_atomic_source(mapped, tmp_path / "large-source.json", mapped_value=indexed, mapped_sha256=digest, top="top")
 
         class Assignments(Sequence):
@@ -205,7 +205,7 @@ def test_ordered_merge_matches_independent_reference_without_python_population(
             side_effect=AssertionError("Python source ownership population"),
         ),
         patch(
-            "emuflow.physical.xilinx_netlist._IndexedCells.items",
+            "emuflow_tools.physical.xilinx_netlist._IndexedCells.items",
             side_effect=AssertionError("Python mapped population"),
         ),
     ):
@@ -378,9 +378,7 @@ def test_borrowed_certificate_view_rejects_changed_generation(tmp_path):
 def test_real_bridge_consumes_existing_authorities_without_ownership_mirrors(
     tmp_path, bad_owner
 ):
-    from emuflow.physical.handoff import (
-        materialize_xilinx_openparf_atomic_contract,
-    )
+    from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract
     from tests.test_rwroute_native import write_mapped
     from tests.test_xilinx_openparf_bridge import _native_certificate
 
@@ -466,7 +464,7 @@ def test_real_bridge_consumes_existing_authorities_without_ownership_mirrors(
     assert result["status"] == "pass"
     assert receipt["assignments"] == len(owners) == result["placed_cells"]
     assert receipt["ownership_snapshots"] == 0
-    from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+    from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
     assert Path(result['physical_handoff']).is_file()
     actual_packed,actual_placement=open_xilinx_physical_handoff(Path(result['physical_handoff']))
     expected_packed,expected_placement=open_xilinx_physical_handoff(Path(reference_result['physical_handoff']))

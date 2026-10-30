@@ -13,7 +13,7 @@ from emuflow_tools.stage_clients.timing_replay import run_phase7c
 @pytest.mark.parametrize("entry", ["phase7c", "compile", "native-request"])
 def test_python_engine_rejected_before_input_or_frontend(tmp_path, entry):
     with patch("emuflow_tools.stage_clients.timing_replay.read_tdm_schedule", side_effect=AssertionError("schedule opened")), patch(
-        "emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")
+        "emuflow_tools.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")
     ), pytest.raises(EmuFlowError, match="only the OpenSTA"):
         if entry == "phase7c":
             run_phase7c(*(tmp_path / name for name in ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")),
@@ -26,7 +26,7 @@ def test_python_engine_rejected_before_input_or_frontend(tmp_path, entry):
 
 
 def test_production_has_no_python_timing_or_comparison_entry():
-    from emuflow.timing import global_sta; from emuflow.transport import runtime
+    from emuflow_tools.timing import global_sta; from emuflow.transport import runtime
     assert importlib.util.find_spec("emuflow.system_timing") is None
     assert not hasattr(runtime, "build_system_timing")
     assert not hasattr(global_sta, "compare_system_timing")

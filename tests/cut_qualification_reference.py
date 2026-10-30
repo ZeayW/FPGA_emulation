@@ -18,12 +18,12 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.ir.ir import EmuIR
 from emuflow_tools.stage_clients.opensta import DEFAULT_TIMING_MODEL, build_architecture_opensta_timing_model, classify_through_net_timing_endpoints, load_timing_model
 from emuflow.partition.phase3_assignment_index import phase3_exact_relation_counts
 from emuflow.partition.phase3_storage import read_phase3_cut_timing_view
-from emuflow.timing.sta import iter_sta_path_database_paths, validate_sta_path_database_path_value
+from emuflow_tools.timing.sta import iter_sta_path_database_paths, validate_sta_path_database_path_value
 
 
 CUT_SEGMENT_QUALIFICATION_SCHEMA = (

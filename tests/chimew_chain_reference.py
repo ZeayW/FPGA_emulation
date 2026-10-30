@@ -8,7 +8,7 @@ import sqlite3
 from collections import defaultdict
 from typing import Any, Dict, Mapping, Optional, Sequence
 
-from emuflow.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_ALGORITHM2_INTERPRETATION, CHIMEW_BANK_CHANNEL_INTEGRATION_STATUS, CHIMEW_BANK_CHANNEL_NUMERIC_POLICY, CHIMEW_BANK_CHANNEL_PAPER_SCOPE, CHIMEW_BANK_CHANNEL_PROVIDER, CHIMEW_BANK_CHANNEL_REPORT_SCHEMA, CHIMEW_BANK_CHANNEL_STATUS, _candidate_cost, _raw_cost, validate_chimew_bank_channel_input
+from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_ALGORITHM2_INTERPRETATION, CHIMEW_BANK_CHANNEL_INTEGRATION_STATUS, CHIMEW_BANK_CHANNEL_NUMERIC_POLICY, CHIMEW_BANK_CHANNEL_PAPER_SCOPE, CHIMEW_BANK_CHANNEL_PROVIDER, CHIMEW_BANK_CHANNEL_REPORT_SCHEMA, CHIMEW_BANK_CHANNEL_STATUS, _candidate_cost, _raw_cost, validate_chimew_bank_channel_input
 from tests.chimew_grouping_fixture import _domain, _popcount, _tdm_ratio, validate_chimew_crossings
 from tests.chimew_refinement_fixture import CHIMEW_REFINED_GROUPING_SCHEMA, CHIMEW_REFINEMENT_PROVIDER, _pairwise_objective, _validate_initial_groups, validate_chimew_positions
 from tests.chimew_rudy_fixture import CHIMEW_RUDY_PROVIDER, CHIMEW_RUDY_REPORT_SCHEMA, _oracle as _rudy_oracle, validate_chimew_rudy_input
@@ -35,9 +35,9 @@ CHIMEW_BYTE_BOUND_OPTIONAL_SOURCE_LABELS = {"timing_paths"}
 
 
 def canonical_sha256(document: Mapping[str, Any]) -> str:
-    from emuflow.transport.chimew.chimew_bank_channel_storage import BankChannelInputView, canonical_bank_channel_input_sha256
+    from emuflow_tools.transport.chimew.chimew_bank_channel_storage import BankChannelInputView, canonical_bank_channel_input_sha256
     from emuflow.scheduling.tdm_schedule_storage import TDMScheduleView, canonical_tdm_schedule_sha256
-    from emuflow.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView, canonical_bank_channel_report_sha256
+    from emuflow_tools.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView, canonical_bank_channel_report_sha256
 
     if isinstance(document, BankChannelInputView):
         return canonical_bank_channel_input_sha256(document)

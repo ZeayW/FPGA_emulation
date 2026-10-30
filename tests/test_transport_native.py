@@ -8,10 +8,10 @@ import shutil
 import subprocess
 import pytest
 
-from emuflow.transport.transport_storage import write_transport_storage
+from emuflow_tools.transport.transport_storage import write_transport_storage
 from tests.virtual_anchor_fixture import expected_anchor_xdc
 from emuflow.transport.runtime import build_virtual_runtime,virtual_runtime_controller_to_systemverilog
-from emuflow.transport.virtual_board import build_virtual_board
+from emuflow_tools.transport.virtual_board import build_virtual_board
 from tests.virtual_binding_fixture import binding_text
 from tests.transport_reference import write_transport_storage as reference,write_transport_systemverilog
 from tests.test_split_overlay_native import owners

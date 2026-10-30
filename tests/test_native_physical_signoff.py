@@ -17,10 +17,10 @@ def test_native_physical_terminal_matches_existing_timing_and_replays(tmp_path,b
     report=json.loads((tmp_path/'runtime/phase7c_report.json').read_text())
     assert report['stage_implementation_id']=='native-physical-phase7c-v1'
     assert report['physical_evidence_completeness']['status']=='pass'
-    from emuflow.timing.qor_storage import read_qor_report
+    from emuflow_tools.timing.qor_storage import read_qor_report
     with read_qor_report(tmp_path/'runtime/qor_report.json') as qor:
-        from emuflow.timing.global_measurements import read_native_measurements
-        from emuflow.timing.global_sta import build_opensta_timing
+        from emuflow_tools.timing.global_measurements import read_native_measurements
+        from emuflow_tools.timing.global_sta import build_opensta_timing
         values=read_native_measurements(tmp_path/'runtime/global-opensta/measurements.json',case['checks'])
         try:
             expected=build_opensta_timing(case['runtime'],case['metadata'],values)
@@ -31,8 +31,8 @@ def test_native_physical_terminal_matches_existing_timing_and_replays(tmp_path,b
     assert not list(tmp_path.glob('.physical-phase7c-*'))
     assert not (tmp_path/'runtime/global-opensta/events.sqlite').exists()
     assert Path(json.loads((tmp_path/'runtime/global-opensta/event-model.json').read_text())['directory']).is_dir()
-    from emuflow.physical.physical_summary_storage import read_physical_summary
-    from emuflow.physical.physical_coverage import audit_physical_coverage
+    from emuflow_tools.physical.physical_summary_storage import read_physical_summary
+    from emuflow_tools.physical.physical_coverage import audit_physical_coverage
     with read_physical_summary(tmp_path/'physical/physical-summary.json') as physical:
         if board_kind is not None:physical['board_link_timing']=json.loads((tmp_path/'timing/board-link-timing.json').read_text())
         audit=audit_physical_coverage(json.loads((tmp_path/'tdm/cross_layer_timing.json').read_text()),
@@ -87,7 +87,7 @@ def test_native_physical_terminal_seals_container_binary_and_launcher(tmp_path):
     engine=json.loads((tmp_path/'runtime/phase7c_report.json').read_text())['system_timing_summary']['global_opensta']['engine']
     assert engine['executable_sha256']==hashlib.sha256(binary.read_bytes()).hexdigest()
     assert engine['launcher_sha256']==hashlib.sha256(case['engine'].read_bytes()).hexdigest()
-    from emuflow.timing.global_sta import read_engine_identity
+    from emuflow_tools.timing.global_sta import read_engine_identity
     assert read_engine_identity(tmp_path/'runtime/global-opensta/opensta.log')==engine
     case['checks'].close()
 
@@ -98,7 +98,7 @@ def test_native_physical_terminal_uses_selected_comparison_arm(tmp_path):
     arm.mkdir(parents=True)
     (tmp_path/'split').rename(arm/'split')
     (tmp_path/'physical').rename(arm/'physical')
-    from emuflow.timing.native_signoff import run_native_physical_signoff
+    from emuflow_tools.timing.native_signoff import run_native_physical_signoff
     report=run_native_physical_signoff(tmp_path,arm/'split',arm/'physical',arm/'runtime',executable=str(case['engine']))
     assert report['stage_implementation_id']=='native-physical-phase7c-v1'
     assert report['physical_evidence_completeness']['status']=='pass'
@@ -114,7 +114,7 @@ def test_native_physical_terminal_uses_selected_comparison_arm(tmp_path):
 
 def test_native_physical_terminal_rejects_arm_outside_flow(tmp_path):
     case=make_terminal_case(tmp_path)
-    from emuflow.timing.native_signoff import run_native_physical_signoff
+    from emuflow_tools.timing.native_signoff import run_native_physical_signoff
     from emuflow.common.errors import ValidationError
     with pytest.raises(ValidationError,match='escapes the flow owner'):
         run_native_physical_signoff(tmp_path,tmp_path/'split',tmp_path/'physical',tmp_path.parent/'outside-runtime',executable=str(case['engine']))

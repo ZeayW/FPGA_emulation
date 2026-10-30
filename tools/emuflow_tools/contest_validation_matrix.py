@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 
 
 CONTEST_VALIDATION_MATRIX_SCHEMA = "emuflow.contest-validation-matrix/v1"

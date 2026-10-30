@@ -1,6 +1,6 @@
 from __future__ import annotations
-from emuflow.physical.openparf.xilinx_openparf_name_map_storage import *
-import emuflow.physical.openparf.xilinx_openparf_name_map_storage as _storage
+from emuflow_tools.physical.openparf.xilinx_openparf_name_map_storage import *
+import emuflow_tools.physical.openparf.xilinx_openparf_name_map_storage as _storage
 OPENPARF_ATOMIC_NAME_MAP_APPLICATION_ID = _storage.OPENPARF_ATOMIC_NAME_MAP_APPLICATION_ID
 OPENPARF_ATOMIC_NAME_MAP_SCHEMA = _storage.OPENPARF_ATOMIC_NAME_MAP_SCHEMA
 OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA = _storage.OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA
@@ -22,10 +22,11 @@ from pathlib import Path
 from typing import Any, Optional
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
 from emuflow.common.native_tools import native_file_generation
 from emuflow.storage.store_publication import bind_store_source, publish_sqlite_store, require_store_sources_unchanged, validate_store_destination
-from emuflow.physical.xilinx_netlist import is_xilinx_mapped_index
+from emuflow_tools.physical.xilinx_netlist import is_xilinx_mapped_index
 from tests.xilinx_packing_reference import CONSTANT_TYPES
 def write_xilinx_openparf_atomic_name_map_storage(
     path: Path,

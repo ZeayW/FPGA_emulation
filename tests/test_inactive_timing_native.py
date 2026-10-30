@@ -5,8 +5,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
-from emuflow.physical.physical_measurements_native import publish_empty_partition_timing
+from emuflow_tools.document_io import read_json
+from emuflow_tools.physical.physical_measurements_native import publish_empty_partition_timing
 from tests.logic_identity_fixture import identity_facts
 from tests.timing_facts import local_timing_facts
 
@@ -14,7 +14,7 @@ from tests.timing_facts import local_timing_facts
 def _identity(root, kind, *, nonempty=False, unsupported=False):
     if kind==2:
         from tests.test_boundary_identity_storage import _header, _record
-        from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+        from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
         path=root/'identity.json'
         with write_boundary_identity_storage(path,_header(),[_record('tx','tx',0)] if nonempty else []):pass
         return path
@@ -26,7 +26,7 @@ def _identity(root, kind, *, nonempty=False, unsupported=False):
                     unsupported_member_paths=[{'path':'unsupported-member','reason':'source-unsupported'}]):pass
         return path
     from tests.test_local_path_timing_storage import _header,_record
-    from emuflow.timing.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
+    from emuflow_tools.timing.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
     path=root/'identity.json';header=_header()
     header.update(qualification=LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION)
     header['coverage']={'local_paths':int(nonempty)}
@@ -36,9 +36,9 @@ def _identity(root, kind, *, nonempty=False, unsupported=False):
 
 @pytest.mark.parametrize('kind',[2,3,4])
 def test_inactive_stage_publishes_empty_current_evidence_without_generic_writer(tmp_path,kind):
-    import emuflow.timing.logic_segment_timing_storage as logic
-    import emuflow.timing.local_path_timing_storage as local
-    from emuflow.timing import boundary_timing_storage as boundary
+    import emuflow_tools.timing.logic_segment_timing_storage as logic
+    import emuflow_tools.timing.local_path_timing_storage as local
+    from emuflow_tools.timing import boundary_timing_storage as boundary
     assert not hasattr(boundary,'write_boundary_timing_storage')
     assert not hasattr(logic,'write_logic_segment_timing_storage')
     assert not hasattr(local,'write_local_path_timing_storage')
@@ -70,7 +70,7 @@ def test_inactive_stage_rejects_nonempty_identity_without_replacing_evidence(tmp
 
 @pytest.mark.parametrize('kind',[2,3,4])
 def test_inactive_source_change_before_selector_commit_preserves_prior_generation(tmp_path,kind):
-    from emuflow.physical import physical_measurements_native as native
+    from emuflow_tools.physical import physical_measurements_native as native
     path=_identity(tmp_path,kind)
     output=tmp_path/'timing.json'
     publish_empty_partition_timing(path,output,kind=kind,provider='prior')

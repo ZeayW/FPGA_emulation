@@ -6,15 +6,15 @@ from types import SimpleNamespace
 
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow_tools.stage_clients.schedule_native import run_native_phase5
-from emuflow.routing.system_route_storage import read_system_routes
+from emuflow_tools.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
+from emuflow_tools.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
 from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
 from emuflow.transport.split_overlay import build_native_split
-from emuflow.transport.transport_storage import write_transport_storage
-from emuflow.physical.lowering import run_placement_ir_lowering_from_split
+from emuflow_tools.transport.transport_storage import write_transport_storage
+from emuflow_tools.physical.lowering import run_placement_ir_lowering_from_split
 from tests.native_split_fixture import materialize_partition_fixture
 from tests.test_placement_lowering_native import synthesized_transport
 from tests.test_phase5_native_stage import current_case
@@ -61,7 +61,7 @@ def sources(root, *, members=1, extra_launch=False, wrong_owner=False, paths=Tru
     original=root/'original.sqlite';write_compact_emuir(original,case.ir.value)
     assignment_path=root/'assignment.sqlite';write_assignment_index_fixture(assignment_path,case.ir,assignment)
     contract=assignment['semantic_contract']
-    route_value=deepcopy(__import__('emuflow.common.io',fromlist=['read_json']).read_json(root/'current/routes.json'))
+    route_value=deepcopy(__import__('emuflow_tools.document_io',fromlist=['read_json']).read_json(root/'current/routes.json'))
     route_value['semantic_contract_sha256']=assignment['semantic_contract_sha256']
     start='q0/G' if constant_launch else 'q0/Q'
     ids=[f'{start}->q1/D#{i:08d}' for i in range(members)]
@@ -101,13 +101,13 @@ def sources(root, *, members=1, extra_launch=False, wrong_owner=False, paths=Tru
 
 
 def prepare(value):
-    from emuflow.timing.logic_segment_timing import prepare_logic_segment_query_inputs
+    from emuflow_tools.timing.logic_segment_timing import prepare_logic_segment_query_inputs
     return prepare_logic_segment_query_inputs(value.original,value.assignment,value.paths,
         value.routes,value.schedule,value.platform)
 
 
 def query(value,root,*,backend='xilinx',fpga='fpga0',prepared=None):
-    from emuflow.timing.logic_segment_timing import write_xilinx_logic_segment_query,write_vivado_logic_segment_query
+    from emuflow_tools.timing.logic_segment_timing import write_xilinx_logic_segment_query, write_vivado_logic_segment_query
     function=write_xilinx_logic_segment_query if backend=='xilinx' else write_vivado_logic_segment_query
     return function(value.original,value.assignment,value.paths,value.routes,value.schedule,value.platform,
         value.merged[fpga],value.boundaries[fpga],fpga,Path(root)/'query.tsv',Path(root)/'identity.json',

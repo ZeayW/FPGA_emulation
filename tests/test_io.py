@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.platform.architecture import ArchitectureDB
-from emuflow.common.io import file_sha256, json_write_policy, read_json, write_json
-from emuflow.storage.managed_json_storage import pack_managed_json
+from emuflow_tools.platform.architecture import ArchitectureDB
+from emuflow.common.json_io import file_sha256, json_write_policy, write_json
+from emuflow_tools.document_io import read_json
 
 
 class JsonIoTest(unittest.TestCase):
@@ -25,7 +25,7 @@ class JsonIoTest(unittest.TestCase):
             output = Path(temporary) / "artifact.bin"
             output.write_bytes(b"first")
             with patch(
-                "emuflow.common.io.hashlib.sha256", wraps=hashlib.sha256
+                "emuflow.common.json_io.hashlib.sha256", wraps=hashlib.sha256
             ) as sha256:
                 first = file_sha256(output)
                 self.assertEqual(file_sha256(output), first)
@@ -61,7 +61,7 @@ class JsonIoTest(unittest.TestCase):
 
     def test_managed_staging_skips_per_artifact_fsync(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.common.io.os.fsync"
+            "emuflow.common.json_io.os.fsync"
         ) as fsync:
             output = Path(temporary) / "managed.json"
             with json_write_policy(durable=False):
@@ -76,7 +76,9 @@ class JsonIoTest(unittest.TestCase):
                 "schema": "example.large/v1",
                 "records": [{"id": index, "text": "repeated" * 20} for index in range(500)],
             }
-            write_json(output, pack_managed_json(value), compact=True)
+            import json
+            envelope = json.loads((Path(__file__).parent / "fixtures/managed-control-envelope.json").read_text())
+            write_json(output, envelope, compact=True)
             self.assertEqual(read_json(output), value)
             self.assertLess(output.stat().st_size, len(str(value)) // 5)
 
@@ -103,7 +105,7 @@ class JsonIoTest(unittest.TestCase):
             write_json(output, {"generation": 1})
 
             with patch(
-                "emuflow.common.io.json.dump",
+                "emuflow.common.json_io.json.dump",
                 side_effect=RuntimeError("injected serialization failure"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "injected"):

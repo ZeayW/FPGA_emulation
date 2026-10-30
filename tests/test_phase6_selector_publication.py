@@ -20,7 +20,7 @@ KINDS = ("chimew_bank_channel",)
 
 def prepare(kind):
     assert kind == "chimew_bank_channel"
-    from emuflow.transport.chimew import chimew_bank_channel_storage as module
+    from emuflow_tools.transport.chimew import chimew_bank_channel_storage as module
     from tests.test_chimew_bank_channel import ChimewBankChannelTest
     case = ChimewBankChannelTest()
     case.setUp()
@@ -196,7 +196,7 @@ def test_failed_validated_reader_close_keeps_both_generations_and_recovery(tmp_p
 
 @pytest.mark.parametrize("kind", ["pin_plan","position_hints","chimew_binding"])
 def test_native_owner_copy_failure_preserves_the_committed_selector_and_payload(tmp_path,kind):
-    from emuflow.transport.pin_artifacts_native import copy_pin_artifact
+    from emuflow_tools.transport.pin_artifacts_native import copy_pin_artifact
     if kind == "pin_plan":
         from tests.pin_plan_storage_fixture import write_pin_plan_storage as writer
         from tests.test_pin_plan_storage import _plan

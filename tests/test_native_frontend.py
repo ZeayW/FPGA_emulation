@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from emuflow.frontend.frontend_native import prepare_frontend, read_frontend_summary
+from emuflow_tools.frontend.frontend_native import prepare_frontend, read_frontend_summary
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import native_file_generation
 from emuflow.platform.platform import Platform
@@ -132,7 +132,7 @@ def test_summary_rejects_a_changed_published_generation(native,tmp_path):
 
 
 def test_preflight_request_is_only_configuration_and_original_source_generations(tmp_path,monkeypatch):
-    from emuflow.frontend import frontend_native as host
+    from emuflow_tools.frontend import frontend_native as host
     rtl=tmp_path/'source.v';rtl.write_text('module top; endmodule')
     monkeypatch.setattr(host,'require_native_schema',lambda _:None)
     monkeypatch.setattr(host,'resolve_native_executable',lambda *a:sys.executable)
@@ -209,8 +209,8 @@ def test_raw_rtl_control_rejects_a_missing_native_request_instead_of_starting_py
 
 @pytest.mark.parametrize('damage', ['none','rtl','include'])
 def test_prepared_source_checksums_bind_original_rtl_and_include_files(tmp_path, monkeypatch, damage):
-    from emuflow.frontend import frontend_native as host
-    from emuflow.common.io import file_sha256
+    from emuflow_tools.frontend import frontend_native as host
+    from emuflow.common.json_io import file_sha256
     rtl=tmp_path/'source.v';rtl.write_text('module top; endmodule')
     header=tmp_path/'config.vh';header.write_text('`define MODEL 1\n')
     checksums={str(p):file_sha256(p) for p in (rtl,header)}

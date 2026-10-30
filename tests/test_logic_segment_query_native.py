@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.timing.logic_segment_identity_storage import read_logic_segment_identity_storage
+from emuflow_tools.timing.logic_segment_identity_storage import read_logic_segment_identity_storage
 from emuflow.common.native_tools import native_file_generation
 from emuflow.common.native_protocol import CheckedRequestWriter
 from tests.native_build import emuflow_native
@@ -24,7 +24,7 @@ def runtime(monkeypatch):
 def test_whole_native_query_preserves_every_member_and_exact_semantic(tmp_path,backend,members):
     value=sources(tmp_path/'input',members=members)
     with (patch('emuflow.ir.ir.EmuIR.load',side_effect=AssertionError('Python full source graph')),
-          patch('emuflow.timing.sta.iter_sta_path_database_paths',side_effect=AssertionError('Python path records'))):
+          patch('emuflow_tools.timing.sta.iter_sta_path_database_paths',side_effect=AssertionError('Python path records'))):
         import emuflow.partition.phase3_assignment_index as retired_exact
         assert not hasattr(retired_exact, 'read_phase3_exact_semantic_partition')
         import emuflow.scheduling.tdm as tdm
@@ -105,7 +105,7 @@ def test_configuration_stable_constant_preserves_typed_contract_without_fake_que
     from contextlib import closing
     from emuflow.partition.phase3_assignment_index import open_phase3_assignment_index, _exact_binary_reference
     from emuflow.partition.phase3_exact_binary import iter_phase3_exact_segments
-    from emuflow.physical.physical_coverage import build_physical_coverage
+    from emuflow_tools.physical.physical_coverage import build_physical_coverage
     from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 
     value=sources(tmp_path/'input',paths=False,constant_launch=True)
@@ -164,7 +164,7 @@ def test_changed_source_rejects_new_generation_without_replacing_previous_output
 @pytest.mark.parametrize('damage',['crc','truncated','generation','schedule-row','boundary-peer'])
 def test_native_direct_request_rejects_corruption_before_publication(tmp_path,damage):
     import subprocess
-    from emuflow.timing.logic_segment_query_native import _write_inputs
+    from emuflow_tools.timing.logic_segment_query_native import _write_inputs
     value=sources(tmp_path/'input');prepared=prepare(value)
     root=tmp_path/'request';root.mkdir()
     refs,_=_write_inputs(prepared,value.merged['fpga0'],value.boundaries['fpga0'],'fpga0','xilinx','query.tsv','identity.json',root)

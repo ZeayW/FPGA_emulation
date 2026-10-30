@@ -84,9 +84,9 @@ def test_native_configuration_rejects_mixed_or_corrupt_inputs_before_replacing_g
 def test_native_bank_split_preserves_independent_direction_objective(tmp_path, monkeypatch, forward, reverse, banks, wires):
     import copy
     from dataclasses import replace
-    from emuflow.common.io import read_json
+    from emuflow_tools.document_io import read_json
     from emuflow.routing.routing import normalize_route_constraints
-    from emuflow.routing.system_route_storage import read_system_routes, _demand_from_route
+    from emuflow_tools.routing.system_route_storage import read_system_routes, _demand_from_route
     from tests.native_route_seal_fixture import write_route_store_fixture
     from emuflow.scheduling.tdm import build_native_exact_schedule_request
 

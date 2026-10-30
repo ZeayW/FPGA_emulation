@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 from emuflow.common.errors import EmuFlowError
-from emuflow.common.io import file_sha256, write_json
+from emuflow.common.json_io import file_sha256, write_json
 from emuflow.flow import environment as env
 from emuflow.flow import run_config as run
 from emuflow_tools.designs import prepare

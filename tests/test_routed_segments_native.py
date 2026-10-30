@@ -10,16 +10,16 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
-from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, IndexedXilinxMappedNetlist
+from emuflow_tools.document_io import read_json
+from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index, IndexedXilinxMappedNetlist
 from tests.routed_segment_entry import build_xilinx_segment_timing_bundle
 from tests.xilinx_segment_timing_reference import (_TimingGraph,
     build_xilinx_boundary_timing, build_xilinx_logic_segment_timing, build_xilinx_local_path_timing)
 from tests.yosys_reference import import_yosys_json
-from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
 from tests.logic_identity_fixture import identity_facts
 from tests.timing_facts import local_timing_facts
-from emuflow.timing.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
+from emuflow_tools.timing.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
 
 
 @pytest.fixture(autouse=True)
@@ -114,11 +114,11 @@ def test_complete_typed_records_and_logical_seals_match_independent_graph(tmp_pa
     for name, builder in references.items():
         builder(c[name], c["mapped"], c["timing_path"], tmp_path / (name + "-reference.json"), _timing_graph=reference_graph)
     with patch("tests.xilinx_segment_timing_reference._graph", side_effect=AssertionError("Python routed graph")), \
-         patch("emuflow.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cells")), \
-         patch("emuflow.physical.xilinx_netlist._IndexedCells.values", side_effect=AssertionError("Python cells")):
+         patch("emuflow_tools.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cells")), \
+         patch("emuflow_tools.physical.xilinx_netlist._IndexedCells.values", side_effect=AssertionError("Python cells")):
         report = run(c, logic=logic, local=local)
     for name in references:
-        module = importlib.import_module("emuflow.timing." + {"boundary": "boundary_timing", "logic": "logic_segment_timing", "local": "local_path_timing"}[name] + "_storage")
+        module = importlib.import_module("emuflow_tools.timing." + {"boundary": "boundary_timing", "logic": "logic_segment_timing", "local": "local_path_timing"}[name] + "_storage")
         opener = getattr(module, "read_" + {"boundary": "boundary_timing", "logic": "logic_segment_timing", "local": "local_path_timing"}[name] + "_storage")
         with opener(tmp_path / (name + ".json")) as actual, opener(tmp_path / (name + "-reference.json")) as expected:
             assert actual.selector["logical_sha256"] == expected.selector["logical_sha256"]
@@ -151,7 +151,7 @@ def test_primitive_offsets_barriers_clock_gates_and_tie_origins_match_reference(
         c["timing"]["payloads"]["endpoints"]["sha256"] = hashlib.sha256(payload).hexdigest()
     if feature == "clock-gate":
         c["timing"]["clock_gates"] = [{"logical_cell": "rx_lut"}]
-        from emuflow.timing.boundary_identity_storage import read_boundary_identity_storage
+        from emuflow_tools.timing.boundary_identity_storage import read_boundary_identity_storage
         with read_boundary_identity_storage(c["boundary"]) as view:
             header = dict(view.selector["header"])
             tx = [row for row in view["endpoints"] if row["kind"] == "tx"]
@@ -320,7 +320,7 @@ def test_explicit_floating_input_stays_disconnected_without_becoming_a_source(tm
 
 @pytest.mark.parametrize("field,value", [("design", "other-design"), ("fpga", "fpga1")])
 def test_mixed_projection_namespace_cannot_publish(tmp_path, field, value):
-    from emuflow.timing.local_path_timing_storage import read_local_path_timing_storage
+    from emuflow_tools.timing.local_path_timing_storage import read_local_path_timing_storage
     c = case(tmp_path)
     run(c)
     previous = {name: (tmp_path / (name + ".json")).read_bytes() for name in ("boundary", "logic", "local")}

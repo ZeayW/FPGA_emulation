@@ -10,8 +10,8 @@ import pytest
 
 from emuflow.common.errors import ValidationError
 from tests.yosys_reference import import_yosys_json
-from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index
-from emuflow.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
+from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
 from tests.native_build import emuflow_native
 
 
@@ -36,7 +36,7 @@ def mapped_source(root):
 
 
 def test_mapped_owner_never_imports_python_graph_or_sql_publisher(tmp_path):
-    import emuflow.physical.xilinx_netlist as reader
+    import emuflow_tools.physical.xilinx_netlist as reader
 
     source = mapped_source(tmp_path)
     assert not hasattr(reader, "_emit_compact_xilinx_mapped_index")
@@ -53,7 +53,7 @@ def test_mapped_owner_never_imports_python_graph_or_sql_publisher(tmp_path):
 
 @pytest.mark.parametrize("failure", ["generation", "request", "wal", "payload"])
 def test_mapped_native_rejection_preserves_prior_published_owner(tmp_path, failure):
-    from emuflow.physical import mapped_index_native as host
+    from emuflow_tools.physical import mapped_index_native as host
 
     source = mapped_source(tmp_path)
     output = tmp_path / "mapped.sqlite"
@@ -97,7 +97,7 @@ def test_mapped_report_must_not_alias_any_original_owner(tmp_path):
 def test_native_route_rejects_corruption_without_promoting_or_mutating_evidence(
     tmp_path, corruption
 ):
-    from emuflow.physical.rapidwright import route_validation as host
+    from emuflow_tools.physical.rapidwright import route_validation as host
 
     route, nets, pips = stream_route(tmp_path)
     value = json.loads(route.read_text())
@@ -145,12 +145,12 @@ def test_native_route_rejects_corruption_without_promoting_or_mutating_evidence(
 
 
 def test_route_validation_uses_no_python_route_or_pip_loader(tmp_path):
-    import emuflow.physical.rapidwright.xilinx_rwroute as adapter
+    import emuflow_tools.physical.rapidwright.xilinx_rwroute as adapter
 
     route, _, _ = stream_route(tmp_path)
     assert not hasattr(adapter, "_PipOwnership")
     assert not hasattr(adapter, "iter_xilinx_route_nets")
-    with patch('emuflow.common.io.read_json',side_effect=AssertionError('Python route tree')):
+    with patch('emuflow.common.json_io.read_json',side_effect=AssertionError('Python route tree')):
         checked = validate_xilinx_route_db(route)
     assert checked["implementation_id"] == "native-xilinx-route-validation-v1"
     assert (checked["nets"], checked["sinks"], checked["pips"]) == (1, 2, 3)
@@ -160,7 +160,7 @@ def test_route_validation_uses_no_python_route_or_pip_loader(tmp_path):
 def test_native_generic_lut_and_negedge_ff_match_explicit_expected_records(
     tmp_path, integer_parameters
 ):
-    from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+    from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
 
     source = mapped_source(tmp_path)
     with sqlite3.connect(source) as db:
@@ -215,7 +215,7 @@ def test_native_mapped_library_resource_contract_is_independently_checked(tmp_pa
 
 
 def test_native_route_does_not_accept_cached_hashes_for_an_unsealed_source(tmp_path):
-    from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+    from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
 
     source = mapped_source(tmp_path)
     mapped = tmp_path / "mapped.sqlite"

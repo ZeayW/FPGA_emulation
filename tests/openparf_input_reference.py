@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 import hashlib, math, os, re, sqlite3, subprocess, tempfile, threading
 from emuflow.common.errors import ValidationError
-from emuflow.platform.architecture import ArchitectureDB
+from emuflow_tools.platform.architecture import ArchitectureDB
 from emuflow.common.native_tools import resolve_native_stage_command
-from emuflow.physical.xilinx_netlist import _IndexedCells
+from emuflow_tools.physical.xilinx_netlist import _IndexedCells
 from tests.xilinx_packing_reference import LUT_TYPES, FF_TYPES, DUAL_OUTPUT_LUT_TYPE
 from tests import openparf_placement_reference as runtime
 _fsync_directory = runtime._fsync_directory
@@ -1194,7 +1194,7 @@ def _render_site_geometry(
 
 
 from emuflow.storage.store_publication import validate_store_destination, publish_sqlite_store, require_store_sources_unchanged
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.common.native_tools import native_file_generation
 _sha256=file_sha256
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA=runtime.XILINX_OPENPARF_SITE_DATABASE_SCHEMA

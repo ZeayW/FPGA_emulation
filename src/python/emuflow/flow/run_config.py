@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from emuflow.common.errors import EmuFlowError
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.flow.benchmark_inputs import BenchmarkRun
 from emuflow.flow.environment import (
     load_environment,

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from emuflow.flow.benchmark_inputs import BenchmarkRun
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from emuflow_tools.designs.nvdla_memory import (
     BLACKBOX_MEMORY_POLICY,

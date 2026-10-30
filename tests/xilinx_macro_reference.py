@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
 from tests.xilinx_packing_reference import CASCADE_PORTS
 from tests.xilinx_packing_reference import DUAL_OUTPUT_LUT_TYPE
 from tests.xilinx_packing_reference import LUT_TYPES
@@ -546,7 +547,7 @@ def build_xilinx_physical_macro_contract(
     hot path.
     """
 
-    from emuflow.physical.xilinx_netlist import IndexedXilinxMappedNetlist
+    from emuflow_tools.physical.xilinx_netlist import IndexedXilinxMappedNetlist
 
     if (
         isinstance(source, IndexedXilinxMappedNetlist)

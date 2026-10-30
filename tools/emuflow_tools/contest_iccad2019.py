@@ -12,7 +12,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 from .contest_boarddb import materialize_homogeneous_boarddb
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow.common.native_tools import resolve_native_executable
 from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
 

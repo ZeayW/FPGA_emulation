@@ -7,8 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.timing.local_path_timing import read_local_path_identity, path_id_set_sha256
-from emuflow.timing.local_path_query_native import _execute
+from emuflow_tools.timing.local_path_timing import read_local_path_identity, path_id_set_sha256
+from emuflow_tools.timing.local_path_query_native import _execute
 from emuflow.common.native_tools import native_file_generation
 from emuflow.common.native_protocol import CheckedRequestWriter
 from tests.local_path_query_fixture import circuit, ep, sources, prepare, query
@@ -42,7 +42,7 @@ def test_prepare_and_query_do_not_construct_python_source_graph(tmp_path):
     value = sources(tmp_path/'input')
     identity_id = value.path_facts[0][0]
     with (patch('emuflow.ir.ir.EmuIR.load', side_effect=AssertionError('whole source graph')),
-          patch('emuflow.timing.sta.iter_sta_path_database_paths', side_effect=AssertionError('Python path records'))):
+          patch('emuflow_tools.timing.sta.iter_sta_path_database_paths', side_effect=AssertionError('Python path records'))):
         prepared = prepare(value)
         report = query(value,tmp_path/'output',prepared=prepared)
     assert prepared.original_ir is None
@@ -139,7 +139,7 @@ def test_unknown_empty_or_duplicate_route_member_population_is_rejected(tmp_path
 
 @pytest.mark.parametrize('source_index',[0,1,2,3,4,5,6])
 def test_prepare_refuses_replaced_source_generation_before_publication(tmp_path,source_index):
-    from emuflow.timing.local_path_query_native import _sources
+    from emuflow_tools.timing.local_path_query_native import _sources
     value=sources(tmp_path/'input')
     original=_sources(value.original,value.assignment,value.paths,value.routes)
     selected=original[source_index].path
@@ -150,7 +150,7 @@ def test_prepare_refuses_replaced_source_generation_before_publication(tmp_path,
 
 
 def test_query_cannot_borrow_ownership_index_from_another_run(tmp_path):
-    from emuflow.timing.local_path_query_native import write_native_local_path_query
+    from emuflow_tools.timing.local_path_query_native import write_native_local_path_query
     from dataclasses import replace
     a=sources(tmp_path/'a');b=sources(tmp_path/'b')
     prepared_a,prepared_b=prepare(a),prepare(b)
@@ -161,7 +161,7 @@ def test_query_cannot_borrow_ownership_index_from_another_run(tmp_path):
 
 
 def test_retired_python_preparation_and_query_spool_are_absent():
-    import emuflow.timing.local_path_timing as local
+    import emuflow_tools.timing.local_path_timing as local
     for name in ('_LocalPathPreparationWriter','_PreparedLocalPathSequence','_resolve_local_path_fpga','_write_local_path_query'):
         assert not hasattr(local,name)
 

@@ -18,21 +18,14 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.validation.equivalence import _MappedModel, simulate_partition_equivalence
-from emuflow.transport.chimew.chimew_phase6 import (
-    CHIMEW_PHASE6_BINDING_PROVIDER,
-    CHIMEW_PHASE6_BINDING_SCHEMA_V1,
-)
-from emuflow.transport.chimew.chimew_binding_storage import (
-    CHIMEW_BINDING_STORAGE_SCHEMA,
-    read_chimew_binding,
-)
+from emuflow_tools.transport.chimew.chimew_phase6 import CHIMEW_PHASE6_BINDING_PROVIDER, CHIMEW_PHASE6_BINDING_SCHEMA_V1
+from emuflow_tools.transport.chimew.chimew_binding_storage import CHIMEW_BINDING_STORAGE_SCHEMA, read_chimew_binding
 from emuflow.common.errors import ValidationError
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.ir.ir import EmuIR
-from emuflow.common.io import file_sha256, read_json, write_json
-from emuflow.transport.netlist import (
-    transport_to_systemverilog,
-)
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
+from emuflow_tools.transport.netlist import transport_to_systemverilog
 from tests.native_partition_facts import (build_partition_assignment, build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
 from emuflow_tools.stage_clients.transport import run_phase6, validate_phase6
@@ -46,33 +39,19 @@ def _indexed_split_schedule(root,value):
 from emuflow.transport.split_netlist_storage import (
     SplitNetlistView,
 )
-from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, SIGNAL_POSITION_HINTS_SCHEMA
+from emuflow_tools.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, SIGNAL_POSITION_HINTS_SCHEMA
 from tests.pin_planning_reference import _assignment_metrics
-from emuflow.transport.pin_plan_storage import PIN_PLAN_STORAGE_SCHEMA, read_pin_plan
+from emuflow_tools.transport.pin_plan_storage import PIN_PLAN_STORAGE_SCHEMA, read_pin_plan
 from tests.pin_plan_storage_fixture import write_pin_plan_storage
 from tests.position_hints_storage_fixture import write_position_hints_storage
 from tests.chimew_binding_storage_fixture import write_chimew_binding_storage
-from emuflow.transport.position_hints_storage import (
-    POSITION_HINTS_STORAGE_SCHEMA,
-    read_position_hints,
-)
+from emuflow_tools.transport.position_hints_storage import POSITION_HINTS_STORAGE_SCHEMA, read_position_hints
 from emuflow.platform.platform import Platform
-from emuflow.transport.transport_cost import (
-    BASE_FEATURE_NAMES,
-    FRAME_SLOTS,
-    OPEN_TRANSPORT_MODEL,
-    OPEN_TRANSPORT_PROVENANCE,
-)
+from emuflow_tools.transport.transport_cost import BASE_FEATURE_NAMES, FRAME_SLOTS, OPEN_TRANSPORT_MODEL, OPEN_TRANSPORT_PROVENANCE
 from emuflow.routing.routing import normalize_route_constraints
 from tests.schedule_reference import build_tdm_schedule
 from emuflow.scheduling.tdm_schedule_storage import (open_tdm_schedule_view)
-from emuflow.transport.transport_storage import (
-    LANE_MAP_STORAGE_SCHEMA,
-    TRANSPORT_STORAGE_SCHEMA,
-    LaneMapView,
-    TransportView,
-    write_transport_storage,
-)
+from emuflow_tools.transport.transport_storage import LANE_MAP_STORAGE_SCHEMA, TRANSPORT_STORAGE_SCHEMA, LaneMapView, TransportView, write_transport_storage
 from tests.yosys_reference import import_yosys_json
 from tests.native_build import tlr_router
 
@@ -278,7 +257,7 @@ class Phase6Test(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "emuflow.transport.transport_storage.sqlite3.connect",
+                    "emuflow_tools.transport.transport_storage.sqlite3.connect",
                     side_effect=recording_connect,
                 ),
                 mock.patch(
@@ -983,9 +962,9 @@ class Phase6Test(unittest.TestCase):
             from emuflow_tools.stage_clients import transport as stage_host
             from emuflow_tools.stage_clients import transport_native as native_host
             from emuflow.scheduling.tdm_schedule_storage import TypedScheduleEntrySequence
-            from emuflow.transport.pin_plan_storage import PinPlanEntrySequence
-            from emuflow.transport.position_hints_storage import PositionHintEntrySequence
-            from emuflow.transport.chimew.chimew_binding_storage import ChimewBindingEntrySequence
+            from emuflow_tools.transport.pin_plan_storage import PinPlanEntrySequence
+            from emuflow_tools.transport.position_hints_storage import PositionHintEntrySequence
+            from emuflow_tools.transport.chimew.chimew_binding_storage import ChimewBindingEntrySequence
             from emuflow.common.native_tools import native_file_generation
             captured = {}
             original_process = native_host.NativeToolProcess

@@ -8,16 +8,17 @@ import json
 import math
 from bisect import bisect_left
 import re
-from emuflow.physical.xilinx_native_device_constraints import load_xilinx_native_device_constraints
+from emuflow_tools.physical.xilinx_native_device_constraints import load_xilinx_native_device_constraints
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
-from emuflow.platform.architecture import ArchitectureDB
+from emuflow_tools.platform.architecture import ArchitectureDB
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from tests.xilinx_normalization_reference import audit_xilinx_mapped_json
-from emuflow.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
+from emuflow_tools.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
 SLICE_LUT_BELS = tuple(f"{letter}6LUT" for letter in "ABCDEFGH")
 SLICE_FF_BELS = tuple(
     bel for letter in "ABCDEFGH" for bel in (f"{letter}FF", f"{letter}FF2")
@@ -39,7 +40,7 @@ from tests.xilinx_packing_reference import _net_drivers
 from tests.xilinx_packing_reference import _pack_mux_cone
 from tests.xilinx_packing_reference import _mux_input_driver
 from tests.xilinx_packing_reference import _derive_cascade_chains
-from emuflow.physical.contracts import XILINX_PLACEMENT_SCHEMA
+from emuflow_tools.physical.contracts import XILINX_PLACEMENT_SCHEMA
 XILINX_GUIDANCE_SCHEMA = "emuflow.xilinx-global-placement-guidance/v1"
 XILINX_CONSTRAINTS_SCHEMA = "emuflow.xilinx-placement-constraints/v1"
 XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER = (

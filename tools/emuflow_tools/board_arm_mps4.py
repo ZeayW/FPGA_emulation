@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow.platform.platform import Platform
 
 

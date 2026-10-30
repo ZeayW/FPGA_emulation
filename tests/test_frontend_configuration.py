@@ -11,8 +11,8 @@ import zlib
 import pytest
 
 from emuflow.common.native_tools import native_file_generation
-from emuflow.frontend.frontend_native import prepare_frontend
-from emuflow.frontend.inputs import prepare_inputs
+from emuflow_tools.frontend.frontend_native import prepare_frontend
+from emuflow_tools.frontend.inputs import prepare_inputs
 from tests.synthesis_script_reference import build_yosys_script
 from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
 from emuflow.platform.platform import Platform
@@ -169,21 +169,22 @@ def test_prepared_configuration_binds_real_selector_payloads_without_python_sele
         'weight-selector','weight-store','timing-report','board'}
     for row in records.values(): assert row['generation'] == list(native_file_generation(row['path']))
     before = {role: row['generation'] for role, row in records.items()}
-    from emuflow.frontend import inputs
+    from emuflow_tools.frontend import inputs
     assert not hasattr(inputs, '_prepared_sources')
     assert before == {role:list(native_file_generation(row['path'])) for role,row in records.items()}
 
 
 def test_replaced_python_frontend_producers_are_absent():
     import inspect
-    from emuflow.frontend import frontend_native, inputs
+    from emuflow_tools.frontend import frontend_native
+    from emuflow_tools.frontend import inputs
     text = inspect.getsource(frontend_native)
     assert 'CheckedRequestWriter' not in text and 'build_yosys_script' not in text
     assert '_prepared_sources' not in inspect.getsource(inputs)
 
 
 def test_optional_rtl_host_rechecks_only_original_inputs_after_request_scratch_closes(tmp_path, monkeypatch):
-    from emuflow.frontend import frontend_native
+    from emuflow_tools.frontend import frontend_native
     from tests.test_native_frontend import source
     engine = tmp_path/'yosys'
     engine.write_text('#!'+sys.executable+'\nimport sys\nsys.stdout.write('+repr(json.dumps(source()))+')\n')

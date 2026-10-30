@@ -6,15 +6,12 @@ import hashlib
 from pathlib import Path
 import sys
 
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from emuflow_tools.stage_clients.schedule_native import run_native_phase5
 from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.transport.runtime import build_virtual_runtime, validate_physical_summary, virtual_runtime_controller_to_systemverilog
-from emuflow.physical.physical_summary_storage import (
-    publish_boundary_identity_store, publish_boundary_timing_store,
-    publish_logic_segment_timing_store, publish_local_path_timing_store,
-)
+from emuflow_tools.physical.physical_summary_storage import publish_boundary_identity_store, publish_boundary_timing_store, publish_logic_segment_timing_store, publish_local_path_timing_store
 from tests.test_global_binding_native import physical_case, add_local_paths
 from tests.test_combinational_cut import StaticExactCombinationalCutPartitionTest
 from tests.phase3_store_fixture import write_current_assignment_fixture
@@ -43,7 +40,7 @@ def make_terminal_case(root, *, members=7, board_kind=None):
     add_local_paths(route_root, f, raw_routes, physical, indexed)
     runtime = build_virtual_runtime(schedule, f.platform, {'clk':20.0})
     if board_kind is not None:
-        from emuflow.platform.board_link_timing import build_board_link_timing_model
+        from emuflow_tools.platform.board_link_timing import build_board_link_timing_model
         board_timing=build_board_link_timing_model(f.platform)
         if board_kind!='model-only':
             for row in board_timing['links']:
@@ -87,7 +84,7 @@ def make_terminal_case(root, *, members=7, board_kind=None):
         logic_segment_tdm_schedule_sha256=schedule.manifest['logical_pretty_sha256'],
         logic_segment_semantic_contract_sha256=routes['semantic_contract_sha256'])
     write_json(physical_root/'physical-summary.json',summary)
-    from emuflow.timing.global_sta import bind_physical_checks
+    from emuflow_tools.timing.global_sta import bind_physical_checks
     metadata={}
     checks=bind_physical_checks(runtime,routes,schedule,indexed,f.platform,metadata=metadata,routes_artifact_sha256=hashlib.sha256((route_root/'routes.json').read_bytes()).hexdigest())
     representatives,_=checks.compressed()

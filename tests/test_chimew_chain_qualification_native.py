@@ -13,7 +13,7 @@ from tests.chimew_chain_reference import build_chimew_phase6_qualification as re
 from tests.chimew_qualification_fixture import typed_pair, chain_paths
 from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
 from emuflow.common.errors import ValidationError
-from emuflow.transport.chimew.chimew_qualification import qualify_chimew_artifact_chain
+from emuflow_tools.transport.chimew.chimew_qualification import qualify_chimew_artifact_chain
 
 NAMES = ("schedule", "crossings", "initial_grouping", "positions", "refined_grouping",
          "rudy_input", "rudy_report", "bank_channel_input", "bank_channel_report")
@@ -121,11 +121,11 @@ def test_native_complete_chain_matches_independent_reference(chain, tmp_path, mu
 
 
 def test_qualification_host_never_loads_graph_records_in_python(chain, tmp_path):
-    from emuflow.transport.chimew import chimew_bank_channel_storage as inputs
-    from emuflow.transport.chimew import chimew_bank_channel_report_storage as reports
+    from emuflow_tools.transport.chimew import chimew_bank_channel_storage as inputs
+    from emuflow_tools.transport.chimew import chimew_bank_channel_report_storage as reports
     values = documents(chain)
     with chain_paths([values[key] for key in NAMES]) as (paths, output):
-        with patch("emuflow.common.io.read_json", side_effect=AssertionError("Python graph read")), \
+        with patch("emuflow.common.json_io.read_json", side_effect=AssertionError("Python graph read")), \
                 patch.object(inputs._RawGroupSequence, "__iter__", side_effect=AssertionError("Python group scan")), \
                 patch.object(reports._AssignmentSequence, "__iter__", side_effect=AssertionError("Python assignment scan")):
             result = qualify_chimew_artifact_chain(paths, output)

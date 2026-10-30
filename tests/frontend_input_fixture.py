@@ -5,8 +5,8 @@ from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
-from emuflow.common.io import write_json
-from emuflow.frontend.inputs import prepare_inputs
+from emuflow.common.json_io import write_json
+from emuflow_tools.frontend.inputs import prepare_inputs
 
 PROFILE = 'xilinx-ultrascaleplus-open-v1'
 

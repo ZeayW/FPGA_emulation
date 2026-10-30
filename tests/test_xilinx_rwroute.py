@@ -11,17 +11,9 @@ from unittest.mock import patch
 
 from tests.rwroute_reference import export_rwroute_reference, _qualified_lut_clock_gates
 from emuflow.common.errors import ValidationError
-from emuflow.physical.xilinx_netlist import (
-    emit_xilinx_mapped_index,
-    open_xilinx_mapped_index,
-)
-from emuflow.physical.xilinx_physical_handoff import (
-    open_xilinx_physical_handoff,
-)
-from emuflow.physical.rapidwright.xilinx_rwroute import (
-    export_rwroute_input,
-    validate_xilinx_route_db,
-)
+from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import export_rwroute_input, validate_xilinx_route_db
 from tests.xilinx_timing_reference import (
     build_xilinx_routed_timing,
     iter_xilinx_routed_timing_endpoints,
@@ -41,7 +33,7 @@ class XilinxRWRouteTest(unittest.TestCase):
 
     def setUp(self):
         native = mock.patch(
-            "emuflow.physical.rapidwright.rwroute_native.resolve_native_executable",
+            "emuflow_tools.physical.rapidwright.rwroute_native.resolve_native_executable",
             return_value=str(self.native_exporter),
         )
         native.start()
@@ -1102,7 +1094,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 root, route
             )
             output = root / "routed-timing.json"
-            from emuflow.physical.rapidwright import xilinx_rwroute
+            from emuflow_tools.physical.rapidwright import xilinx_rwroute
             from tests import xilinx_timing_reference as xilinx_timing
 
             real_timing_read = xilinx_timing.read_json
@@ -1114,13 +1106,13 @@ class XilinxRWRouteTest(unittest.TestCase):
                     wraps=real_timing_read,
                 ) as timing_read,
                 mock.patch(
-                    "emuflow.common.io.read_json",
+                    "emuflow.common.json_io.read_json",
                     side_effect=AssertionError(
                         "route validator reparsed preloaded objects"
                     ),
                 ),
                 mock.patch(
-                    "emuflow.physical.rapidwright.xilinx_rwroute._sha256",
+                    "emuflow_tools.physical.rapidwright.xilinx_rwroute._sha256",
                     wraps=real_rwroute_sha256,
                 ) as rwroute_sha256,
                 mock.patch(
@@ -1368,7 +1360,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             root = Path(temporary)
             output = root / "route.tsv"
             with mock.patch(
-                "emuflow.common.io.read_json",
+                "emuflow.common.json_io.read_json",
                 side_effect=AssertionError("preloaded objects were reparsed"),
             ):
                 report = export_rwroute_reference(

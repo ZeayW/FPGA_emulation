@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 
 
 INDEXED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v3"

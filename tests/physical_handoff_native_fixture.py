@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from emuflow.common.io import file_sha256
-from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
 from tests.openparf_placement_reference import (open_xilinx_openparf_atomic_placement, write_xilinx_openparf_atomic_placement_certificate)
 from tests.openparf_source_fixture import write_xilinx_openparf_atomic_source_storage
 from tests.test_rwroute_native import write_mapped
@@ -57,7 +57,7 @@ def prepare_native_handoff(root, *, split_ff_control_sets=False, include_hard=Fa
 
 
 def build_native_handoff(value, output):
-    from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract
+    from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract
 
     return materialize_xilinx_openparf_atomic_contract(
         value.mapped,
@@ -73,10 +73,8 @@ def encode_typed_bridge_facts(
 ):
     """Translate bounded fixture records to current owners; no placement decisions."""
     from emuflow.common.errors import ValidationError
-    from emuflow.physical.openparf.xilinx_openparf_atomic import (
-        build_xilinx_openparf_atomic_source,
-    )
-    from emuflow.physical.xilinx_netlist import is_xilinx_mapped_index
+    from emuflow_tools.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
+    from emuflow_tools.physical.xilinx_netlist import is_xilinx_mapped_index
 
     mapped_path, certificate_path, directory = map(
         Path, (mapped_path, certificate_path, directory)
@@ -133,10 +131,8 @@ def validate_certificate_facts(
     import copy
     import tempfile
     from collections import Counter
-    from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract
-    from emuflow.physical.openparf.xilinx_openparf_atomic import (
-        build_xilinx_openparf_atomic_source,
-    )
+    from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract
+    from emuflow_tools.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
     from tests.test_xilinx_native_device_constraints import PINNED, _artifact, _reseal
 
     with tempfile.TemporaryDirectory() as temporary:

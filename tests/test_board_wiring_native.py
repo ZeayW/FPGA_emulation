@@ -11,7 +11,7 @@ import pytest
 
 from emuflow.common.native_tools import native_file_generation
 from emuflow.platform.default_platform import materialize_research_platform, research_platform_path
-from emuflow.transport.virtual_board import INVENTORY_PATH, FIXED_WIRING_ROOT
+from emuflow_tools.transport.virtual_board import INVENTORY_PATH, FIXED_WIRING_ROOT
 from tests.board_reference import platform_reference
 from tests.board_wiring_reference import build_virtual_board as wiring_reference
 from tests.native_build import emuflow_native
@@ -147,7 +147,7 @@ def test_configuration_rejects_incomplete_or_mixed_sources_atomically(tmp_path,d
 @pytest.mark.parametrize('damage',[None,'platform','profile','model','schema','features','empty-resource',
     'extra-parameter','negative','boolean','nonfinite','provenance','fit'])
 def test_cost_database_admission_matches_independent_existing_contract(tmp_path,damage):
-    from emuflow.transport.transport_cost import validate_transport_cost_database
+    from emuflow_tools.transport.transport_cost import validate_transport_cost_database
     from emuflow.common.errors import ValidationError
     request,platform=configuration(tmp_path)
     cost={'schema':'emuflow.transport-cost/v2','platform':platform.name,'profile':'nominal',

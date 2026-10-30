@@ -10,10 +10,10 @@ from unittest import mock
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.physical.openparf import xilinx_openparf_atomic as atomic
+from emuflow_tools.physical.openparf import xilinx_openparf_atomic as atomic
 from tests import openparf_placement_reference as reference
-from emuflow.physical.openparf.placement_native import import_placement
-from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+from emuflow_tools.physical.openparf.placement_native import import_placement
+from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
 from tests.openparf_export_fixture import mapped_facts
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
@@ -264,8 +264,8 @@ def test_macro_bel_and_hardblock_tile_views_match_reference(tmp_path,primitive):
 
 
 def test_import_production_module_has_no_replaced_graph_implementations(tmp_path):
-    from emuflow.platform.architecture import ArchitectureDB
-    from emuflow.physical.xilinx_netlist import _IndexedCells
+    from emuflow_tools.platform.architecture import ArchitectureDB
+    from emuflow_tools.physical.xilinx_netlist import _IndexedCells
     for name in ('_IndexedAtomicPlacement','_AtomicPlacementCertificateBuilder',
         'legalize_xilinx_openparf_ff_control_sets','validate_xilinx_openparf_atomic_placement',
         'write_xilinx_openparf_atomic_placement_certificate','XilinxOpenparfAtomicPlacementView'):
@@ -295,7 +295,7 @@ def test_handoff_reader_requires_the_validated_native_generation(tmp_path):
 
 
 def test_host_rejects_output_mutation_after_native_completion(tmp_path):
-    from emuflow.physical.openparf import placement_native
+    from emuflow_tools.physical.openparf import placement_native
     real=placement_native.NativeToolProcess
     class Mutated(real):
         def finish(self):

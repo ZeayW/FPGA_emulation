@@ -8,12 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.scheduling.cross_layer_timing import build_cross_layer_timing_contract
+from emuflow_tools.scheduling.cross_layer_timing import build_cross_layer_timing_contract
 from emuflow.common.errors import ValidationError
-from emuflow.physical.physical_coverage import (
-    PhysicalCoverageView, build_physical_coverage, audit_physical_coverage,
-    read_physical_coverage_certificate, replay_physical_coverage,
-)
+from emuflow_tools.physical.physical_coverage import PhysicalCoverageView, build_physical_coverage, audit_physical_coverage, read_physical_coverage_certificate, replay_physical_coverage
 from tests.test_global_binding_native import physical_case
 
 
@@ -39,7 +36,7 @@ def case(tmp_path, *, mutate=None, members=1):
 def test_native_assignment_coverage_records_and_small_publication(tmp_path):
     f, contract, schedule, physical, assignment, original, raw_schedule = case(tmp_path, members=7)
     from emuflow.scheduling.tdm_schedule_storage import ScheduleRecordSequence, TypedScheduleEntrySequence
-    from emuflow.timing.logic_segment_timing_storage import LogicSegmentTimingView
+    from emuflow_tools.timing.logic_segment_timing_storage import LogicSegmentTimingView
     with patch.object(ScheduleRecordSequence, '__iter__', side_effect=AssertionError('Python hop population')), \
          patch.object(TypedScheduleEntrySequence, '__iter__', side_effect=AssertionError('Python hop population')), \
          patch.object(LogicSegmentTimingView, 'iter_ordered_segments', side_effect=AssertionError('Python segment population')):
@@ -125,7 +122,7 @@ def test_native_coverage_rejects_identity_damage_and_preserves_missing_evidence(
 
 
 def test_native_independent_coverage_audit_rejects_resealed_output_facts(tmp_path):
-    from emuflow.physical.physical_coverage import _inputs, _audit
+    from emuflow_tools.physical.physical_coverage import _inputs, _audit
     f, contract, schedule, physical, assignment, _, _ = case(tmp_path)
     with build_physical_coverage(contract, schedule, physical, f.platform, assignment) as binding:
         damaged = tmp_path/'damaged.sqlite'; shutil.copyfile(binding.store_path, damaged)
@@ -137,7 +134,7 @@ def test_native_independent_coverage_audit_rejects_resealed_output_facts(tmp_pat
 
 
 def test_native_changed_source_does_not_replace_published_selector(tmp_path):
-    import emuflow.physical.physical_coverage as coverage
+    import emuflow_tools.physical.physical_coverage as coverage
     f, contract, schedule, physical, assignment, _, _ = case(tmp_path)
     target = tmp_path/'coverage.json'
     with build_physical_coverage(contract, schedule, physical, f.platform, assignment, output_path=target):
@@ -162,7 +159,7 @@ def test_production_rejects_inline_and_missing_assignment_owner(tmp_path):
 
 
 def test_direct_native_request_rebound_to_changed_schedule_rows_rejects_old_logical_seal(tmp_path):
-    from emuflow.physical.physical_coverage import _inputs, _request, _native
+    from emuflow_tools.physical.physical_coverage import _inputs, _request, _native
     from emuflow.storage.store_publication import bind_store_source
     f, contract, schedule, physical, assignment, _, _ = case(tmp_path)
     sources, config = _inputs(contract, schedule, physical, f.platform, assignment)

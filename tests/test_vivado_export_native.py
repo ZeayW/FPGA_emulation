@@ -8,12 +8,12 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.common.errors import ValidationError
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import native_file_generation, resolve_native_executable
-from emuflow.physical.vivado.vivado_indexed_netlist import emit_indexed_vivado_verilog
-from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index
+from emuflow_tools.physical.vivado.vivado_indexed_netlist import emit_indexed_vivado_verilog
+from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index
 from tests.test_vivado_indexed_physical import fixture
 from tests.vivado_verilog_reference import emit_indexed_vivado_verilog_reference
 
@@ -45,7 +45,7 @@ def signatures(path):
 def test_production_export_has_no_python_cell_or_pin_population(tmp_path):
     ir = fixture(tmp_path)
     expected = emit_indexed_vivado_verilog_reference(ir, tmp_path / "reference.v")
-    with patch("emuflow.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cell export")):
+    with patch("emuflow_tools.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cell export")):
         actual = emit_indexed_vivado_verilog(ir, tmp_path / "native.v")
     assert (tmp_path / "native.v").read_bytes() == (tmp_path / "reference.v").read_bytes()
     assert signatures(Path(actual["source_functions"]["path"])) == signatures(Path(expected["source_functions"]["path"]))

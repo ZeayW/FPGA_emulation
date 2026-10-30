@@ -23,6 +23,7 @@ sys.path.insert(0, sys.argv[1])
 assert importlib.util.find_spec('emuflow_tools') is None
 import emuflow.flow.cli, emuflow.flow.native_compile, emuflow.transport.phase6_oracle
 assert 'emuflow_tools' not in sys.modules
+assert importlib.util.find_spec('emuflow.common.io') is None
 for name in ('partition.phase3', 'partition.phase3_native', 'routing.phase4', 'routing.phase4_native',
              'scheduling.phase5', 'scheduling.phase5_native', 'transport.phase6', 'transport.phase6_native',
              'timing.phase7c', 'flow.multi_fpga_physical_flow', 'flow.multi_fpga_flow',
@@ -103,3 +104,33 @@ def test_installed_fetch_cli_rejects_missing_resource_before_launch(tmp_path, mo
         run.assert_not_called()
     assert "fetcher is missing" in capsys.readouterr().err
     assert not output.exists()
+
+
+def test_runtime_modules_belong_to_the_complete_entry_solver_host_or_bounded_oracle():
+    package = ROOT / "src/python"
+    modules = {".".join(path.relative_to(package).with_suffix("").parts): path
+               for path in package.rglob("*.py")}
+    edges = {module: set() for module in modules}
+    for module, path in modules.items():
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                names = [item.name for item in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    base = ".".join(module.split(".")[:-node.level]) + ("." + base if base else "")
+                names = [base] + [base + "." + item.name for item in node.names]
+            else:
+                continue
+            edges[module].update(name for name in names if name in modules)
+    pending = ["emuflow.flow.cli", "emuflow.physical.openparf.openparf_native_driver",
+               "emuflow.transport.phase6_oracle"]
+    reached = set()
+    while pending:
+        module = pending.pop()
+        if module not in reached:
+            reached.add(module)
+            pending.extend(edges[module] - reached)
+    detached = {module for module in modules
+                if not module.endswith(".__init__") and module != "emuflow.__main__"} - reached
+    assert not detached, "independent modules belong outside the runtime package: " + repr(sorted(detached))

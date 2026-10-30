@@ -12,8 +12,8 @@ import pytest
 
 from emuflow.common.errors import EmuFlowError
 from emuflow.common.native_tools import native_file_generation
-from emuflow.frontend.inputs import run_supplied_frontend
-from emuflow.frontend.frontend_native import run_rtl_frontend
+from emuflow_tools.frontend.inputs import run_supplied_frontend
+from emuflow_tools.frontend.frontend_native import run_rtl_frontend
 from emuflow.ir.ir import EmuIR
 from emuflow.ir.emuir_storage import read_indexed_emuir_identity
 from emuflow.flow.cli import _build_parser
@@ -148,7 +148,7 @@ def test_standalone_benchmark_cannot_silently_use_a_retired_synthesis_policy(tmp
 
 
 def test_supplied_frontend_rejects_original_source_changed_after_producer_exit(tmp_path):
-    import emuflow.frontend.inputs as inputs
+    import emuflow_tools.frontend.inputs as inputs
     source=tmp_path/'source.json';source.write_bytes(SOURCE.read_bytes())
     original=inputs.read_frontend_result
     def changed(*args):

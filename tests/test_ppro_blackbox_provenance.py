@@ -6,6 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from emuflow.common import json_io
+from emuflow_tools import document_io
+
 from emuflow_tools.ppro_blackbox_provenance import (
     RUNNER_SOURCE_BUNDLE_SCHEMA,
     RUNNER_SOURCE_MEMBERS,
@@ -30,15 +33,20 @@ class PProBlackboxProvenanceTest(unittest.TestCase):
         source = Path(__file__).resolve().parents[1] / "tools" / "emuflow_tools"
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
+            io_sources = {"document_io.py": Path(document_io.__file__),
+                          "json_io.py": Path(json_io.__file__)}
             for relative in RUNNER_SOURCE_MEMBERS:
-                shutil.copyfile((Path(__file__).resolve().parents[1] / "src/python/emuflow/common/io.py") if relative == "io.py" else source / relative, root / relative)
+                shutil.copyfile(io_sources.get(relative, source / relative), root / relative)
             first = runner_source_bundle(root)
-            runtime = root / "ppro_blackbox_runtime.py"
-            runtime.write_bytes(runtime.read_bytes() + b"\n# mutation\n")
-            second = runner_source_bundle(root)
-            self.assertNotEqual(
-                first["runner_revision"], second["runner_revision"]
-            )
+            for relative in RUNNER_SOURCE_MEMBERS:
+                with self.subTest(member=relative):
+                    member = root / relative
+                    original = member.read_bytes()
+                    member.write_bytes(original + b"\n# mutation\n")
+                    second = runner_source_bundle(root)
+                    self.assertNotEqual(first["runner_revision"], second["runner_revision"])
+                    member.write_bytes(original)
+                    self.assertEqual(first, runner_source_bundle(root))
 
 
 if __name__ == "__main__":

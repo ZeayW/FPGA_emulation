@@ -5,14 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.platform.architecture import ArchitectureDB
+from emuflow_tools.platform.architecture import ArchitectureDB
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
-from emuflow.physical.rapidwright.rapidwright_provider import validate_rapidwright_provider_manifest
-from emuflow.physical.xilinx_native_device_constraints import (
-    require_xilinx_native_constraint_capability,
-    validate_xilinx_native_device_constraints,
-)
+from emuflow_tools.document_io import read_json
+from emuflow_tools.physical.rapidwright.rapidwright_provider import validate_rapidwright_provider_manifest
+from emuflow_tools.physical.xilinx_native_device_constraints import require_xilinx_native_constraint_capability, validate_xilinx_native_device_constraints
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -6,7 +6,7 @@ import tempfile
 from emuflow_tools.stage_clients.schedule import _load_phase3_semantics
 from emuflow_tools.stage_clients.schedule_native import _write_inputs
 from emuflow.platform.platform import Platform
-from emuflow.routing.system_route_storage import read_system_routes
+from emuflow_tools.routing.system_route_storage import read_system_routes
 from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from tests.native_build import native_pipeline_api_test
 

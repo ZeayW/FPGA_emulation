@@ -4,17 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.platform.fpga_interchange import (
-    architecture_from_fpga_interchange_extract,
-)
-from emuflow.common.io import read_json, write_json
-from emuflow.physical.physical_regions import (
-    merge_physical_regions,
-    run_physical_region_merge,
-    run_physical_region_rebind,
-    validate_fpga_interchange_architecture_regions,
-    validate_physical_region_sidecar,
-)
+from emuflow_tools.platform.fpga_interchange import architecture_from_fpga_interchange_extract
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
+from emuflow_tools.physical.physical_regions import merge_physical_regions, run_physical_region_merge, run_physical_region_rebind, validate_fpga_interchange_architecture_regions, validate_physical_region_sidecar
 
 
 ROOT = Path(__file__).resolve().parents[1]

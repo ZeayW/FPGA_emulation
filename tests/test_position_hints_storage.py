@@ -6,7 +6,7 @@ import pytest
 
 import tests.position_hints_storage_fixture as position_storage
 from emuflow.common.errors import ValidationError
-from emuflow.transport.position_hints_storage import POSITION_HINTS_STORAGE_SCHEMA, PositionHintsView, read_position_hints
+from emuflow_tools.transport.position_hints_storage import POSITION_HINTS_STORAGE_SCHEMA, PositionHintsView, read_position_hints
 from tests.position_hints_storage_fixture import write_position_hints_storage
 
 

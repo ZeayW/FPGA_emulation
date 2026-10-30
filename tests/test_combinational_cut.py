@@ -32,8 +32,9 @@ from emuflow.validation.equivalence import (
 )
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.ir.ir import EmuIR
-from emuflow.common.io import read_json, write_json
-from emuflow.partition.partition_ir import load_partition_ir
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
+from emuflow_tools.partition.partition_ir import load_partition_ir
 from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints, validate_partition_artifacts)
 from tests.partition_reference import assign_clusters
@@ -55,8 +56,8 @@ from tests.schedule_reference import (
     build_tdm_schedule,
 )
 from emuflow.scheduling.tdm_schedule_storage import (read_tdm_schedule)
-from emuflow.transport.transport_storage import write_transport_storage
-from emuflow.routing.system_route_storage import SystemRoutesView, read_system_routes
+from emuflow_tools.transport.transport_storage import write_transport_storage
+from emuflow_tools.routing.system_route_storage import SystemRoutesView, read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.native_build import emuflow_native, static_exact_analyzer, tlr_router
 

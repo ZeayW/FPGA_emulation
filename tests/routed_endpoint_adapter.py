@@ -11,7 +11,7 @@ from emuflow.common.errors import ValidationError
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import require_native_schema, resolve_native_executable
 from emuflow.storage.store_publication import StoreSource, bind_store_source, bind_view_sources, publish_derived_outputs, require_store_sources_unchanged, validate_store_destination
-from emuflow.common.streaming_json import StreamingJSONObjectReader
+from emuflow_tools.common.streaming_json import StreamingJSONObjectReader
 from emuflow.common.tool_runtime import NativeToolProcess
 
 
@@ -89,7 +89,7 @@ def bind_routed_timing_sources(path, value):
 
 def build_native_routed_endpoints(mapped, packed, placement, route_path, route,
                                   output_path, source, route_validation, timing_value_sink):
-    from emuflow.physical.rapidwright.xilinx_rwroute import _route_payload_path, XILINX_ROUTE_NET_PAYLOAD_FORMAT
+    from emuflow_tools.physical.rapidwright.xilinx_rwroute import _route_payload_path, XILINX_ROUTE_NET_PAYLOAD_FORMAT
     require_native_schema("routed-endpoint-request-v1")
     executable = resolve_native_executable("emuflow-native")
     physical_sources = []

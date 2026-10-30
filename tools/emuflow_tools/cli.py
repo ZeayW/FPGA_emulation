@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 from emuflow.common.errors import EmuFlowError
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from .benchmark import run_benchmark
 from .board_arm_mps4 import materialize_arm_mps4_boarddb
 from .contest_eda2023 import evaluate_eda2023_solution, import_eda2023_case, materialize_eda2023_rtl_boarddb

@@ -4,16 +4,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from emuflow.ir.ir import EmuIR
 from tests.yosys_reference import import_yosys_json
 from tests.vivado_query_host import write_vivado_boundary_query as write_vivado_boundary_timing_query
 from tests.vivado_input_host import prepare_vivado_inputs
 from emuflow.ir.emuir_compact import write_compact_emuir
 from tests.vivado_measurement_host import import_indexed_vivado_boundary
-from emuflow.physical.vivado.vivado_netlist import (
-    emit_vivado_mapped_verilog,
-)
+from emuflow_tools.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
 
 
 def _ir():
@@ -97,14 +95,14 @@ RUNTIME = {
 
 class VivadoBackendTest(unittest.TestCase):
     def test_whole_emuir_export_and_physical_execution_are_rejected(self):
-        from emuflow.physical.vivado.vivado_physical import run_indexed_vivado_partition
+        from emuflow_tools.physical.vivado.vivado_physical import run_indexed_vivado_partition
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, output = root / "ir.json", root / "physical"
             write_json(source, _ir().to_dict())
             with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole graph")), \
-                 patch("emuflow.physical.vivado.vivado_physical.shutil.which", side_effect=AssertionError("tool lookup")):
+                 patch("emuflow_tools.physical.vivado.vivado_physical.shutil.which", side_effect=AssertionError("tool lookup")):
                 with self.assertRaisesRegex(ValidationError, "current indexed EmuIR"):
                     emit_vivado_mapped_verilog(source, root / "partition.v")
                 with self.assertRaisesRegex(ValidationError, "current indexed EmuIR"):
@@ -212,7 +210,7 @@ class VivadoBackendTest(unittest.TestCase):
                     }
                 ],
             }
-            from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+            from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
             identity["endpoints"][0].update(demand="d0",logical_net="n0",link="link",peer="fpga1",
                 lane=0,logical_lane=0,internal_signal="net:n0",source_class="dut-net")
             with write_boundary_identity_storage(identity_path,
@@ -253,7 +251,7 @@ class VivadoBackendTest(unittest.TestCase):
         import sqlite3
         from contextlib import closing
         from emuflow.ir.emuir_compact import write_compact_emuir
-        from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+        from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -285,8 +283,8 @@ class VivadoBackendTest(unittest.TestCase):
                     pass
             publish(record)
             requested.write_text("prior query\n")
-            with patch("emuflow.timing.boundary_identity_storage._iter_records", side_effect=AssertionError("Python endpoint expansion")), patch(
-                    "emuflow.ir.indexed_physical_ir.IndexedPhysicalIR", side_effect=AssertionError("Python graph view")):
+            with patch("emuflow_tools.timing.boundary_identity_storage._iter_records", side_effect=AssertionError("Python endpoint expansion")), patch(
+                    "emuflow_tools.ir.indexed_physical_ir.IndexedPhysicalIR", side_effect=AssertionError("Python graph view")):
                 result = write_vivado_boundary_timing_query(ir_path, selector, requested)
             self.assertEqual(requested.read_text(), "prior query\n")
             with Path(result["output"]).open() as stream:
@@ -322,7 +320,7 @@ class VivadoBackendTest(unittest.TestCase):
 
     def test_current_indexed_export_retains_generic_cell_semantics(self):
         from emuflow.ir.emuir_compact import write_compact_emuir
-        from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+        from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
         value = _ir().to_dict()
         value['instances'][0].update(type='$lut', parameters={'WIDTH': '1', 'LUT': '10'})
         value['nets'][0]['sinks'][0]['port'] = 'A'

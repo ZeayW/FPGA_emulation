@@ -13,7 +13,7 @@ from tests.xilinx_macro_reference import (
     derive_xilinx_physical_macro_contract,
     validate_xilinx_physical_macro_contract,
 )
-from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
 from tests.yosys_reference import import_yosys_json
 
 

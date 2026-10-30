@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.platform.platform import Platform
 
 MODEL = "xcvu19p-hp-lvds-cable-v1"

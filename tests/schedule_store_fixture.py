@@ -16,7 +16,7 @@ import os
 import sqlite3
 import uuid
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, write_json
+from emuflow.common.json_io import file_sha256, write_json
 from emuflow.scheduling.tdm_schedule_storage import (
     TDM_SCHEDULE_LOGICAL_SCHEMA,
     TDM_SCHEDULE_SECTIONS,

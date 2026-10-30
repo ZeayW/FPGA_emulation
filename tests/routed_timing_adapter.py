@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json
-from emuflow.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
-from emuflow.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.document_io import read_json
+from emuflow_tools.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
 
 
 XILINX_ROUTED_TIMING_SCHEMA = "emuflow.xilinx-routed-timing/v1"
@@ -118,8 +119,8 @@ def build_xilinx_routed_timing(
     timing_value_sink: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     from contextlib import ExitStack
-    from emuflow.physical.xilinx_netlist import IndexedXilinxMappedNetlist
-    from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+    from emuflow_tools.physical.xilinx_netlist import IndexedXilinxMappedNetlist
+    from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
     from tests.routed_endpoint_adapter import build_native_routed_endpoints
     from emuflow.storage.store_publication import bind_store_source, require_store_sources_unchanged
 

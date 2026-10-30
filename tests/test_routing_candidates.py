@@ -13,7 +13,7 @@ from emuflow.platform.platform import Platform
 from emuflow.routing.routing import normalize_route_constraints
 from tests.routing_validation_reference import demands_from_assignment
 from emuflow_tools.stage_clients.routing_native import run_native_phase4
-from emuflow.routing.system_route_storage import read_system_routes
+from emuflow_tools.routing.system_route_storage import read_system_routes
 from tests.routing_reference import exact_route_tree_selection
 from tests.timing_routing_reference import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
 from tests.native_build import tlr_router

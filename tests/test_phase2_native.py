@@ -6,11 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.timing.indexed_timing import (
-    IndexedTimingView, _NEGATIVE_TIMING_CELLS, _TimingTypes,
-    _timing_parameter_is_one,
-)
-from emuflow.timing.phase2_native import _POLICY_LIMIT, _encode_policy, prepare_policy
+from emuflow_tools.timing.indexed_timing import IndexedTimingView, _NEGATIVE_TIMING_CELLS, _TimingTypes, _timing_parameter_is_one
+from emuflow_tools.timing.phase2_native import _POLICY_LIMIT, _encode_policy, prepare_policy
 
 
 PARAMETERS = [
@@ -91,7 +88,7 @@ def test_bounded_policy_preserves_default_and_architecture_modes(tmp_path, phase
     source, records = _counter_stage_input(tmp_path)
     executable, _trace = _fixed_opensta(tmp_path, records)
     database = _architecture_stage_contract(tmp_path) if architecture else None
-    with patch('emuflow.timing.indexed_timing.IndexedTimingView', side_effect=AssertionError('Python timing graph')), \
+    with patch('emuflow_tools.timing.indexed_timing.IndexedTimingView', side_effect=AssertionError('Python timing graph')), \
          patch('emuflow_tools.stage_clients.opensta.render_opensta_liberty', side_effect=AssertionError('Python Liberty producer')), \
          patch('emuflow_tools.stage_clients.opensta.require_opensta_engine', side_effect=AssertionError('Python engine qualification')):
         policy = prepare_policy(tmp_path / 'policy', source, clocks={'clk': 10.0},
@@ -145,9 +142,7 @@ def _architecture_stage_contract(root):
     from emuflow.timing.xilinx_preplacement_timing import (
         XILINX_PREPLACEMENT_TIMING_SCHEMA, _REQUIRED_DELAYS,
     )
-    from emuflow.physical.rapidwright.xilinx_rwroute import (
-        RAPIDWRIGHT_TIMING_DATA_REVISION, RAPIDWRIGHT_TIMING_DATA_SHA256,
-    )
+    from emuflow.timing.rapidwright_contract import RAPIDWRIGHT_TIMING_DATA_REVISION, RAPIDWRIGHT_TIMING_DATA_SHA256
     # Consumer-contract fixture: positive synthetic values and the required
     # source vocabulary, without fetching or claiming to extract upstream data.
     value = {
@@ -266,11 +261,8 @@ def _assert_published_tool_evidence(output, engine):
 def test_complete_native_stage_matches_retained_provider_and_typed_weights(
         tmp_path, phase2_runtime, architecture, optimization_enabled):
     from emuflow_tools.stage_clients.opensta import run_opensta_path_database
-    from emuflow.timing.phase2_native import run_native_phase2
-    from emuflow.timing.sta import (derive_partition_net_weights,
-                             iter_partition_net_weight_records,
-                             iter_sta_path_database_paths, validate_partition_net_weights,
-                             validate_sta_path_database)
+    from emuflow_tools.timing.phase2_native import run_native_phase2
+    from emuflow_tools.timing.sta import derive_partition_net_weights, iter_partition_net_weight_records, iter_sta_path_database_paths, validate_partition_net_weights, validate_sta_path_database
     source, records = _counter_stage_input(tmp_path)
     engine, trace = _fixed_opensta(tmp_path, records)
     architecture_path = _architecture_stage_contract(tmp_path) if architecture else None
@@ -367,7 +359,7 @@ def test_native_stage_rejects_failed_or_invalid_engine_output(tmp_path, phase2_r
                                     'io-direction', 'optimization-string', 'optimization-int',
                                     'max-paths-bool'])
 def test_native_stage_independently_rejects_invalid_policy_semantics(tmp_path, phase2_runtime, damage):
-    from emuflow.timing.timing_io import timing_io_sha256
+    from emuflow_tools.timing.timing_io import timing_io_sha256
     source, records = _counter_stage_input(tmp_path)
     engine, _trace = _fixed_opensta(tmp_path, records)
     policy = prepare_policy(tmp_path / 'policy', source, clocks={'clk': 10}, executable=str(engine))
@@ -400,7 +392,7 @@ def test_native_stage_discards_outputs_if_source_changes_inside_engine(tmp_path,
 
 
 def test_native_stage_and_host_never_replace_existing_public_directory(tmp_path, phase2_runtime):
-    from emuflow.timing.phase2_native import run_native_phase2
+    from emuflow_tools.timing.phase2_native import run_native_phase2
     source, records = _counter_stage_input(tmp_path)
     engine, _trace = _fixed_opensta(tmp_path, records)
     policy = prepare_policy(tmp_path / 'policy', source, clocks={'clk': 10}, executable=str(engine))
@@ -421,8 +413,8 @@ def test_real_opensta_stage_matches_retained_provider_when_installed(tmp_path, p
     from pathlib import Path
     from emuflow.common.native_tools import resolve_native_executable
     from emuflow_tools.stage_clients.opensta import run_opensta_path_database
-    from emuflow.timing.phase2_native import run_native_phase2
-    from emuflow.timing.sta import iter_sta_path_database_paths
+    from emuflow_tools.timing.phase2_native import run_native_phase2
+    from emuflow_tools.timing.sta import iter_sta_path_database_paths
     from emuflow.common.errors import EmuFlowError
     try:
         engine = Path(resolve_native_executable('sta'))
@@ -483,7 +475,7 @@ def test_native_policy_matches_all_specialized_pin_roles_and_clock_polarities(tm
         coverage = validate_timing_model_coverage(view, model, types)
     expected_liberty = render_opensta_liberty(model)
     engine, _trace = _fixed_opensta(tmp_path, [])
-    with patch('emuflow.timing.indexed_timing.IndexedTimingView', side_effect=AssertionError('Python model preparation')):
+    with patch('emuflow_tools.timing.indexed_timing.IndexedTimingView', side_effect=AssertionError('Python model preparation')):
         policy = prepare_policy(tmp_path / 'native-policy', source, clocks={'clk': 10},
             architecture_timing_db_path=database, executable=str(engine))
     actual = json.loads(policy.read_text())['configuration']

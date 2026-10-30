@@ -48,7 +48,7 @@ def test_site_writer_releases_in_memory_and_backup_connections(tmp_path, retaine
 
 
 def test_lazy_name_map_readers_close_after_lookup_exhaustion_and_early_stop(tmp_path, retained_connections):
-    from emuflow.physical.openparf.xilinx_openparf_name_map_storage import read_xilinx_openparf_atomic_name_map
+    from emuflow_tools.physical.openparf.xilinx_openparf_name_map_storage import read_xilinx_openparf_atomic_name_map
     from tests import test_xilinx_openparf_name_map_storage as fixture
     _original, connections = retained_connections
     path = tmp_path/'name_map.json'

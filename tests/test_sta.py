@@ -7,22 +7,12 @@ from unittest.mock import patch
 
 from tests.sta_path_reference import import_sta_path_database_tsv
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow.ir.ir import EmuIR
 from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
-from emuflow.timing.sta import (
-    EMUIR_NET_MAP_HEADER,
-    PARTITION_NET_WEIGHTS_INDEX_SCHEMA,
-    PARTITION_NET_WEIGHTS_SCHEMA,
-    STA_PATH_DATABASE_TSV_HEADER,
-    STA_PATH_DATABASE_SCHEMA,
-    derive_partition_net_weights,
-    import_sta_path_database_tsv_streaming,
-    iter_sta_path_database_paths,
-    load_partition_net_weights_indexed,
-    write_emuir_net_map,
-)
-from emuflow.timing.sta_projection import project_sta_path_database
+from emuflow_tools.timing.sta import EMUIR_NET_MAP_HEADER, PARTITION_NET_WEIGHTS_INDEX_SCHEMA, PARTITION_NET_WEIGHTS_SCHEMA, STA_PATH_DATABASE_TSV_HEADER, STA_PATH_DATABASE_SCHEMA, derive_partition_net_weights, import_sta_path_database_tsv_streaming, iter_sta_path_database_paths, load_partition_net_weights_indexed, write_emuir_net_map
+from emuflow_tools.timing.sta_projection import project_sta_path_database
 from tests.yosys_reference import import_yosys_json
 
 
@@ -77,7 +67,7 @@ class StaAdapterTest(unittest.TestCase):
     def test_retired_vivado_provider_is_rejected_before_loading_sources(self) -> None:
         for importer in (import_sta_path_database_tsv, import_sta_path_database_tsv_streaming):
             with self.subTest(importer=importer.__name__), \
-                 patch("emuflow.timing.sta.EmuIR.load", side_effect=AssertionError("source was loaded")):
+                 patch("emuflow_tools.timing.sta.EmuIR.load", side_effect=AssertionError("source was loaded")):
                 with self.assertRaisesRegex(ValidationError, "provider is invalid"):
                     importer(Path("missing.tsv"), Path("missing.emuir"), Path("out.json"),
                              provider="vivado-get-timing-path-database-v1")
@@ -124,7 +114,7 @@ class StaAdapterTest(unittest.TestCase):
             database_path = root / "paths.json"
             expected_weights = root / "expected.json"
             actual_weights = root / "actual.json"
-            with patch("emuflow.timing.sta.sqlite3.connect", without_audits):
+            with patch("emuflow_tools.timing.sta.sqlite3.connect", without_audits):
                 imported = import_sta_path_database_tsv_streaming(
                     tsv, ir_path, database_path,
                     provider="opensta-fpga-path-database-v1", _ir=ir,
@@ -132,10 +122,10 @@ class StaAdapterTest(unittest.TestCase):
                 records = list(iter_sta_path_database_paths(database_path, read_json(database_path)))
                 self.assertEqual(len(records), 1)
                 self.assertEqual(records[0]["path_nets"], [net_id])
-                from emuflow.timing import sta
+                from emuflow_tools.timing import sta
                 self.assertFalse(hasattr(sta, 'iter_selected_sta_path_database_paths'))
                 derive_partition_net_weights(database_path, ir_path, expected_weights)
-                with patch("emuflow.timing.sta.EmuIR.load", side_effect=AssertionError("unused whole-graph load")):
+                with patch("emuflow_tools.timing.sta.EmuIR.load", side_effect=AssertionError("unused whole-graph load")):
                     derive_partition_net_weights(
                         database_path, ir_path, actual_weights, _validation=imported.validation,
                     )
@@ -158,7 +148,7 @@ class StaAdapterTest(unittest.TestCase):
             reused = root / "reused.tsv"
             report = write_emuir_net_map(ir_path, ordinary)
             with patch(
-                "emuflow.timing.sta.EmuIR.load",
+                "emuflow_tools.timing.sta.EmuIR.load",
                 side_effect=AssertionError("duplicate graph load"),
             ):
                 reused_report = write_emuir_net_map(ir_path, reused, _ir=ir)
@@ -261,7 +251,7 @@ class StaAdapterTest(unittest.TestCase):
             )
             self.assertNotIn("_value", report)
             with patch(
-                "emuflow.timing.sta.EmuIR.load",
+                "emuflow_tools.timing.sta.EmuIR.load",
                 side_effect=AssertionError("preloaded EmuIR was reparsed"),
             ):
                 reused = import_sta_path_database_tsv(

@@ -13,14 +13,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow_tools.stage_clients.physical import validate_multi_fpga_physical_report
 from emuflow_tools.stage_clients.partition import validate_phase3_indexed
 from emuflow_tools.stage_clients.routing import validate_phase4
 from emuflow_tools.stage_clients.schedule import validate_phase5
 from emuflow_tools.stage_clients.transport import validate_phase6
 from emuflow_tools.stage_clients.timing_replay import run_phase7c
-from emuflow.physical.physical_summary_storage import read_physical_summary
+from emuflow_tools.physical.physical_summary_storage import read_physical_summary
 from emuflow.partition.partition import CUT_MODE_STATIC_EXACT
 from emuflow.platform.platform import Platform
 from emuflow.transport.runtime import validate_virtual_runtime
@@ -838,7 +838,7 @@ def validate_multi_fpga_flow_bundle(
                 flow_root, candidate_link_timing, "board-link timing"
             )
 
-    from emuflow.timing.qor_storage import qor_validation_proof
+    from emuflow_tools.timing.qor_storage import qor_validation_proof
     stored_qor_path = _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
     stored_proof, standalone_sta = qor_validation_proof(stored_qor_path)
     if physical_summary_path is not None and not standalone_sta:

@@ -1,22 +1,22 @@
 """Independent fixture oracle for selected physical endpoint coordinates."""
-from emuflow.common.streaming_json import StreamingJSONObjectReader
+from emuflow_tools.common.streaming_json import StreamingJSONObjectReader
 from contextlib import ExitStack
 from collections import OrderedDict
 from pathlib import Path
 import sqlite3
-from emuflow.timing.boundary_identity_storage import read_boundary_identity_storage
+from emuflow_tools.timing.boundary_identity_storage import read_boundary_identity_storage
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.common.native_tools import native_file_generation
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.physical.vivado.vivado_lineage import LINEAGE_SCHEMA, PLACEMENT_COORDINATE_SYSTEM
-from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
+from emuflow_tools.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
 
 class XilinxChimewGeometry:
     """A leased, indexed query session; memory does not grow with placed cells."""
 
     def __init__(self, source: Path, platform, report, architecture: Path, *, package_geometry=None):
-        from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels
+        from emuflow_tools.transport.chimew.chimew_fixed_wiring import FixedWiringChannels
         self.stack = ExitStack()
         self.databases = {}
         self.generations = {}

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from emuflow.timing.logic_segment_identity_storage import read_logic_segment_identity_storage
+from emuflow_tools.timing.logic_segment_identity_storage import read_logic_segment_identity_storage
 
 
 def identity_facts(path, *, header, segments, unsupported_member_paths=()):

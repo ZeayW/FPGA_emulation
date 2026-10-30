@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow_tools.ppro_blackbox_communication import (
     generate_communication_matrix,
     generate_communication_probe_bundle,

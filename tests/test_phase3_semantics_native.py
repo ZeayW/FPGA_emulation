@@ -12,7 +12,7 @@ from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
-from emuflow.partition.partition_ir import load_partition_ir
+from emuflow_tools.partition.partition_ir import load_partition_ir
 from tests.native_partition_kernel_driver import initialize
 from tests.phase3_store_fixture import write_assignment_index_fixture
 from tests.native_assignment_publication_fixture import publish_native_assignment_descriptor
@@ -106,7 +106,7 @@ def test_complete_selected_semantic_generation_and_publication_match_explicit_pr
             order=','.join(str(index+1) for index in range(columns))
             assert a.execute('SELECT * FROM '+table+' ORDER BY '+order).fetchall()==b.execute('SELECT * FROM '+table+' ORDER BY '+order).fetchall()
     from tests.phase3_store_fixture import assignment_selector_fixture
-    from emuflow.common.io import write_json
+    from emuflow.common.json_io import write_json
     expected_selector=assignment_selector_fixture(expected,selected[2],cut_nets_index={
         'artifact':'assignment.sqlite','schema':'emuflow.phase3-cut-records/v1',
         'records':summary['cut_records'],'sha256':summary['cut_records_sha256']})

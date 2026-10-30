@@ -6,14 +6,14 @@ import os
 from pathlib import Path
 import tempfile
 
-from emuflow.timing.boundary_identity_storage import read_boundary_identity_storage
-from emuflow.timing.boundary_timing import boundary_timing_header
+from emuflow_tools.timing.boundary_identity_storage import read_boundary_identity_storage
+from emuflow_tools.timing.boundary_timing import boundary_timing_header
 from emuflow.common.errors import ValidationError
-from emuflow.timing.local_path_timing import read_local_path_identity, local_path_timing_header
-from emuflow.timing.logic_segment_identity_storage import read_logic_segment_identity_storage
+from emuflow_tools.timing.local_path_timing import read_local_path_identity, local_path_timing_header
+from emuflow_tools.timing.logic_segment_identity_storage import read_logic_segment_identity_storage
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import require_native_schema, resolve_native_executable
-from emuflow.physical.physical_measurements_native import publish_physical_projection
+from emuflow_tools.physical.physical_measurements_native import publish_physical_projection
 from emuflow.storage.store_publication import bind_store_source, bind_view_sources, require_store_sources_unchanged, validate_store_destination
 from emuflow.common.tool_runtime import NativeToolProcess
 from tests.routed_timing_adapter import validate_xilinx_routed_timing
@@ -30,7 +30,7 @@ def build_routed_segments(*, boundary_identity_path, mapped_path, timing_path,
     require_native_schema("routed-segment-request-v1")
     executable = resolve_native_executable("emuflow-native")
     if timing_value is None:
-        from emuflow.common.io import read_json
+        from emuflow_tools.document_io import read_json
         timing_value = read_json(timing_path)
     if timing_validation is None:
         validate_xilinx_routed_timing(timing_path, mapped_path=mapped_path, _value=timing_value)
@@ -90,7 +90,7 @@ def build_routed_segments(*, boundary_identity_path, mapped_path, timing_path,
             path.parent.mkdir(parents=True, exist_ok=True)
         for kind, path in sorted(paths.items(), key=lambda item: str(item[1].resolve())):
             name = {2: "boundary_timing", 3: "logic_segment_timing", 4: "local_path_timing"}[kind]
-            lease = importlib.import_module("emuflow.timing." + name + "_storage")._Lease(path, exclusive=True)
+            lease = importlib.import_module("emuflow_tools.timing." + name + "_storage")._Lease(path, exclusive=True)
             lifetime.callback(lease.close)
         with tempfile.TemporaryDirectory(prefix=".routed-segments.", dir=paths[2].parent) as temporary:
             root = Path(temporary)

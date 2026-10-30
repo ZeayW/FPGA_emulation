@@ -12,13 +12,11 @@ import tests.routed_opensta_reference as xilinx_opensta
 import tests.routed_timing_adapter as xilinx_timing
 from emuflow.common.errors import ValidationError
 from emuflow_tools.stage_clients.opensta import render_opensta_liberty
-from emuflow.timing.xilinx_opensta import (
-    run_xilinx_routed_opensta,
-)
+from emuflow_tools.timing.xilinx_opensta import run_xilinx_routed_opensta
 from tests.xilinx_opensta_reference import build_xilinx_routed_opensta_inputs
 from tests.routed_opensta_reference import build_xilinx_routed_opensta_indexed_inputs, validate_xilinx_routed_opensta_summary
 from emuflow.ir.ir import EmuIR
-from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index
+from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index
 from tests.yosys_reference import import_yosys_json
 
 
@@ -411,7 +409,7 @@ def test_routed_opensta_stages_directly_from_mapped_sqlite(tmp_path):
 
 
 def test_typed_routed_connectivity_matches_independent_graph_oracle(tmp_path):
-    from emuflow.physical.xilinx_netlist import IndexedXilinxMappedNetlist
+    from emuflow_tools.physical.xilinx_netlist import IndexedXilinxMappedNetlist
     mapped, timing = _indexed_routed_fixture(tmp_path)
     routed = tmp_path / "routed.emuir.sqlite"
     model, _metadata = build_xilinx_routed_opensta_indexed_inputs(mapped, timing, routed, clocks={"clk": 10.0})

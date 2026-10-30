@@ -6,7 +6,7 @@ import math,re
 from emuflow.common.errors import ValidationError
 from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
 from tests.timing_routing_reference import STA_PATHS_SCHEMA, compress_sta_paths
-from emuflow.timing.sta import STA_PATH_DATABASE_SCHEMA,STA_PATH_DATABASE_STREAM_SCHEMA,STA_PATH_DATABASE_INDEX_SCHEMA,_validate_database_normalization,_normalized_slack,iter_sta_path_database_paths
+from emuflow_tools.timing.sta import STA_PATH_DATABASE_SCHEMA, STA_PATH_DATABASE_STREAM_SCHEMA, STA_PATH_DATABASE_INDEX_SCHEMA, _validate_database_normalization, _normalized_slack, iter_sta_path_database_paths
 
 def project_sta_path_database_value(
     database: Mapping[str, Any],

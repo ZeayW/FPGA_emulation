@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 from emuflow.common.errors import ValidationError
-from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
 from tests import openparf_input_reference as adapter
 from tests.native_build import emuflow_native
 

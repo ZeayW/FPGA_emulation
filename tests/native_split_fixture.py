@@ -8,10 +8,10 @@ import tempfile
 
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow_tools.stage_clients.transport import run_phase6, validate_phase6
 from emuflow.transport.split_netlist_storage import SplitNetlistView, validate_split_netlists_sqlite
-from emuflow.transport.transport_storage import read_lane_map, read_transport
+from emuflow_tools.transport.transport_storage import read_lane_map, read_transport
 from tests.native_build import emuflow_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 

@@ -25,12 +25,13 @@ import threading
 from unittest.mock import patch
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.common.native_tools import native_file_generation, resolve_native_executable
 from emuflow_tools.stage_clients.transport import run_phase6
 from emuflow.transport.split_netlist_storage import open_split_netlists_sqlite
-from emuflow.common.stage_metrics import _tree_rss_kib
+from emuflow_tools.common.stage_metrics import _tree_rss_kib
 
 
 def workspace_bytes(workspace):

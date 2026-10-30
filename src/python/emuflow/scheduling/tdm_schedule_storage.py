@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 from emuflow.storage.store_publication import bind_store_source, require_store_sources_unchanged
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, write_json
+from emuflow.common.json_io import file_sha256, write_json
 
 
 TDM_SCHEDULE_STORAGE_SCHEMA = "emuflow.tdm-schedule-storage/v4"

@@ -4,16 +4,10 @@ import hashlib,json,os,re,sqlite3,uuid
 from pathlib import Path
 from collections.abc import Iterator,Mapping,Sequence
 from typing import Any
-from emuflow.transport.transport_storage import (
-    _canonical,_manifest,_record_section,_signal_section,_anchor_relation_section,
-    _canonical_document_digest,TransportView,LaneMapView,AnchorView,VirtualBindingView,
-    TRANSPORT_STORAGE_SCHEMA,LANE_MAP_STORAGE_SCHEMA,ANCHOR_STORAGE_SCHEMA,
-    VIRTUAL_BINDING_STORAGE_SCHEMA,VIRTUAL_BINDING_LOGICAL_SCHEMA,TRANSPORT_STORE_NAME,
-)
-from emuflow.transport.netlist import (LOGICAL_LANE_MAP_SCHEMA,TRANSPORT_ENDPOINTS_SCHEMA,VIRTUAL_IO_ANCHORS_SCHEMA,
-    _sv_name,transport_endpoint_port)
+from emuflow_tools.transport.transport_storage import _canonical, _manifest, _record_section, _signal_section, _anchor_relation_section, _canonical_document_digest, TransportView, LaneMapView, AnchorView, VirtualBindingView, TRANSPORT_STORAGE_SCHEMA, LANE_MAP_STORAGE_SCHEMA, ANCHOR_STORAGE_SCHEMA, VIRTUAL_BINDING_STORAGE_SCHEMA, VIRTUAL_BINDING_LOGICAL_SCHEMA, TRANSPORT_STORE_NAME
+from emuflow_tools.transport.netlist import LOGICAL_LANE_MAP_SCHEMA, TRANSPORT_ENDPOINTS_SCHEMA, VIRTUAL_IO_ANCHORS_SCHEMA, _sv_name, transport_endpoint_port
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from emuflow.partition.phase3_assignment_index import open_phase3_assignment_index
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm import TDM_SCHEDULE_SCHEMA,is_sampled_virtual_wire_schedule
@@ -883,7 +877,7 @@ def write_transport_systemverilog(
     rtl_rows = getattr(transport, "iter_rtl_endpoints", None)
     endpoint_groups = getattr(transport, "endpoint_groups", None)
     if rtl_rows is None or endpoint_groups is None:
-        from emuflow.transport.netlist import transport_to_systemverilog
+        from emuflow_tools.transport.netlist import transport_to_systemverilog
 
         value = transport_to_systemverilog(transport, platform)
         path.parent.mkdir(parents=True, exist_ok=True)

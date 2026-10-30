@@ -10,18 +10,12 @@ import pytest
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.ir.emuir_storage import _write_emuir_sqlite_v1
 from emuflow.common.errors import ValidationError
-from emuflow.timing.indexed_timing import IndexedTimingView
+from emuflow_tools.timing.indexed_timing import IndexedTimingView
 from emuflow.ir.ir import EmuIR
 from emuflow_tools.stage_clients.opensta import run_opensta_path_database
 from emuflow.ir.resources import ResourceVector
-from emuflow.timing.sta import (
-    derive_partition_net_weights,
-    iter_sta_path_database_paths,
-    validate_partition_net_weights,
-    validate_sta_path_database,
-    write_emuir_net_map,
-)
-from emuflow.frontend.verilog import mapped_verilog, write_mapped_verilog
+from emuflow_tools.timing.sta import derive_partition_net_weights, iter_sta_path_database_paths, validate_partition_net_weights, validate_sta_path_database, write_emuir_net_map
+from emuflow_tools.frontend.verilog import mapped_verilog, write_mapped_verilog
 from tests.yosys_reference import import_yosys_json
 from tests.sta_path_reference import endpoint_facts
 
@@ -94,7 +88,7 @@ def test_compact_timing_validators_do_not_reload_the_whole_graph(tmp_path):
     )
     weights = tmp_path / "weights.json"
     with patch(
-        "emuflow.timing.sta.EmuIR.load",
+        "emuflow_tools.timing.sta.EmuIR.load",
         side_effect=AssertionError("whole-graph loading forbidden"),
     ):
         assert validate_sta_path_database(database, path)["status"] == "pass"

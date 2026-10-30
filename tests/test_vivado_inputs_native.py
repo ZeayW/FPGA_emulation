@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.common.native_tools import native_file_generation
 from tests.vivado_input_host import prepare_vivado_inputs
 from tests.native_build import emuflow_native

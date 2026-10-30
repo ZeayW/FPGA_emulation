@@ -11,20 +11,21 @@ from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
-from emuflow.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_INPUT_PROVIDER, CHIMEW_BANK_CHANNEL_INPUT_SCHEMA
-from emuflow.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_INPUT_PROVIDER, CHIMEW_BANK_CHANNEL_INPUT_SCHEMA
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
 from tests.chimew_grouping_fixture import CHIMEW_ACADEMIC_CROSSING_PROVIDER, CHIMEW_CROSSING_SCHEMA, CHIMEW_TIMING_GUARD_PROVIDER, build_chimew_initial_groups
-from emuflow.transport.chimew.chimew_qualification import canonical_sha256
+from emuflow_tools.transport.chimew.chimew_qualification import canonical_sha256
 from tests.chimew_refinement_fixture import CHIMEW_POSITION_PROVIDER, CHIMEW_POSITION_SCHEMA, refine_chimew_groups
 from tests.chimew_rudy_fixture import CHIMEW_RUDY_INPUT_PROVIDER, CHIMEW_RUDY_INPUT_SCHEMA
 from tests.chimew_fixed_wiring_reference import build_fixed_wiring_chimew_electrical_map
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.transport.virtual_board import INVENTORY_PATH
-from emuflow.transport.chimew.geometry import XilinxChimewGeometry
-from emuflow.transport.chimew.signals import ChimewSignals
+from emuflow_tools.transport.virtual_board import INVENTORY_PATH
+from emuflow_tools.transport.chimew.geometry import XilinxChimewGeometry
+from emuflow_tools.transport.chimew.signals import ChimewSignals
 XILINX_CHIMEW_LOOKAHEAD_SCHEMA = "emuflow.xilinx-chimew-lookahead/v1"
 XILINX_CHIMEW_LOOKAHEAD_PROVIDER = "indexed-xilinx-placement+fixed-lvds-lookahead-v1"
 XILINX_CHIMEW_TIMING_WEIGHT_PROVIDER = "partition-projected-sta-criticality-v1"

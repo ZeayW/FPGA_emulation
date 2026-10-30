@@ -117,7 +117,7 @@ def test_routed_normalization_rejects_changes_without_mutating_previous_owner(tm
 def test_chimew_relocation_uses_original_input_bindings_and_preserves_previous_commit(
     tmp_path, failure
 ):
-    from emuflow.transport.chimew import chimew_bank_channel_storage as storage
+    from emuflow_tools.transport.chimew import chimew_bank_channel_storage as storage
     from emuflow.storage import store_publication as publication
     from tests.test_chimew_bank_channel import ChimewBankChannelTest
 

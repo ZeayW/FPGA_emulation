@@ -2,7 +2,7 @@
 from tests.partition_balance_fixture import active_partition_fpgas
 from tests.partition_balance_fixture import transported_cut_classes_for_clusters
 from emuflow.ir.resources import RESOURCE_FIELDS
-from emuflow.partition.partition_limits import strict_balance_limits
+from emuflow_tools.partition.partition_limits import strict_balance_limits
 
 
 def facts(ir, platform, clusters, constraints, weights=None):

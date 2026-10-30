@@ -20,15 +20,16 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Sequence
 
-from emuflow.transport.transport_cost import (OPEN_TRANSPORT_MODEL, OPEN_TRANSPORT_PROVENANCE, BASE_FEATURE_NAMES, FRAME_SLOTS, _nonnegative_int, _positive_int, extract_transport_features)
+from emuflow_tools.transport.transport_cost import OPEN_TRANSPORT_MODEL, OPEN_TRANSPORT_PROVENANCE, BASE_FEATURE_NAMES, FRAME_SLOTS, _nonnegative_int, _positive_int, extract_transport_features
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
-from emuflow.transport.netlist import transport_to_systemverilog
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
+from emuflow_tools.transport.netlist import transport_to_systemverilog
 from emuflow.platform.platform import Platform
 from emuflow.transport.runtime import virtual_runtime_controller_to_systemverilog
-from emuflow.frontend.frontend_native import run_rtl_frontend
+from emuflow_tools.frontend.frontend_native import run_rtl_frontend
 from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 
 
 OPEN_TRANSPORT_MATRIX_SCHEMA = "emuflow.open-transport-matrix/v2"
@@ -426,7 +427,7 @@ def characterize_open_transport_case(
             "source": {
                 "transport_sv_sha256": _sha256_bytes(transport_rtl.encode("utf-8")),
                 "runtime_sv_sha256": _sha256_bytes(runtime_rtl.encode("utf-8")),
-                "generator": "emuflow.transport.netlist.transport_to_systemverilog",
+                "generator": "emuflow_tools.transport.netlist.transport_to_systemverilog",
                 "runtime_generator": "emuflow.transport.runtime.virtual_runtime_controller_to_systemverilog",
             },
             "runtime_seconds": time.monotonic() - started,

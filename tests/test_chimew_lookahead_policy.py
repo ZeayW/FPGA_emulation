@@ -5,7 +5,7 @@ from unittest.mock import patch
 from pathlib import Path
 from tests.chimew_lookahead_reference import _coalesce_timing_guard_lanes
 from tests.chimew_signal_reference import _timing_weights
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from emuflow.common.errors import ValidationError
 from emuflow_tools.flow_validation import PHASE6_AB_COMPARISON_SCHEMA, validate_phase6_ab_comparison
 

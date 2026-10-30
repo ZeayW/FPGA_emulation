@@ -13,9 +13,9 @@ import pytest
 
 from emuflow.common.errors import ValidationError
 from emuflow.ir.emuir_compact import write_compact_emuir
-from emuflow.ir.indexed_physical_ir import IndexedPhysicalIR
-from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
-from emuflow.physical.vivado.vivado_physical import run_indexed_vivado_partition
+from emuflow_tools.ir.indexed_physical_ir import IndexedPhysicalIR
+from emuflow_tools.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
+from emuflow_tools.physical.vivado.vivado_physical import run_indexed_vivado_partition
 from emuflow.physical.physical_backend import validate_physical_partition_result
 from tests.test_vivado_indexed_physical import fixture
 from tests.test_vivado_backend import RUNTIME
@@ -103,7 +103,7 @@ def case(root, damage='',timing=False):
 
 
 def identities(root):
-    from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+    from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
     identity=root/'boundary.json'
     header={'schema':'emuflow.boundary-identity/v1','status':'pass','design':'dut','platform':'board','fpga':'fpga0','provider':'fixture'}
     row={'id':'tx','kind':'tx','schedule_entry':'s0','demand':'d0','logical_net':'middle','link':'link','peer':'fpga1',
@@ -150,9 +150,9 @@ def test_native_partition_imports_all_three_timing_populations(tmp_path):
     assert report['boundary_timing']['import']['endpoints']==1
     assert report['logic_segment_timing']['import']['segments']==1
     assert report['local_path_timing']['import']['local_paths']==1
-    from emuflow.timing.boundary_timing_storage import read_boundary_timing_storage
-    from emuflow.timing.logic_segment_timing_storage import read_logic_segment_timing_storage
-    from emuflow.timing.local_path_timing_storage import read_local_path_timing_storage
+    from emuflow_tools.timing.boundary_timing_storage import read_boundary_timing_storage
+    from emuflow_tools.timing.logic_segment_timing_storage import read_logic_segment_timing_storage
+    from emuflow_tools.timing.local_path_timing_storage import read_local_path_timing_storage
     for field,reader,records in [('boundary_timing',read_boundary_timing_storage,'endpoints'),
         ('logic_segment_timing',read_logic_segment_timing_storage,'segments'),('local_path_timing',read_local_path_timing_storage,'paths')]:
         with reader(Path(report[field]['import']['output'])) as view:
@@ -189,7 +189,7 @@ def captured_request(kwargs):
         def __enter__(self):return self
         def __exit__(self,*unused):pass
         def finish(self):return SimpleNamespace(returncode=1,stdout='captured request')
-    with patch('emuflow.physical.vivado.vivado_physical.NativeToolProcess',Capture), pytest.raises(ValidationError,match='captured request'):
+    with patch('emuflow_tools.physical.vivado.vivado_physical.NativeToolProcess',Capture), pytest.raises(ValidationError,match='captured request'):
         run_indexed_vivado_partition(**kwargs)
     return captured
 

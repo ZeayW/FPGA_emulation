@@ -8,14 +8,10 @@ from unittest import mock
 
 from tests.physical_handoff_fixture import write_handoff_fixture
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
-from emuflow.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
-from emuflow.physical.xilinx_physical_handoff import (
-    open_xilinx_physical_handoff,
-    validate_xilinx_physical_handoff,
-    validate_xilinx_physical_handoff_pair,
-)
-from emuflow.physical.contracts import XILINX_PLACEMENT_SCHEMA
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
+from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff, validate_xilinx_physical_handoff, validate_xilinx_physical_handoff_pair
+from emuflow_tools.physical.contracts import XILINX_PLACEMENT_SCHEMA
 
 
 def _contracts(identity: str = "cell0"):
@@ -107,7 +103,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
             digest = file_sha256(path)
 
             with mock.patch(
-                "emuflow.physical.xilinx_physical_handoff.file_sha256",
+                "emuflow_tools.physical.xilinx_physical_handoff.file_sha256",
                 side_effect=AssertionError("unexpected duplicate digest"),
             ):
                 packed, placement = open_xilinx_physical_handoff(
@@ -229,7 +225,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
             self.assertEqual(actual_placement['clusters'][0]['cluster'],'openparf:SLICEL_X0Y0')
 
     def test_python_handoff_producer_routes_are_retired(self):
-        import emuflow.physical.xilinx_physical_handoff as handoff
+        import emuflow_tools.physical.xilinx_physical_handoff as handoff
         self.assertFalse(hasattr(handoff,'XilinxPhysicalHandoffBuilder'))
         self.assertFalse(hasattr(handoff,'write_xilinx_physical_handoff'))
 

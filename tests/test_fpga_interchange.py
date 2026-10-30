@@ -5,16 +5,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from emuflow.platform.architecture import ArchitectureDB
-from emuflow.platform.fpga_interchange import (
-    FPGAIF_ARCH_POLICY,
-    architecture_from_fpga_interchange_extract,
-    check_ir_architecture_capacity,
-    run_fpga_interchange_architecture_import,
-    parse_xilinx_part_identity,
-    validate_fpga_interchange_architecture,
-)
-from emuflow.common.io import read_json
+from emuflow_tools.platform.architecture import ArchitectureDB
+from emuflow_tools.platform.fpga_interchange import FPGAIF_ARCH_POLICY, architecture_from_fpga_interchange_extract, check_ir_architecture_capacity, run_fpga_interchange_architecture_import, parse_xilinx_part_identity, validate_fpga_interchange_architecture
+from emuflow_tools.document_io import read_json
 
 
 ROOT = Path(__file__).resolve().parents[1]

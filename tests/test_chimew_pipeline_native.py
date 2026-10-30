@@ -7,8 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
-from emuflow.transport.chimew.chimew_pipeline import run_chimew_phase6_pipeline,validate_chimew_phase6_pipeline
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.transport.chimew.chimew_pipeline import run_chimew_phase6_pipeline, validate_chimew_phase6_pipeline
 from tests.chimew_pipeline_fixture import pipeline_inputs
 from tests.native_build import emuflow_native
 from tests.test_xilinx_chimew_lookahead import case
@@ -23,9 +23,9 @@ def run(paths,output,sources=None):
 def test_native_generation_does_not_construct_python_record_views(tmp_path,bound):
     paths,sources=pipeline_inputs(tmp_path,byte_bound=bound,opaque_prefix=b"{opaque bytes\x00\xff ")
     with patch("emuflow.scheduling.tdm_schedule_storage.read_tdm_schedule",side_effect=AssertionError("Python schedule")), \
-         patch("emuflow.transport.chimew.chimew_bank_channel_storage.read_chimew_bank_channel_input",side_effect=AssertionError("Python bank input")), \
-         patch("emuflow.transport.chimew.chimew_bank_channel_report_storage.read_chimew_bank_channel_report",side_effect=AssertionError("Python assignment")), \
-         patch("emuflow.transport.pin_plan_storage.read_pin_plan",side_effect=AssertionError("Python pins")):
+         patch("emuflow_tools.transport.chimew.chimew_bank_channel_storage.read_chimew_bank_channel_input",side_effect=AssertionError("Python bank input")), \
+         patch("emuflow_tools.transport.chimew.chimew_bank_channel_report_storage.read_chimew_bank_channel_report",side_effect=AssertionError("Python assignment")), \
+         patch("emuflow_tools.transport.pin_plan_storage.read_pin_plan",side_effect=AssertionError("Python pins")):
         report=run(paths,tmp_path/"pipeline",sources)
         checked=validate_chimew_phase6_pipeline(tmp_path/"pipeline")
     assert report["implementation_id"]=="native-chimew-pipeline-v1"
@@ -83,7 +83,7 @@ def test_bad_native_request_preserves_the_complete_commit(tmp_path,defect):
 
 @pytest.mark.parametrize("fixed_case",[2,4],indirect=True)
 def test_native_pipeline_joins_real_fixed_wiring_and_selected_backend_geometry(case,tmp_path):
-    from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
+    from emuflow_tools.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
     from emuflow.platform.default_platform import research_platform_path
     platform,source,architecture,physical,schedule,routes=case
     prepared=materialize_xilinx_chimew_inputs(ir_path=source,schedule_path=schedule,routes_path=routes,

@@ -11,13 +11,14 @@ from pathlib import Path
 
 import pytest
 
-import emuflow.transport.virtual_board as virtual_board_module
+import emuflow_tools.transport.virtual_board as virtual_board_module
 from tests.virtual_binding_fixture import binding_text
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
 from emuflow.ir.emuir_compact import write_compact_emuir
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from tests.native_partition_facts import (build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
 from emuflow_tools.stage_clients.transport import run_phase6, validate_phase6
@@ -25,13 +26,8 @@ from emuflow.platform.platform import Platform
 from emuflow.routing.routing import normalize_route_constraints
 from tests.schedule_reference import build_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage
-from emuflow.transport.transport_storage import (
-    VIRTUAL_BINDING_STORAGE_SCHEMA,
-    read_virtual_binding,
-)
-from emuflow.transport.virtual_board import (
-    IO_CONTRACT_STORAGE_SCHEMA,
-)
+from emuflow_tools.transport.transport_storage import VIRTUAL_BINDING_STORAGE_SCHEMA, read_virtual_binding
+from emuflow_tools.transport.virtual_board import IO_CONTRACT_STORAGE_SCHEMA
 from tests.yosys_reference import import_yosys_json
 from tests.native_build import tlr_router
 

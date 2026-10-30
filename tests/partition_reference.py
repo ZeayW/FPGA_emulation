@@ -9,7 +9,7 @@ from emuflow.platform.platform import Platform
 from tests.partition_balance_fixture import active_partition_fpgas
 from tests.partition_balance_fixture import transported_cut_classes_for_clusters
 from tests.native_partition_facts import (build_partition_assignment)
-from emuflow.partition.partition_limits import planning_resource_capacities, strict_balance_limits
+from emuflow_tools.partition.partition_limits import planning_resource_capacities, strict_balance_limits
 from emuflow.ir.resources import RESOURCE_FIELDS, ResourceVector
 
 

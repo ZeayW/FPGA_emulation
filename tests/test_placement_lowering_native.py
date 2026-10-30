@@ -9,15 +9,15 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.timing.boundary_timing import validate_boundary_identity_database
-from emuflow.timing.boundary_identity_storage import read_boundary_identity_storage
+from emuflow_tools.timing.boundary_timing import validate_boundary_identity_database
+from emuflow_tools.timing.boundary_identity_storage import read_boundary_identity_storage
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.ir.ir import EmuIR
-from emuflow.physical.lowering import run_placement_ir_lowering_from_split
-from emuflow.transport.netlist import transport_endpoint_port
+from emuflow_tools.physical.lowering import run_placement_ir_lowering_from_split
+from emuflow_tools.transport.netlist import transport_endpoint_port
 from tests.native_split_fixture import materialize_partition_fixture
 from emuflow.transport.split_overlay import build_native_split
-from emuflow.transport.transport_storage import write_transport_storage
+from emuflow_tools.transport.transport_storage import write_transport_storage
 from tests.test_split_overlay_native import owners
 
 
@@ -103,7 +103,7 @@ def prepare(owners,root,shared=False,fpga_index=0):
 def test_native_whole_lowering_preserves_sources_and_boundary_identities(owners, tmp_path, shared, fpga_index):
     case, split, fpga, transport, logical, ir, path = prepare(owners, tmp_path, shared, fpga_index)
     output = tmp_path / 'native/placement.emuir.sqlite'
-    import emuflow.timing.boundary_timing as boundary
+    import emuflow_tools.timing.boundary_timing as boundary
     assert not hasattr(boundary, 'iter_boundary_identity_records')
     with patch('emuflow.ir.ir.EmuIR.load', side_effect=AssertionError('Python graph import')):
         report = run_placement_ir_lowering_from_split(split, fpga, transport.manifest_path, path, output)
@@ -208,7 +208,7 @@ def test_native_whole_lowering_preserves_sources_and_boundary_identities(owners,
 
 
 def test_removed_graph_lowering_interfaces_are_not_exposed():
-    import emuflow.physical.lowering as lowering
+    import emuflow_tools.physical.lowering as lowering
     from emuflow.flow.cli import _build_parser
     assert not any(hasattr(lowering, name) for name in (
         'build_placement_ir', 'run_placement_ir_lowering',
@@ -235,7 +235,7 @@ def test_removed_graph_lowering_interfaces_are_not_exposed():
 @pytest.mark.parametrize('damage',['source-generation','missing-shadow','multiple-top','incompatible-port','nonlocal-source','missing-external','double-shadow-driver'])
 def test_native_lowering_rejects_broken_stage_contracts_without_publishing(owners,tmp_path,damage):
     from emuflow.common.errors import ValidationError
-    from emuflow.physical.placement_lowering_native import NativeToolProcess
+    from emuflow_tools.physical.placement_lowering_native import NativeToolProcess
     case,split,fpga,transport,logical,ir,path=prepare(owners,tmp_path,damage=='incompatible-port')
     if damage=='missing-shadow':
         if not transport['shadow_signals']:pytest.skip('requires RX')

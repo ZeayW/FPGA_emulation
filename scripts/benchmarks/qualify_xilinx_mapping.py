@@ -10,7 +10,7 @@ from typing import Any, Mapping, Optional
 
 from emuflow_tools.benchmark import BenchmarkRun
 from emuflow.common.errors import EmuFlowError
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from emuflow_tools.yosys_mapping_statistics import (
     VALID_XILINX_MAPPING_STRATEGIES,
     run_xilinx_mapping_statistics,

@@ -14,11 +14,11 @@ import zlib
 from contextlib import closing
 from unittest import mock
 
-from emuflow.physical.rapidwright import rwroute_native
+from emuflow_tools.physical.rapidwright import rwroute_native
 from emuflow.common.errors import ValidationError
-from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
-from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
-from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input
+from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
+from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import export_rwroute_input
 from tests.rwroute_reference import export_rwroute_reference
 from tests.native_build import emuflow_native
 
@@ -111,9 +111,9 @@ def native(root, values, *, contract=True):
     mapped, packed, placement, io, mapped_path, handoff = values
     with mock.patch.object(
             rwroute_native, 'resolve_native_executable', return_value=str(emuflow_native())), \
-            mock.patch('emuflow.common.io.read_json', side_effect=AssertionError('Python JSON loader')), \
-            mock.patch('emuflow.physical.xilinx_netlist.IndexedXilinxMappedNetlist.__init__', side_effect=AssertionError('Python mapped view')), \
-            mock.patch('emuflow.physical.xilinx_physical_handoff.open_xilinx_physical_handoff', side_effect=AssertionError('Python physical views')):
+            mock.patch('emuflow.common.json_io.read_json', side_effect=AssertionError('Python JSON loader')), \
+            mock.patch('emuflow_tools.physical.xilinx_netlist.IndexedXilinxMappedNetlist.__init__', side_effect=AssertionError('Python mapped view')), \
+            mock.patch('emuflow_tools.physical.xilinx_physical_handoff.open_xilinx_physical_handoff', side_effect=AssertionError('Python physical views')):
         return export_rwroute_input(
             mapped_path, handoff, root/'native.tsv',
             source_sha256=DIGESTS, virtual_io_contract=io if contract else None,
@@ -155,7 +155,7 @@ class NativeRwrouteTests(unittest.TestCase):
                 self.assertIn(str((1<<80)-1),text)
 
     def test_json_inputs_are_rejected_before_hash_or_native_execution(self):
-        from emuflow.physical.rapidwright import xilinx_rwroute as adapter
+        from emuflow_tools.physical.rapidwright import xilinx_rwroute as adapter
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             values = fixture(root)
@@ -172,8 +172,8 @@ class NativeRwrouteTests(unittest.TestCase):
                     self.assertEqual(output.read_text(), 'prior publication')
 
     def test_standalone_export_hashes_the_single_physical_owner_once(self):
-        from emuflow.physical.rapidwright import xilinx_rwroute as adapter
-        from emuflow.common.io import file_sha256
+        from emuflow_tools.physical.rapidwright import xilinx_rwroute as adapter
+        from emuflow.common.json_io import file_sha256
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             values = fixture(root)
@@ -344,7 +344,7 @@ class NativeRwrouteTests(unittest.TestCase):
                     expected_top='top',virtual_io_contract=io,resource_limits=None,
                     minimum_logical_cells=minimum,source_commit=None)
                 with mock.patch.dict(os.environ,{'EMUFLOW_NATIVE_ROOT':str(install),
-                        'PYTHONPATH':str(Path(__file__).parents[1]/'src/python')}):
+                        'PYTHONPATH':os.pathsep.join(str(Path(__file__).parents[1]/part) for part in ('src/python','tools'))}):
                     if minimum==1:
                         result=qualification.qualify(args)
                         self.assertEqual(result['status'],'pass')

@@ -6,13 +6,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.platform.board_link_timing import build_board_link_timing_model
+from emuflow_tools.platform.board_link_timing import build_board_link_timing_model
 from tests.cross_layer_facts import coverage_contract_facts as build_cross_layer_timing_contract
 from emuflow.common.errors import ValidationError
 from tests.physical_coverage_fixture import build_cross_layer_physical_binding, validate_cross_layer_physical_binding
 from emuflow.partition.combinational_cut import semantic_contract_sha256
 from emuflow_tools.stage_clients.schedule import validate_phase5
-from emuflow.scheduling.phase5_timing_native import project_native_schedule_timing
+from emuflow_tools.scheduling.phase5_timing_native import project_native_schedule_timing
 from emuflow.platform.platform import Platform
 from emuflow.routing.routing import normalize_route_constraints
 from tests.static_exact_deadline_oracle import (
@@ -24,7 +24,7 @@ from tests.system_timing_oracle import (
     _fixed_slot_transport_path_delay,
     build_system_timing,
 )
-from emuflow.routing.system_route_storage import read_system_routes
+from emuflow_tools.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.tdm_reference import validate_tdm_schedule
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing

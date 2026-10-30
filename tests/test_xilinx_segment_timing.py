@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 import pytest
 
-from emuflow.timing.boundary_timing_storage import read_boundary_timing_storage
+from emuflow_tools.timing.boundary_timing_storage import read_boundary_timing_storage
 from emuflow.common.errors import ValidationError
 
 import tests.xilinx_segment_timing_reference as xilinx_segment_timing
@@ -13,11 +13,8 @@ from tests.xilinx_segment_timing_reference import (
     build_xilinx_local_path_timing,
     build_xilinx_segment_timing_bundle,
 )
-from emuflow.timing.local_path_timing import (
-    LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
-    local_path_timing_header,
-)
-from emuflow.timing.local_path_timing_storage import (read_local_path_timing_storage)
+from emuflow_tools.timing.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION, local_path_timing_header
+from emuflow_tools.timing.local_path_timing_storage import read_local_path_timing_storage
 from tests.timing_facts import local_timing_facts
 from tests.routed_timing_adapter import (
     XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
@@ -184,7 +181,7 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
         timing_path = root / "timing.json"
         timing_path.write_text(json.dumps(timing), encoding="utf-8")
         identity_path = root / "identity.json"
-        from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+        from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
         from tests.test_boundary_identity_storage import _record
         records=[]
         for i, fact in enumerate(identity['endpoints']):

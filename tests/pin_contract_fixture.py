@@ -4,11 +4,11 @@ from pathlib import Path
 import json
 import tempfile
 
-from emuflow.transport.pin_artifacts_native import validate_pin_artifacts, audit_electrical_map
+from emuflow_tools.transport.pin_artifacts_native import validate_pin_artifacts, audit_electrical_map
 from tests.pin_plan_storage_fixture import write_pin_plan_storage
 from tests.position_hints_storage_fixture import write_position_hints_storage
 from tests.chimew_binding_storage_fixture import write_chimew_binding_storage
-from emuflow.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
 
 
 @contextmanager

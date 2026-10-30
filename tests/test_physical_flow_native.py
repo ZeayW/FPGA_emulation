@@ -162,7 +162,7 @@ def test_native_whole_rapidwright_flow_never_returns_to_python_stage_coordinator
     def intercept(executable, argv, **options):
         captured.update(json.loads(Path(argv[-2]).read_text()))
         raise Capture()
-    with mock.patch('emuflow.physical.xilinx_physical_backend.NativeToolProcess',side_effect=intercept):
+    with mock.patch('emuflow_tools.physical.xilinx_physical_backend.NativeToolProcess',side_effect=intercept):
         with pytest.raises(Capture):run_partition(kwargs,contract)
     request['sources']=[r for r in request['sources'] if not r['role'].startswith('backend.')]
     for source in captured['sources']:
@@ -186,8 +186,8 @@ def test_full_native_controller_binds_original_paths_exact_schedule_and_both_que
     from dataclasses import replace
     from tests.logic_segment_query_fixture import sources
     from tests.phase3_store_fixture import write_current_assignment_fixture
-    from emuflow.transport.transport_storage import read_transport
-    from emuflow.transport.netlist import transport_endpoint_port
+    from emuflow_tools.transport.transport_storage import read_transport
+    from emuflow_tools.transport.netlist import transport_endpoint_port
     value=sources(tmp_path/'timing')
     if linked_paths:
         description=json.loads(value.paths.read_text())['payloads']['paths']
@@ -228,7 +228,7 @@ def test_full_native_controller_binds_original_paths_exact_schedule_and_both_que
 
 
 def transport_module(transport):
-    from emuflow.transport.netlist import transport_endpoint_port
+    from emuflow_tools.transport.netlist import transport_endpoint_port
     bits={s['signal']:i+20 for i,s in enumerate(transport['source_signals']+transport['shadow_signals'])}
     ports={n:{'direction':'input','bits':[i+1]} for i,n in enumerate(('fabric_clk','reset','links_ready'))}
     for kind,name,direction in [('source','source_values','input'),('shadow','shadow_values','output')]:
@@ -251,7 +251,7 @@ def transport_module(transport):
 def write_flow_transport_tool(path,split):
     import inspect
     body=inspect.getsource(transport_module)
-    path.write_text('#!'+sys.executable+'\nimport sys,json,re\nfrom pathlib import Path\nfrom emuflow.transport.transport_storage import read_transport\n'+body+
+    path.write_text('#!'+sys.executable+'\nimport sys,json,re\nfrom pathlib import Path\nsys.path.insert(0,'+repr(str(ROOT/'tools'))+')\nfrom emuflow_tools.transport.transport_storage import read_transport\n'+body+
         "if '--version' in sys.argv or '-V' in sys.argv:print('Yosys 0.57');raise SystemExit(0)\n"+
         "top=re.search(r'hierarchy -check -top ([^; ]+)',sys.argv[-1])[1]\nfpga=re.search(r'fpga[0-9]+',top)[0]\n"+
         'source=Path('+repr(str(split))+')/fpga/"transport.json"\n'+

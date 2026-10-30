@@ -3,11 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from emuflow.timing.boundary_timing import (
-    boundary_timing_header,
-    validate_boundary_identity_database,
-    validate_boundary_timing_database,
-)
+from emuflow_tools.timing.boundary_timing import boundary_timing_header, validate_boundary_identity_database, validate_boundary_timing_database
 from emuflow.common.errors import ValidationError
 from tests.test_boundary_identity_storage import _header, _record
 

@@ -11,12 +11,12 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
-from emuflow.physical.physical_measurements_native import import_physical_measurements
+from emuflow_tools.document_io import read_json
+from emuflow_tools.physical.physical_measurements_native import import_physical_measurements
 from tests.vivado_measurement_host import import_indexed_vivado_boundary, import_vivado_local_timing
 from tests.vivado_measurement_host import import_vivado_logic_segment_timing
-from emuflow.timing.logic_segment_timing import VIVADO_LOGIC_SEGMENT_TIMING_HEADER
-from emuflow.timing.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
+from emuflow_tools.timing.logic_segment_timing import VIVADO_LOGIC_SEGMENT_TIMING_HEADER
+from emuflow_tools.timing.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
 from tests import test_logic_segment_timing as logic_fixture
 from tests.test_physical_store_publication import producer
 
@@ -29,7 +29,7 @@ def native_runtime(tmp_path,monkeypatch):
 
 
 def _module(kind):
-    return importlib.import_module('emuflow.timing.'+{2:'boundary_timing',3:'logic_segment_timing',4:'local_path_timing'}[kind]+'_storage')
+    return importlib.import_module('emuflow_tools.timing.'+{2:'boundary_timing',3:'logic_segment_timing',4:'local_path_timing'}[kind]+'_storage')
 
 
 def _case(root,kind,count=5):
@@ -42,7 +42,7 @@ def _case(root,kind,count=5):
             rows.append([row['id'],row['kind'],i+0.25,'start-'+row['id'],'end-'+row['id']])
     elif kind==3:
         identity,_=logic_fixture.LogicSegmentTimingTest()._typed_identity(root,count)
-        from emuflow.timing.logic_segment_identity_storage import read_logic_segment_identity_storage
+        from emuflow_tools.timing.logic_segment_identity_storage import read_logic_segment_identity_storage
         with read_logic_segment_identity_storage(identity) as view:
             header=dict(view.selector['header']);expected=list(view['segments'])
         rows=[[row['id'],row['kind'],i+0.25,row['start_pin'],row['end_pin'],'endpoint-exact',row['start_pin'],row['end_pin']] for i,row in enumerate(expected)]
@@ -78,7 +78,7 @@ def _run(kind,raw,identity,output,**kwargs):
 def _reference(kind,output,identity_header,expected,rows):
     m=_module(kind);measurements={row[0]:row for row in rows}
     if kind==2:
-        from emuflow.timing.boundary_timing import boundary_timing_header
+        from emuflow_tools.timing.boundary_timing import boundary_timing_header
         header=boundary_timing_header(identity_header,provider='vivado-indexed-routed-boundary-v1',qualification='routed-vendor-device-boundary')
         records=[{'id':row['id'],'kind':row['kind'],'schedule_entry':row['schedule_entry'],
                   'delay_ns':measurements[row['id']][2],'start_object':measurements[row['id']][3],
@@ -110,7 +110,7 @@ def test_native_import_matches_complete_independent_writer_records_and_seals(tmp
         stack.enter_context(patch.object(Path,'open',no_python_tsv))
         assert not hasattr(m, 'write_'+m.__name__.split('.')[-1].replace('_storage','')+'_storage')
         if kind==3:
-            from emuflow.timing import logic_segment_identity_storage as identities
+            from emuflow_tools.timing import logic_segment_identity_storage as identities
             stack.enter_context(patch.object(identities,'segment_from_row',side_effect=AssertionError('Python source identity population')))
         report=_run(kind,raw,identity,output)
     reader=getattr(m,'read_'+m.__name__.split('.')[-1].replace('_storage','')+'_storage')
@@ -145,7 +145,7 @@ def test_native_import_failure_preserves_prior_owner_and_retires_scratch(tmp_pat
 
 @pytest.mark.parametrize('kind',[2,3,4])
 def test_source_mutation_after_native_import_cannot_publish(tmp_path,kind):
-    from emuflow.physical import physical_measurements_native as native
+    from emuflow_tools.physical import physical_measurements_native as native
     identity,raw,header,expected,rows=_case(tmp_path,kind)
     output=tmp_path/'timing.json';_run(kind,raw,identity,output);prior=output.read_bytes()
     finish=native.NativeToolProcess.finish
@@ -159,7 +159,7 @@ def test_source_mutation_after_native_import_cannot_publish(tmp_path,kind):
 
 
 def test_typed_vivado_query_uses_shared_local_owner_and_rejects_retired_private_schema(tmp_path, monkeypatch):
-    from emuflow.timing.local_path_timing import read_local_path_identity
+    from emuflow_tools.timing.local_path_timing import read_local_path_identity
     from tests.vivado_measurement_host import write_vivado_local_query
     from tests.local_path_query_fixture import sources, prepare
     from tests.native_build import emuflow_native
@@ -175,7 +175,7 @@ def test_typed_vivado_query_uses_shared_local_owner_and_rejects_retired_private_
 
 @pytest.mark.parametrize('count,missing',[(17,False),(17,True),(0,False)])
 def test_native_logic_members_missing_order_and_canonical_records(tmp_path,count,missing):
-    from emuflow.timing.logic_segment_timing_storage import read_logic_segment_timing_storage
+    from emuflow_tools.timing.logic_segment_timing_storage import read_logic_segment_timing_storage
     identity,raw,header,expected,rows=_case(tmp_path,3,count=count)
     if missing:rows=rows[::2];_tsv(raw,rows,3)
     output=tmp_path/'timing.json';report=_run(3,raw,identity,output,allow_missing=missing)
@@ -190,7 +190,7 @@ def test_native_logic_members_missing_order_and_canonical_records(tmp_path,count
 
 @pytest.mark.parametrize('kind',[2,3,4])
 def test_native_import_rejects_bad_crc_and_preserves_previous_publication(tmp_path,kind):
-    from emuflow.physical import physical_measurements_native as native
+    from emuflow_tools.physical import physical_measurements_native as native
     identity,raw,header,expected,rows=_case(tmp_path,kind)
     output=tmp_path/'timing.json';_run(kind,raw,identity,output);old=output.read_bytes()
     finish=native.CheckedRequestWriter.finish

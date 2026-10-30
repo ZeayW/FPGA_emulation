@@ -6,28 +6,16 @@ import unittest
 from collections import defaultdict
 from pathlib import Path
 
-from emuflow.transport.chimew.chimew_bank_channel import (
-    CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
-    CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
-)
-from emuflow.transport.chimew.chimew_bank_channel_storage import (
-    write_chimew_bank_channel_storage,
-)
+from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_INPUT_PROVIDER, CHIMEW_BANK_CHANNEL_INPUT_SCHEMA
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
 from tests.chimew_grouping_fixture import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     build_chimew_initial_groups,
 )
-from emuflow.transport.chimew.chimew_phase6 import (
-    CHIMEW_ELECTRICAL_MAP_PROVIDER,
-    CHIMEW_ELECTRICAL_MAP_SCHEMA,
-)
-from emuflow.transport.chimew.chimew_pipeline import (
-    CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
-    run_chimew_phase6_pipeline,
-    validate_chimew_phase6_pipeline,
-)
-from emuflow.transport.chimew.chimew_qualification import canonical_sha256
+from emuflow_tools.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER, CHIMEW_ELECTRICAL_MAP_SCHEMA
+from emuflow_tools.transport.chimew.chimew_pipeline import CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER, run_chimew_phase6_pipeline, validate_chimew_phase6_pipeline
+from emuflow_tools.transport.chimew.chimew_qualification import canonical_sha256
 from tests.chimew_refinement_fixture import (
     CHIMEW_POSITION_PROVIDER,
     CHIMEW_POSITION_SCHEMA,
@@ -41,7 +29,8 @@ from emuflow_tools.contest_iccad2019 import (
     import_iccad2019_instance,
     materialize_iccad2019_rtl_boarddb,
 )
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from tests.partition_fixture import run_phase3_fixture as run_phase3
 from emuflow_tools.stage_clients.routing import run_phase4
 from emuflow_tools.stage_clients.schedule import run_phase5

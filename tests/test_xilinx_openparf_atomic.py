@@ -15,15 +15,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from emuflow.platform.architecture import ArchitectureDB
+from emuflow_tools.platform.architecture import ArchitectureDB
 from emuflow.common.errors import ImportError, ValidationError
 import tests.openparf_placement_reference as atomic_adapter
 from tests.yosys_reference import import_yosys_json
-from emuflow.physical.openparf.xilinx_openparf_atomic import (build_xilinx_openparf_atomic_source)
+from emuflow_tools.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
 from tests.openparf_placement_reference import (OPENPARF_ATOMIC_MANIFEST_SCHEMA, OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA, OPENPARF_ATOMIC_PLACEMENT_SCHEMA, OPENPARF_ATOMIC_SOURCE_SCHEMA, OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA, legalize_xilinx_openparf_ff_control_sets, iter_xilinx_openparf_atomic_placement_clusters, load_xilinx_openparf_atomic_placement_clusters, load_xilinx_openparf_atomic_sites, open_xilinx_openparf_atomic_placement, validate_xilinx_openparf_atomic_placement, materialize_xilinx_openparf_atomic_source, read_xilinx_openparf_atomic_name_map)
-from emuflow.physical.openparf.xilinx_openparf_source_storage import (
-    OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
-)
+from emuflow_tools.physical.openparf.xilinx_openparf_source_storage import OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
 from tests.xilinx_site_reference import validate_xilinx_packing
 from tests.xilinx_site_reference import pack_xilinx_sites
 from tests.xilinx_site_reference import validate_xilinx_placement
@@ -1439,7 +1437,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
 
     def test_production_bridge_rejects_inline_legacy_certificate(self):
         from tests.physical_handoff_native_fixture import prepare_native_handoff
-        from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract as native_handoff
+        from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract as native_handoff
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             facts = prepare_native_handoff(root / "sources")
@@ -2557,7 +2555,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with mock.patch(
-                "emuflow.physical.openparf.xilinx_openparf_name_map_storage."
+                "emuflow_tools.physical.openparf.xilinx_openparf_name_map_storage."
                 "_AtomSequence.__iter__",
                 side_effect=AssertionError("atom sequence was materialized"),
             ):

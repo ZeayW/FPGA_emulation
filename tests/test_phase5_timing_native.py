@@ -11,15 +11,12 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.scheduling.cross_layer_timing import (
-    build_cross_layer_timing_contract,
-    validate_cross_layer_timing_contract,
-)
+from emuflow_tools.scheduling.cross_layer_timing import build_cross_layer_timing_contract, validate_cross_layer_timing_contract
 from tests.cross_layer_facts import coverage_contract_facts
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
-from emuflow.scheduling.phase5_timing_native import project_native_schedule_timing
-from emuflow.routing.system_route_storage import read_system_routes
+from emuflow_tools.document_io import read_json
+from emuflow_tools.scheduling.phase5_timing_native import project_native_schedule_timing
+from emuflow_tools.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
@@ -120,7 +117,7 @@ def test_native_combined_summary_and_full_projection_match_independent_reference
         )
         import emuflow.scheduling.tdm as tdm
         assert not hasattr(tdm, "_iter_tdm_schedule_timing_paths_from_routes")
-        import emuflow.scheduling.cross_layer_timing as cross_layer
+        import emuflow_tools.scheduling.cross_layer_timing as cross_layer
         assert not hasattr(cross_layer, "_build_contract")
         actual = project_native_schedule_timing(
             routes, schedule, case.platform, bind=True, analyze=True

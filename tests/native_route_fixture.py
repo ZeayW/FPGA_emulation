@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.partition.phase3_assignment_index import (
     ASSIGNMENT_INDEX_APPLICATION_ID, ASSIGNMENT_INDEX_SCHEMA,
     ASSIGNMENT_INDEX_USER_VERSION, CURRENT_DDL, CUT_RECORDS_SCHEMA,

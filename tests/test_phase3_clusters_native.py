@@ -13,7 +13,7 @@ from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.errors import ValidationError
 from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters)
-from emuflow.partition.partition_ir import load_partition_ir
+from emuflow_tools.partition.partition_ir import load_partition_ir
 from tests.native_partition_core_fixture import build_native_clusters
 from tests.native_build import emuflow_native
 from tests import partition_pressure_fixture as reference_fixture

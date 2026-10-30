@@ -12,9 +12,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from tests.vivado_input_host import prepare_vivado_inputs
-from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
+from emuflow_tools.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
 from tests.vivado_measurement_host import write_vivado_local_query, import_vivado_local_timing
 from tests.yosys_reference import import_yosys_json
 
@@ -100,7 +100,7 @@ puts pass
                 db.execute("DELETE FROM endpoint_records WHERE net_seq=? AND role=0", (net,))
                 db.execute("UPDATE net_records SET cut_class='undriven' WHERE seq=?", (net,))
             output = root / "new" / "dut.v"
-            with patch("emuflow.physical.xilinx_netlist.emit_xilinx_mapped_index") as lower:
+            with patch("emuflow_tools.physical.xilinx_netlist.emit_xilinx_mapped_index") as lower:
                 with self.assertRaisesRegex(ValidationError, "1 used undriven"):
                     emit_vivado_mapped_verilog(ir, output)
                 lower.assert_not_called()
@@ -110,7 +110,7 @@ puts pass
             self.assertEqual(report["examples"], [{"net": "d", "cut_class": "undriven"}])
 
     def test_unused_undriven_source_is_not_a_missing_used_driver(self):
-        from emuflow.physical.vivado.vivado_source import validate_vivado_source
+        from emuflow_tools.physical.vivado.vivado_source import validate_vivado_source
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -122,7 +122,7 @@ puts pass
             self.assertEqual(validate_vivado_source(ir)["used_undriven_nets"], 0)
 
     def test_one_based_and_sparse_net_ordinals_do_not_alias_unused_ports(self):
-        from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+        from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
 
         for sparse in (False, True):
             with self.subTest(sparse=sparse), tempfile.TemporaryDirectory() as directory:
@@ -185,8 +185,8 @@ puts pass
                          ("pin", "bram/WEA[0]"))
 
     def test_indexed_boundary_import_preserves_board_scope_and_exact_coverage(self):
-        from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
-        from emuflow.timing.boundary_timing_storage import read_boundary_timing_storage
+        from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
+        from emuflow_tools.timing.boundary_timing_storage import read_boundary_timing_storage
         from tests.vivado_measurement_host import import_indexed_vivado_boundary
         def _header():
             return {"schema": "emuflow.boundary-identity/v1", "status": "pass",

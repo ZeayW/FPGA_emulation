@@ -16,37 +16,19 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.transport.chimew.chimew_bank_channel import (
-    CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
-    CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
-)
-from emuflow.transport.chimew.chimew_bank_channel_storage import (
-    write_chimew_bank_channel_storage,
-)
-from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
-    read_chimew_bank_channel_report,
-)
-from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
+from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_INPUT_PROVIDER, CHIMEW_BANK_CHANNEL_INPUT_SCHEMA
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew.chimew_bank_channel_report_storage import read_chimew_bank_channel_report
+from emuflow_tools.transport.chimew.chimew_binding_storage import read_chimew_binding
 from tests.chimew_grouping_fixture import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     build_chimew_initial_groups,
 )
-from emuflow.transport.chimew.chimew_qualification import (
-    CHIMEW_QUALIFICATION_PROVIDER,
-    canonical_sha256,
-    validate_chimew_qualification_seal,
-    qualify_chimew_artifact_chain,
-)
-from emuflow.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER, CHIMEW_ELECTRICAL_MAP_SCHEMA
+from emuflow_tools.transport.chimew.chimew_qualification import CHIMEW_QUALIFICATION_PROVIDER, canonical_sha256, validate_chimew_qualification_seal, qualify_chimew_artifact_chain
+from emuflow_tools.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER, CHIMEW_ELECTRICAL_MAP_SCHEMA
 from tests.pin_contract_fixture import validate_chimew_phase6_binding
-from emuflow.transport.chimew.chimew_pipeline import (
-    CHIMEW_PIPELINE_PROVIDER,
-    CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
-    read_chimew_phase6_pipeline,
-    run_chimew_phase6_pipeline,
-    validate_chimew_phase6_pipeline,
-)
+from emuflow_tools.transport.chimew.chimew_pipeline import CHIMEW_PIPELINE_PROVIDER, CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER, read_chimew_phase6_pipeline, run_chimew_phase6_pipeline, validate_chimew_phase6_pipeline
 from tests.chimew_refinement_fixture import (
     CHIMEW_POSITION_PROVIDER,
     CHIMEW_POSITION_SCHEMA,
@@ -58,10 +40,11 @@ from tests.chimew_rudy_fixture import (
     evaluate_chimew_rudy,
 )
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
-from emuflow.transport.pin_plan_storage import read_pin_plan
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
+from emuflow_tools.transport.pin_plan_storage import read_pin_plan
 from emuflow.platform.platform import Platform
-from emuflow.transport.position_hints_storage import read_position_hints
+from emuflow_tools.transport.position_hints_storage import read_position_hints
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -677,7 +660,7 @@ class ChimewQualificationTest(unittest.TestCase):
                 validate_chimew_phase6_pipeline(output)["status"], "pass"
             )
 
-            import emuflow.transport.chimew.chimew_pipeline as chimew_pipeline_module
+            import emuflow_tools.transport.chimew.chimew_pipeline as chimew_pipeline_module
 
             for identity_field, wrong_value in (
                 ("design", "wrong-design"),
@@ -871,12 +854,12 @@ class ChimewQualificationTest(unittest.TestCase):
             self.assertEqual(writer_errors, [])
             self.assertFalse(leased_generation.exists())
 
-            import emuflow.transport.chimew.chimew_pipeline as chimew_pipeline_module
+            import emuflow_tools.transport.chimew.chimew_pipeline as chimew_pipeline_module
 
             # Observe real native subprocesses queued on the same publication
             # lock. No Python producer or mock transaction supplies the result.
             import fcntl
-            import emuflow.transport.chimew.pipeline_native as native_pipeline
+            import emuflow_tools.transport.chimew.pipeline_native as native_pipeline
             real_process = native_pipeline.NativeToolProcess
             queued = threading.Event()
             launch_guard = threading.Lock()

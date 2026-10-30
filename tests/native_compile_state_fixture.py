@@ -65,7 +65,7 @@ def _unpack(value, depth=0):
                     or type(body["generation"]) is not list or len(body["generation"]) != 7
                     or any(type(item) is not int for item in body["generation"])):
                 raise EmuFlowError("invalid prepared timing report reference")
-            from emuflow.frontend.inputs import read_timing_summary
+            from emuflow_tools.frontend.inputs import read_timing_summary
             return read_timing_summary(body["path"], body["generation"])["summary"]
         if kind == "timing-report":
             if (type(body) is not dict or set(body)!={"schema","path","generation"}
@@ -139,7 +139,7 @@ def _unpack(value, depth=0):
                     or body.get("schema") != "phase1-summary-v1" or not isinstance(body.get("path"), str)
                     or not Path(body["path"]).is_absolute() or type(body.get("generation")) is not list or len(body["generation"]) != 7):
                 raise EmuFlowError("invalid native frontend report reference")
-            from emuflow.frontend.frontend_native import read_frontend_summary
+            from emuflow_tools.frontend.frontend_native import read_frontend_summary
             return read_frontend_summary(body["path"], body["generation"])
         if kind == "path" and isinstance(body, str):
             return Path(body)
@@ -162,7 +162,7 @@ def _control_snapshot(ctx, stage, flow):
     state = {key: item for key, item in vars(ctx).items() if not key.startswith("_")}
     catalog = state.get("chimew_package_geometry")
     if catalog is not None:
-        from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
+        from emuflow_tools.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
 
         if type(catalog) is not XilinxPackageGeometry:
             raise EmuFlowError("invalid native Chimew package catalog owner")

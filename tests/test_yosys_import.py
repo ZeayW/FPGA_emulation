@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow.common.errors import ImportError
 from emuflow.ir.ir import EmuIR
 from tests.yosys_reference import import_yosys_json, import_yosys_json_indexed

@@ -4,7 +4,7 @@ from emuflow.common.paths import DATA_ROOT
 from pathlib import Path
 from typing import Any, Dict, Mapping
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow.common.json_io import read_json
 from emuflow.ir.resources import ResourceVector, classify_primitive_resources
 
 LUT_TYPES = {f"LUT{width}" for width in range(1, 7)}

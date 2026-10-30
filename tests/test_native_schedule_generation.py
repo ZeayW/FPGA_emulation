@@ -14,11 +14,11 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from tests.schedule_reference import build_tdm_schedule
 from emuflow.scheduling.tdm_schedule_storage import (read_tdm_schedule)
-from emuflow.routing.system_route_storage import read_system_routes
+from emuflow_tools.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.native_build import emuflow_native, native_json_record
 from tests.native_schedule_case import _case

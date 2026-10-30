@@ -45,7 +45,7 @@ def pressure_kernel_inputs(ir, platform, clusters, constraints, timing, routes, 
 
 
 def write_pressure_requests(value, root, initial, max_moves):
-    from emuflow.partition.partition_limits import planning_resource_capacities
+    from emuflow_tools.partition.partition_limits import planning_resource_capacities
     from tests.native_partition_core_fixture import _ownership_sources
     from emuflow.ir.resources import RESOURCE_FIELDS
     root = Path(root)

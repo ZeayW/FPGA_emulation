@@ -18,14 +18,15 @@ import sys
 import tempfile
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow.common.native_tools import native_file_generation, resolve_native_executable
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
-from emuflow.common.stage_metrics import measure_stage
+from emuflow_tools.common.stage_metrics import measure_stage
 from emuflow.common.tool_runtime import NativeToolProcess
-from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
-from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff, validate_xilinx_physical_handoff_pair
-from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input
+from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
+from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff, validate_xilinx_physical_handoff_pair
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import export_rwroute_input
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tests.rwroute_reference import _export_rwroute_python_reference

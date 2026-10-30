@@ -14,34 +14,17 @@ from unittest import mock
 
 from tests.native_build import chimew_bank_channel_assigner
 
-from emuflow.transport.chimew.chimew_bank_channel import (
-    CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
-    CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
-    validate_chimew_bank_channel_input,
-)
-from emuflow.transport.chimew.chimew_bank_channel_storage import (
-    write_chimew_bank_channel_storage,
-)
-from emuflow.transport.chimew.chimew_binding_storage import CHIMEW_BINDING_STORAGE_SCHEMA, ChimewBindingEntrySequence, ChimewBindingView, read_chimew_binding
+from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_INPUT_PROVIDER, CHIMEW_BANK_CHANNEL_INPUT_SCHEMA, validate_chimew_bank_channel_input
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew.chimew_binding_storage import CHIMEW_BINDING_STORAGE_SCHEMA, ChimewBindingEntrySequence, ChimewBindingView, read_chimew_binding
 from tests.chimew_binding_storage_fixture import write_chimew_binding_storage
-from emuflow.transport.chimew.chimew_phase6 import (
-    CHIMEW_ELECTRICAL_MAP_PROVIDER,
-    CHIMEW_ELECTRICAL_MAP_SCHEMA,
-    CHIMEW_ELECTRICAL_MAP_SCHEMA_V1,
-    CHIMEW_PHASE6_BINDING_PROVIDER,
-    chimew_adapter_report_generation_path,
-    run_chimew_phase6_adapter,
-    validate_chimew_adapter_generation,
-)
-from emuflow.transport.chimew.chimew_qualification import (
-    CHIMEW_QUALIFICATION_PROVIDER,
-    CHIMEW_QUALIFICATION_SCHEMA,
-    canonical_sha256,
-)
+from emuflow_tools.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER, CHIMEW_ELECTRICAL_MAP_SCHEMA, CHIMEW_ELECTRICAL_MAP_SCHEMA_V1, CHIMEW_PHASE6_BINDING_PROVIDER, chimew_adapter_report_generation_path, run_chimew_phase6_adapter, validate_chimew_adapter_generation
+from emuflow_tools.transport.chimew.chimew_qualification import CHIMEW_QUALIFICATION_PROVIDER, CHIMEW_QUALIFICATION_SCHEMA, canonical_sha256
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
-from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER
-from emuflow.transport.pin_plan_storage import PinPlanEntrySequence
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
+from emuflow_tools.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER
+from emuflow_tools.transport.pin_plan_storage import PinPlanEntrySequence
 from tests.pin_plan_storage_fixture import write_pin_plan_storage
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm_schedule_storage import (
@@ -1107,7 +1090,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             electrical_map["provenance"]["producer_version"] = "2"
             write_json(paths["electrical"], electrical_map)
             real_publish = __import__(
-                "emuflow.transport.chimew.chimew_phase6", fromlist=["_publish_chimew_adapter_file"]
+                "emuflow_tools.transport.chimew.chimew_phase6", fromlist=["_publish_chimew_adapter_file"]
             )._publish_chimew_adapter_file
 
             predicates = {
@@ -1124,7 +1107,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     return real_publish(source, destination)
 
                 with self.subTest(label=label), mock.patch(
-                    "emuflow.transport.chimew.chimew_phase6._publish_chimew_adapter_file",
+                    "emuflow_tools.transport.chimew.chimew_phase6._publish_chimew_adapter_file",
                     side_effect=fail_selected,
                 ):
                     with self.assertRaisesRegex(OSError, "injected"):
@@ -1300,7 +1283,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             )
 
     def test_failed_native_pin_plan_preserves_error_and_retires_scratch_with_live_traceback(self):
-        from emuflow.transport.pin_artifacts_native import build_pin_artifacts
+        from emuflow_tools.transport.pin_artifacts_native import build_pin_artifacts
         assignment = copy.deepcopy(self.assignment_input)
         assignment["groups"][0]["members"][0]["fanout"]["y"] = 101.0
         with tempfile.TemporaryDirectory() as temporary:

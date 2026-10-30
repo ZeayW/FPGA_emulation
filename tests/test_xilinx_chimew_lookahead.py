@@ -11,16 +11,17 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
-from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels, FIXED_WIRING_MAP_SCHEMA
-from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
-from emuflow.transport.chimew.chimew_pipeline import run_chimew_phase6_pipeline
+from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
+from emuflow_tools.transport.chimew.chimew_fixed_wiring import FixedWiringChannels, FIXED_WIRING_MAP_SCHEMA
+from emuflow_tools.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
+from emuflow_tools.transport.chimew.chimew_pipeline import run_chimew_phase6_pipeline
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json, file_sha256
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json, file_sha256
 
 from tests.vivado_lineage_host import import_cell_lineage, PLACEMENT_COORDINATE_SYSTEM
-from emuflow.transport.chimew.geometry import XilinxChimewGeometry
+from emuflow_tools.transport.chimew.geometry import XilinxChimewGeometry
 from tests.chimew_geometry_reference import XilinxChimewGeometry as GeometryReference, read_package_geometry_reference
 from tests.test_chimew_fixed_wiring import fixed_case
 
@@ -125,7 +126,7 @@ def selected_entries(case,entries):
 def test_selected_native_locations_and_full_paper_pipeline(case, tmp_path):
     platform, source, architecture, report, schedule, routes = case
     initial_schedule_hash = file_sha256(schedule)
-    from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
+    from emuflow_tools.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
     catalog=XilinxPackageGeometry.open(architecture,platform.fpgas[0].part)
     assert dict(catalog.pins)==read_package_geometry_reference(architecture,platform.fpgas[0].part)
     with geometry_case(case) as geometry:
@@ -317,10 +318,10 @@ def test_forwarded_hop_uses_complete_source_bound_register_geometry(case, regist
 
 
 def test_preflight_catalog_is_reused_without_rescanning_the_device_graph(case):
-    from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
+    from emuflow_tools.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
     platform,source,architecture,report,*_=case
     catalog=XilinxPackageGeometry.open(architecture,platform.fpgas[0].part)
-    with patch('emuflow.transport.chimew.xilinx_chimew_geometry._native_package_geometry',side_effect=AssertionError('device graph reread')):
+    with patch('emuflow_tools.transport.chimew.xilinx_chimew_geometry._native_package_geometry',side_effect=AssertionError('device graph reread')):
         with geometry_case(case,package_geometry=catalog) as geometry:
             geometry.point(platform.fpgas[0].id,'n5','s0','tx')
 
@@ -392,7 +393,7 @@ def test_site_map_publisher_rejects_a_changed_shared_generation(case, tmp_path):
     'catalog-namespace','catalog-generation','schedule-selector-escape',
     'boundary-selector-escape','late-entry-point','late-schedule-order','physical-sha'])
 def test_native_geometry_rejects_forged_inputs_without_publishing_a_partial_owner(case,tmp_path,monkeypatch,damage):
-    import emuflow.transport.chimew.geometry as host
+    import emuflow_tools.transport.chimew.geometry as host
     from emuflow.common.native_tools import native_file_generation
     if damage.startswith('late-'):
         selected_entries(case,[{'id':'s0','demand':'d0'},{'id':'s1','demand':'d1'}])
@@ -448,7 +449,7 @@ def test_native_geometry_does_not_replace_a_published_owner(case,tmp_path):
 @pytest.mark.parametrize('scale,slacks', [(9.0, [-4.0, -2.0]), (0.0, [1.0]), (2.5, [1.0, 3.0])])
 def test_native_signal_weights_match_independent_policy(case, tmp_path, scope, scale, slacks):
     from tests.chimew_signal_reference import _timing_weights, _crossed_boundaries
-    from emuflow.transport.chimew.signals import ChimewSignals
+    from emuflow_tools.transport.chimew.signals import ChimewSignals
     from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
     from tests.native_route_seal_fixture import write_route_store_fixture
     platform, source, architecture, report, schedule_path, routes_path = case
@@ -492,7 +493,7 @@ def test_native_signal_weights_match_independent_policy(case, tmp_path, scope, s
 @pytest.mark.parametrize('mutation', ['design', 'empty', 'boolean-period', 'zero-period',
     'bad-slack', 'boolean-normalized', 'invalid-cut', 'duplicate-root', 'truncated'])
 def test_native_signal_rejects_bad_timing_atomically(case, tmp_path, mutation):
-    from emuflow.transport.chimew.signals import ChimewSignals
+    from emuflow_tools.transport.chimew.signals import ChimewSignals
     from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
     with closing(read_tdm_schedule(case[4])) as schedule:
         timing = {'schema': 'emuflow.sta-paths/v1', 'design': schedule['design'],
@@ -520,7 +521,7 @@ def test_native_signal_rejects_bad_timing_atomically(case, tmp_path, mutation):
 @pytest.mark.parametrize('mutation', ['route-namespace', 'route-owner', 'route-seal',
     'late-schedule-generation', 'incomplete-geometry', 'existing-output'])
 def test_native_signal_sources_and_publication_remain_bound(case, tmp_path, mutation):
-    from emuflow.transport.chimew.signals import ChimewSignals
+    from emuflow_tools.transport.chimew.signals import ChimewSignals
     from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
     from tests.native_route_seal_fixture import write_route_store_fixture
     output = tmp_path / 'guarded-signals'
@@ -561,9 +562,9 @@ def test_native_signal_sources_and_publication_remain_bound(case, tmp_path, muta
 
 @pytest.mark.parametrize('policy', ['plain', 'critical', 'near-one', 'split-direction', 'flat-y'])
 def test_complete_native_lookahead_matches_retired_python_records(case, tmp_path, policy):
-    from emuflow.transport.chimew.signals import ChimewSignals
-    from emuflow.transport.chimew.chimew_lookahead import prepare_chimew_lookahead
-    from emuflow.transport.chimew.chimew_bank_channel_storage import read_chimew_bank_channel_input
+    from emuflow_tools.transport.chimew.signals import ChimewSignals
+    from emuflow_tools.transport.chimew.chimew_lookahead import prepare_chimew_lookahead
+    from emuflow_tools.transport.chimew.chimew_bank_channel_storage import read_chimew_bank_channel_input
     from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
     from tests.chimew_lookahead_reference import _materialize_xilinx_chimew_inputs
     platform, source, architecture, report, schedule_path, routes_path = case
@@ -644,8 +645,8 @@ def test_complete_native_lookahead_matches_retired_python_records(case, tmp_path
 @pytest.mark.parametrize('mutation', ['signal-owner', 'signal-seal', 'schedule-identity',
     'crossing-mask', 'critical-flag', 'source-list', 'record-count', 'existing', 'symlink', 'dangling-symlink'])
 def test_complete_native_lookahead_rejects_forged_inputs_and_preserves_output(case, tmp_path, mutation):
-    from emuflow.transport.chimew.signals import ChimewSignals
-    from emuflow.transport.chimew.chimew_lookahead import prepare_chimew_lookahead
+    from emuflow_tools.transport.chimew.signals import ChimewSignals
+    from emuflow_tools.transport.chimew.chimew_lookahead import prepare_chimew_lookahead
     output = tmp_path / 'rejected-lookahead'
     previous = tmp_path / 'previous-generation'
     if mutation in ('existing', 'symlink'):

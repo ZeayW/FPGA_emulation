@@ -14,9 +14,9 @@ import pytest
 
 from emuflow.common.errors import ValidationError
 from tests.event_facts import EventFacts as EventBuilder, MetadataFacts as MetadataBuilder
-from emuflow.timing.global_measurements import NativeMeasurements, NativeTimingPaths, import_measurements, read_native_measurements
-from emuflow.timing.global_sta import EventCheck, build_opensta_timing
-from emuflow.timing.qor_storage import write_qor_report, read_qor_report
+from emuflow_tools.timing.global_measurements import NativeMeasurements, NativeTimingPaths, import_measurements, read_native_measurements
+from emuflow_tools.timing.global_sta import EventCheck, build_opensta_timing
+from emuflow_tools.timing.qor_storage import write_qor_report, read_qor_report
 from tests.test_global_sta import example
 
 
@@ -107,7 +107,7 @@ def test_native_full_population_metrics_paths_and_qor_match_reference(tmp_path,c
         reference_owner=write_qor_report(tmp_path/'reference.json',materialized)
         assert reference_owner.selector['logical_sha256']==native_sha
         reference_owner.close()
-        with patch('emuflow.timing.qor_storage._record_from_row',side_effect=AssertionError('Python P validation')):
+        with patch('emuflow_tools.timing.qor_storage._record_from_row',side_effect=AssertionError('Python P validation')):
             with read_qor_report(tmp_path/'qor.json') as report:
                 assert report['timing']['summary']==expected_summary
         replay=read_native_measurements(tmp_path/'native/measurements.json',rows)
@@ -165,7 +165,7 @@ def test_native_qor_publication_rejects_wrong_bounded_metrics(tmp_path):
 
 
 def test_event_cycle_closes_sqlite_before_directory_retirement(monkeypatch):
-    import emuflow.timing.global_event_store as module
+    import emuflow_tools.timing.global_event_store as module
     actual_connect=sqlite3.connect
     connections=[]
     class ObservedConnection:
@@ -280,7 +280,7 @@ def test_native_qor_validator_rejects_resealed_record_corruption_without_python_
         finally:
             conn.close()
         _reseal(path,'store_sha256','artifact')
-        with patch('emuflow.timing.qor_storage._record_from_row',side_effect=AssertionError('Python fallback')):
+        with patch('emuflow_tools.timing.qor_storage._record_from_row',side_effect=AssertionError('Python fallback')):
             with pytest.raises(ValidationError,match='logical records disagree'):
                 read_qor_report(path)
     finally:

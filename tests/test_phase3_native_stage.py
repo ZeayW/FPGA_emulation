@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow_tools.stage_clients.partition import run_phase3, validate_phase3_indexed
 from emuflow_tools.stage_clients.partition_native import run as native_run
 from emuflow.partition.phase3_storage import read_phase3_assignment_view

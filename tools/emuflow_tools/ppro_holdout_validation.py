@@ -13,7 +13,7 @@ from .benchmark import timing_io_sha256
 from emuflow.ir.emuir_compact import is_compact_emuir, source_metadata
 from emuflow.ir.emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.ir.ir import EmuIR
 from emuflow_tools.flow_validation import validate_multi_fpga_flow_bundle
 from emuflow.platform.platform import Platform

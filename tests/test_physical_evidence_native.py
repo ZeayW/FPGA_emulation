@@ -12,7 +12,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from tests.test_physical_store_publication import producer
 from tests.logic_identity_fixture import identity_facts
 
@@ -27,7 +28,7 @@ def native_runtime(tmp_path,monkeypatch):
 
 
 def module(kind):
-    return importlib.import_module('emuflow.timing.'+kind+'_storage')
+    return importlib.import_module('emuflow_tools.timing.'+kind+'_storage')
 
 
 def read(kind,path):
@@ -130,7 +131,7 @@ def test_native_boundary_register_checks_survive_file_reseal(tmp_path,damage):
 
 
 def test_native_rejection_has_no_python_fallback_and_cleans_request(tmp_path):
-    from emuflow.physical import physical_evidence_native as native
+    from emuflow_tools.physical import physical_evidence_native as native
     path=tmp_path/'owner.json'
     with producer('boundary_timing',path):pass
     roots=[]

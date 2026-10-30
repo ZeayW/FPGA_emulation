@@ -7,8 +7,8 @@ from unittest import mock
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
-from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta, validate_xilinx_routed_opensta_summary
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.timing.xilinx_opensta import run_xilinx_routed_opensta, validate_xilinx_routed_opensta_summary
 from tests.test_xilinx_opensta import _indexed_routed_fixture
 from tests.test_phase2_native import _fixed_opensta
 
@@ -256,7 +256,7 @@ def test_an_ambient_container_binding_cannot_reidentify_a_direct_engine(tmp_path
 
 
 def test_container_selection_uses_exact_launcher_bytes_and_an_explicit_binary(tmp_path,monkeypatch):
-    from emuflow.timing import xilinx_opensta as native
+    from emuflow_tools.timing import xilinx_opensta as native
     launcher=native._runtime_data_path(Path('scripts/opensta/container_runtime.sh'))
     selected=tmp_path/'renamed-launcher';selected.write_bytes(launcher.read_bytes());selected.chmod(0o755)
     binary=tmp_path/'versioned-sta';binary.write_text('# versioned engine\n')

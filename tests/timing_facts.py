@@ -43,7 +43,7 @@ def _database(path, name, application):
 
 
 def local_timing_facts(path, header, records):
-    from emuflow.timing import local_path_timing_storage as m
+    from emuflow_tools.timing import local_path_timing_storage as m
     path,db=_database(path,'local_path_timing.sql',m.LOCAL_PATH_TIMING_APPLICATION_ID)
     try:
         for seq, raw in enumerate(records):
@@ -64,7 +64,7 @@ def local_timing_facts(path, header, records):
 
 
 def logic_timing_facts(path, *, header, segments, unsupported_member_paths=(), unmeasured_segments=()):
-    from emuflow.timing import logic_segment_timing_storage as m
+    from emuflow_tools.timing import logic_segment_timing_storage as m
     path,db=_database(path,'logic_segment_timing.sql',m.LOGIC_SEGMENT_TIMING_APPLICATION_ID)
     keys=('id','kind','system_path','member_path','cut_index','fpga','replace_tx_endpoint','start_pin','end_pin',
           'delay_ns','static_exact_segment_id','start_object_kind','end_object_kind','cone_anchor_object_kind',
@@ -105,13 +105,13 @@ def physical_facts_writer(kind):
     if kind=='boundary_timing':return boundary_timing_facts
     if kind=='logic_segment_timing':return logic_timing_facts
     if kind=='local_path_timing':return local_timing_facts
-    module=importlib.import_module('emuflow.timing.'+kind+'_storage')
+    module=importlib.import_module('emuflow_tools.timing.'+kind+'_storage')
     return getattr(module,'write_'+kind+'_storage')
 
 
 
 def boundary_timing_facts(path, header, records):
-    from emuflow.timing import boundary_timing_storage as m
+    from emuflow_tools.timing import boundary_timing_storage as m
     path,db=_database(path,'boundary_timing.sql',m.BOUNDARY_TIMING_APPLICATION_ID)
     keys=('id','kind','schedule_entry','delay_ns','start_object','end_object','measurement')
     try:

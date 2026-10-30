@@ -11,11 +11,9 @@ import threading
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.transport.chimew.chimew_bank_channel import evaluate_chimew_bank_channel_assignment as assign
-from emuflow.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
-from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
-    canonical_bank_channel_report_sha256, read_chimew_bank_channel_report,
-)
+from emuflow_tools.transport.chimew.chimew_bank_channel import evaluate_chimew_bank_channel_assignment as assign
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew.chimew_bank_channel_report_storage import canonical_bank_channel_report_sha256, read_chimew_bank_channel_report
 from tests.chimew_bank_channel_reference import evaluate_chimew_bank_channel_assignment as reference
 from tests.native_build import emuflow_native
 from tests.test_chimew_bank_channel import member

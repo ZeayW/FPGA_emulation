@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from emuflow.timing.global_sta import EventCheck, build_opensta_timing as _native_build_timing
+from emuflow_tools.timing.global_sta import EventCheck, build_opensta_timing as _native_build_timing
 
 _BASELINES = json.loads((Path(__file__).parent / 'data/global_sta_binding_records.json').read_text())
 _COUNTS = {}
@@ -18,12 +18,12 @@ _COUNTS = {}
 
 def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metadata=None,
                          routes_artifact_sha256=None):
-    from emuflow.timing.global_sta import bind_physical_checks as bind
-    from emuflow.routing.system_route_storage import read_system_routes, pretty_system_routes_sha256
+    from emuflow_tools.timing.global_sta import bind_physical_checks as bind
+    from emuflow_tools.routing.system_route_storage import read_system_routes, pretty_system_routes_sha256
     from tests.native_route_seal_fixture import write_route_store_fixture
     from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
     from tests.schedule_store_fixture import write_tdm_schedule_storage
-    from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+    from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
     from tests.timing_facts import boundary_timing_facts
     from tests.timing_facts import logic_timing_facts
     from tests.timing_facts import local_timing_facts
@@ -109,7 +109,7 @@ def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metad
 def native_measurements(metadata, records):
     """Import supplied engine scalars through the production native importer."""
     from tests.event_facts import EventFacts as EventBuilder, MetadataFacts as MetadataBuilder
-    from emuflow.timing.global_measurements import import_measurements
+    from emuflow_tools.timing.global_measurements import import_measurements
     builder = EventBuilder(bound=True)
     paths = MetadataBuilder(builder)
     seen = set()

@@ -45,7 +45,7 @@ def test_api_and_native_request_share_the_same_defaults(tmp_path):
 
 
 def test_old_cut_without_an_explicit_version_does_not_downgrade(tmp_path):
-    with patch("emuflow.partition.partition_ir.load_partition_ir", side_effect=AssertionError("graph loaded")):
+    with patch("emuflow_tools.partition.partition_ir.load_partition_ir", side_effect=AssertionError("graph loaded")):
         with pytest.raises(ValidationError, match="v14 requires generalized Static Exact"):
             run_phase3(tmp_path / "ir", tmp_path / "board", tmp_path / "phase3", cut_mode="sequential-only")
     assert not (tmp_path / "phase3/assignment.json").exists()

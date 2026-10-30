@@ -9,7 +9,7 @@ import sqlite3
 import tempfile
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import require_native_schema, resolve_native_executable
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
@@ -114,7 +114,7 @@ def stage_routed_opensta(mapped_path, timing_path, output_path, *, clocks,
         sources = tuple(source_bindings)
         require_store_sources_unchanged(sources)
         if timing_value is None:
-            from emuflow.common.io import read_json
+            from emuflow_tools.document_io import read_json
             timing_value = read_json(timing_path)
     if (len(sources) != 3 or sources[0].schema != "xilinx-mapped-index-v2"
             or timing_value.get("schema") != "emuflow.xilinx-routed-timing/v2"):

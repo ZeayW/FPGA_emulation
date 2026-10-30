@@ -17,7 +17,7 @@ from emuflow.common.errors import (
     TDMScheduleInfeasibleError,
     ValidationError,
 )
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow_tools.stage_clients.schedule import run_phase5, validate_phase5
 from emuflow.platform.platform import Platform

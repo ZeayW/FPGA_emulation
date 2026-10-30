@@ -4,13 +4,8 @@ import sqlite3
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
-from emuflow.timing.qor_storage import (
-    QOR_REPORT_STORAGE_SCHEMA,
-    QorReportView,
-    read_qor_report,
-    write_qor_report,
-)
+from emuflow_tools.document_io import read_json
+from emuflow_tools.timing.qor_storage import QOR_REPORT_STORAGE_SCHEMA, QorReportView, read_qor_report, write_qor_report
 from emuflow.transport.runtime import QOR_REPORT_SCHEMA
 
 
@@ -97,7 +92,7 @@ def test_qor_store_rejects_resealed_internal_corruption(tmp_path):
     )
     connection.commit()
     connection.close()
-    from emuflow.common.io import file_sha256, write_json
+    from emuflow.common.json_io import file_sha256, write_json
 
     digest = file_sha256(store)
     renamed = path.with_name(f"{path.stem}.{digest}.sqlite")

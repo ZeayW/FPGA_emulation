@@ -21,7 +21,8 @@ from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.phase3_exact_fixture import indexed_exact_manifest
 from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from tests.phase3_decision_reference import (PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
                                             _select_patron_timing_assignment)
 from tests.partition_pressure_fixture import _endpoint, _ir, PressureFixture, prepare_native
@@ -231,7 +232,7 @@ class SmallPartitionFactsTest(unittest.TestCase):
             write_compact_emuir(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)
-            from emuflow.timing.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
+            from emuflow_tools.timing.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
             rows = [STA_PATH_DATABASE_TSV_HEADER]
             for i, path in enumerate(self.timing['paths']):
                 identity = f"{path['startpoint']['instance']}/O->{path['endpoint']['instance']}/I#{i:08d}"
@@ -351,7 +352,7 @@ class SmallPartitionFactsTest(unittest.TestCase):
             write_compact_emuir(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)
-            from emuflow.timing.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
+            from emuflow_tools.timing.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
             rows = [STA_PATH_DATABASE_TSV_HEADER]
             for i, path in enumerate(self.timing['paths']):
                 identity = f"{path['startpoint']['instance']}/O->{path['endpoint']['instance']}/I#{i:08d}"

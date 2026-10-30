@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow.partition.phase3_storage import (CLUSTERS_SQLITE_APPLICATION_ID, INDEXED_CLUSTERS_SCHEMA, read_phase3_assignment_view, read_phase3_cut_timing_view)
 
 

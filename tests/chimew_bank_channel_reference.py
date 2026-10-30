@@ -17,32 +17,7 @@ from emuflow.common.errors import EmuFlowError, ValidationError
 from tests.native_build import chimew_bank_oracle, emuflow_native
 
 
-from emuflow.transport.chimew.chimew_bank_channel import (
-    CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1,
-    CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
-    CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
-    CHIMEW_BANK_CHANNEL_REPORT_SCHEMA,
-    CHIMEW_BANK_CHANNEL_PROVIDER,
-    CHIMEW_BANK_CHANNEL_STATUS,
-    CHIMEW_BANK_CHANNEL_INTEGRATION_STATUS,
-    CHIMEW_BANK_CHANNEL_PAPER_SCOPE,
-    CHIMEW_BANK_CHANNEL_ALGORITHM2_INTERPRETATION,
-    CHIMEW_BANK_CHANNEL_NUMERIC_POLICY,
-    _string,
-    _integer,
-    _number,
-    _digest,
-    _point,
-    _normalize_chimew_group,
-    _NormalizedDocumentGroups,
-    _normalize_chimew_bank,
-    _normalize_chimew_problem_header,
-    validate_chimew_bank_channel_input,
-    _distance,
-    _raw_cost,
-    _ranked_cost,
-    _candidate_cost
-)
+from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1, CHIMEW_BANK_CHANNEL_INPUT_SCHEMA, CHIMEW_BANK_CHANNEL_INPUT_PROVIDER, CHIMEW_BANK_CHANNEL_REPORT_SCHEMA, CHIMEW_BANK_CHANNEL_PROVIDER, CHIMEW_BANK_CHANNEL_STATUS, CHIMEW_BANK_CHANNEL_INTEGRATION_STATUS, CHIMEW_BANK_CHANNEL_PAPER_SCOPE, CHIMEW_BANK_CHANNEL_ALGORITHM2_INTERPRETATION, CHIMEW_BANK_CHANNEL_NUMERIC_POLICY, _string, _integer, _number, _digest, _point, _normalize_chimew_group, _NormalizedDocumentGroups, _normalize_chimew_bank, _normalize_chimew_problem_header, validate_chimew_bank_channel_input, _distance, _raw_cost, _ranked_cost, _candidate_cost
 
 _TYPED_INPUT_MAGIC = b"EMCHBC3\0"
 _TYPED_INPUT_END_MAGIC = b"EMCHEND\0"
@@ -831,7 +806,7 @@ def evaluate_chimew_bank_channel_assignment(
     from emuflow.storage.store_publication import bind_view_sources
 
     source_bindings = bind_view_sources((document, "chimew-bank-input-store-v1"))
-    from emuflow.transport.chimew.chimew_bank_channel_storage import canonical_bank_channel_input_sha256
+    from emuflow_tools.transport.chimew.chimew_bank_channel_storage import canonical_bank_channel_input_sha256
 
     input_sha256 = canonical_bank_channel_input_sha256(document)
     problem = validate_chimew_bank_channel_input(document)

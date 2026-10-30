@@ -7,8 +7,9 @@ from unittest import mock
 
 import pytest
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json,write_json
-from emuflow.timing.sta_projection import project_sta_path_database
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
+from emuflow_tools.timing.sta_projection import project_sta_path_database
 from emuflow.partition.phase3_storage import read_phase3_cut_timing_view
 from tests.test_sta import _write_assignment_facts,_write_projection_database
 from tests.sta_projection_reference import project_sta_path_database_value as oracle
@@ -53,7 +54,7 @@ def test_original_members_order_dominance_and_ties_match_independent_oracle(tmp_
     expected,summary=oracle(read_json(database),read_phase3_cut_timing_view(assignment,include_instance_assignment=True),
         source_input_sha256=hashlib.sha256(database.read_bytes()).hexdigest(),
         output_path=str(tmp_path/'projected.json'),database_path=database)
-    with mock.patch('emuflow.timing.sta.iter_sta_path_database_paths',side_effect=AssertionError('host path population')):
+    with mock.patch('emuflow_tools.timing.sta.iter_sta_path_database_paths',side_effect=AssertionError('host path population')):
         observed=project_sta_path_database(database,assignment,tmp_path/'projected.json')
     assert observed==summary
     assert read_json(tmp_path/'projected.json')==expected

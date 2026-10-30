@@ -281,8 +281,8 @@ def test_native_failure_never_retries_host_validator(tmp_path, monkeypatch):
 def test_empty_typed_schedule_is_validated_without_a_host_special_case(
     tmp_path, monkeypatch
 ):
-    from emuflow.common.io import read_json
-    from emuflow.routing.system_route_storage import read_system_routes
+    from emuflow_tools.document_io import read_json
+    from emuflow_tools.routing.system_route_storage import read_system_routes
     from tests.native_route_seal_fixture import write_route_store_fixture
 
     case, _routes = _case(tmp_path, False, False)

@@ -11,19 +11,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import call, patch
 
-from emuflow.platform.board_link_timing import build_board_link_timing_model
+from emuflow_tools.platform.board_link_timing import build_board_link_timing_model
 from emuflow.flow.cli import _build_parser, _dispatch
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
 from emuflow_tools.flow_validation import validate_multi_fpga_flow_bundle, validate_multi_fpga_flow_report
 from emuflow.scheduling.tdm_schedule_storage import TypedScheduleEntrySequence
-from emuflow.transport.transport_cost import (
-    BASE_FEATURE_NAMES,
-    FRAME_SLOTS,
-    OPEN_TRANSPORT_MODEL,
-    OPEN_TRANSPORT_PROVENANCE,
-)
+from emuflow_tools.transport.transport_cost import BASE_FEATURE_NAMES, FRAME_SLOTS, OPEN_TRANSPORT_MODEL, OPEN_TRANSPORT_PROVENANCE
 from emuflow.platform.platform import Platform
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from tests.tdm_timing_oracle import timing_paths as reconstruct_tdm_schedule_timing_paths
@@ -433,7 +429,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 )
 
     def test_compile_rejects_retired_cut_mode_before_frontend(self):
-        with patch("emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend started")):
+        with patch("emuflow_tools.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend started")):
             with self.assertRaisesRegex(EmuFlowError, "requires static-exact-combinational"):
                 run_preflight(output_dir=Path("unused"), cut_mode="sequential-only")
 
@@ -470,7 +466,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 path = root / "board-link-timing.json"
                 write_json(path, database)
                 output = root / "flow"
-                with patch("emuflow.frontend.frontend_native.prepare_frontend") as synthesis:
+                with patch("emuflow_tools.frontend.frontend_native.prepare_frontend") as synthesis:
                     with self.assertRaisesRegex(ValidationError, "link timing"):
                         run_preflight(
                             platform_path=PLATFORM,
@@ -504,7 +500,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "provenance": {"class": OPEN_TRANSPORT_PROVENANCE, "fit_sha256": "1" * 64},
             })
             output = root / "flow"
-            with patch("emuflow.frontend.frontend_native.prepare_frontend") as synthesis:
+            with patch("emuflow_tools.frontend.frontend_native.prepare_frontend") as synthesis:
                 with self.assertRaisesRegex(ValidationError, "transport cost platform disagrees"):
                     run_preflight(
                         platform_path=PLATFORM,

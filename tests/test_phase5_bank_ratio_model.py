@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.platform.platform import Platform
 from emuflow_tools.stage_clients.schedule import run_phase5, validate_phase5
 from emuflow.routing.routing import normalize_route_constraints

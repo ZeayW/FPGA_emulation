@@ -6,9 +6,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-from emuflow.scheduling.phase5_timing_native import project_native_schedule_timing
+from emuflow_tools.scheduling.phase5_timing_native import project_native_schedule_timing
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 
 from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from emuflow.platform.platform import Platform
@@ -17,7 +17,7 @@ from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER, build_native_e
 
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 
-from emuflow.routing.system_route_storage import read_system_routes
+from emuflow_tools.routing.system_route_storage import read_system_routes
 
 PHASE5_REPORT_SCHEMA = "emuflow.phase5-report/v1"
 PHASE5_GENERATION_SCHEMA = "emuflow.phase5-generation/v1"

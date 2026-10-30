@@ -28,7 +28,7 @@ def test_retired_route_provider_rejected_before_circuit_loading(tmp_path, provid
 
 @pytest.mark.parametrize("provider", RETIRED)
 def test_retired_route_provider_rejected_before_compile_frontend(tmp_path, provider):
-    with patch("emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")):
+    with patch("emuflow_tools.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend entered")):
         with pytest.raises(EmuFlowError, match="unsupported Phase 4 routing provider"):
             run_preflight(output_dir=tmp_path / "out", route_provider=provider)
     assert not (tmp_path / "out").exists()

@@ -12,7 +12,7 @@ from emuflow.platform.default_platform import (
     research_platform_path,
 )
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.flow.native_compile import run_native_multi_fpga_flow as run_multi_fpga_flow
 from emuflow_tools.stage_clients.partition import run_phase3
 from emuflow.platform.platform import Platform

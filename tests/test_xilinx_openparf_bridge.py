@@ -9,17 +9,14 @@ from unittest import mock
 
 from tests.openparf_bridge_fixture import materialize_bridge_fixture as materialize_xilinx_openparf_atomic_contract
 from emuflow.common.errors import ValidationError
-from emuflow.platform.architecture import ArchitectureDB
-from emuflow.common.io import file_sha256
-from emuflow.physical.xilinx_netlist import (
-    emit_xilinx_mapped_index,
-    open_xilinx_mapped_index,
-)
+from emuflow_tools.platform.architecture import ArchitectureDB
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
 from tests.openparf_placement_reference import (OPENPARF_ATOMIC_PLACEMENT_SCHEMA, OPENPARF_ATOMIC_PROVIDER, load_xilinx_openparf_atomic_placement_clusters, load_xilinx_openparf_atomic_sites, read_xilinx_openparf_atomic_name_map, validate_xilinx_openparf_atomic_placement, write_xilinx_openparf_atomic_placement_certificate)
 from tests.physical_handoff_native_fixture import validate_certificate_facts
 from tests.xilinx_site_reference import validate_xilinx_packing
 from tests.xilinx_site_reference import validate_xilinx_placement
-from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import export_rwroute_input
 from tests.rwroute_reference import export_rwroute_reference
 from tests.yosys_reference import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
@@ -292,7 +289,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             cert['source']['architecture_sha256']=file_sha256(data.architecture)
             write_xilinx_openparf_atomic_placement_certificate(data.certificate,cert)
             report=build_native_handoff(data,root/'out')
-            from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+            from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
             _,placement=open_xilinx_physical_handoff(Path(report['physical_handoff']))
             self.assertEqual(placement['summary']['maximum_clock_region_site_utilization'],1.0)
             cert['clusters'][1].update({k:cert['clusters'][0][k] for k in ('site','site_type','x','y')})
@@ -301,13 +298,13 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 build_native_handoff(data,root/'bad')
 
     def test_public_bridge_only_accepts_one_output(self):
-        from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract as typed_bridge
+        from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract as typed_bridge
         with self.assertRaises(TypeError):
             typed_bridge(Path('mapped'), Path('arch'), Path('cert'), Path('packed.json'), Path('placement.json'))
 
     def test_public_bridge_rejects_source_aliases_without_modification(self):
         from tests.physical_handoff_native_fixture import prepare_native_handoff
-        from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract as typed
+        from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract as typed
         import os
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);data=prepare_native_handoff(root)
@@ -323,7 +320,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
         from tests.physical_handoff_native_fixture import prepare_native_handoff,build_native_handoff
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);data=prepare_native_handoff(root)
-            with mock.patch('emuflow.common.io.file_sha256',side_effect=AssertionError('Python circuit hash replay')):
+            with mock.patch('emuflow.common.json_io.file_sha256',side_effect=AssertionError('Python circuit hash replay')):
                 report=build_native_handoff(data,root/'out')
             self.assertEqual(report['source']['mapped_sha256'],file_sha256(data.mapped))
             self.assertEqual(report['source']['architecture_sha256'],file_sha256(data.architecture))
@@ -331,7 +328,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
 
     def test_source_generation_is_checked_immediately_before_publication(self):
         from tests.physical_handoff_native_fixture import prepare_native_handoff,build_native_handoff
-        from emuflow.physical import handoff as host
+        from emuflow_tools.physical import handoff as host
         import os
         for role in ('mapped','certificate','sidecar'):
             with self.subTest(role=role),tempfile.TemporaryDirectory() as temporary:
@@ -431,11 +428,11 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
 
     def test_native_physical_handoff_replaces_both_large_json_outputs(self):
         from tests.physical_handoff_native_fixture import prepare_native_handoff,build_native_handoff
-        from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+        from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);data=prepare_native_handoff(root)
             packed,placement={},{}
-            from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract as typed
+            from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract as typed
             with open_xilinx_mapped_index(data.mapped) as mapped:
                 with mock.patch.object(type(mapped.cells),'items',side_effect=AssertionError('Python cell population')), \
                      mock.patch('tests.xilinx_site_reference.validate_xilinx_packing',side_effect=AssertionError('Python packing validator')), \
@@ -504,7 +501,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
 
     def test_failed_independent_validation_does_not_publish_handoff(self):
         from tests.physical_handoff_native_fixture import prepare_native_handoff,build_native_handoff
-        from emuflow.physical import handoff as host
+        from emuflow_tools.physical import handoff as host
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);data=prepare_native_handoff(root);output=root/'out'

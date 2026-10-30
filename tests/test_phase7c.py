@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.platform.board_link_timing import build_board_link_timing_model
+from emuflow_tools.platform.board_link_timing import build_board_link_timing_model
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow_tools.stage_clients.schedule import (
     PHASE5_GENERATION_SCHEMA,
     PHASE5_REPORT_SCHEMA,
@@ -16,7 +16,7 @@ from emuflow_tools.stage_clients.schedule import (
 )
 from emuflow_tools.stage_clients.timing_replay import run_phase7c
 from emuflow.platform.platform import Platform
-from emuflow.timing.local_path_timing import path_id_set_sha256
+from emuflow_tools.timing.local_path_timing import path_id_set_sha256
 from emuflow.transport.runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
     aggregate_qor as _aggregate_qor,
@@ -1294,7 +1294,7 @@ class Phase7CTest(unittest.TestCase):
                     routes_path=paths["routes"],
                 )
             bind_semantic.assert_called_once()
-            from emuflow.physical.physical_summary_storage import PhysicalSummaryView
+            from emuflow_tools.physical.physical_summary_storage import PhysicalSummaryView
             mismatched = PhysicalSummaryView(self._physical_summary())
             mismatched.update({
                 "logic_segment_timing": {},
@@ -1443,7 +1443,7 @@ if __name__ == "__main__":
 def test_current_native_phase5_generation_enters_phase7c_without_validation_bypass(tmp_path):
     from tests.test_phase5_native_stage import current_case
     from emuflow_tools.stage_clients.schedule_native import run_native_phase5
-    from emuflow.common.io import write_json
+    from emuflow.common.json_io import write_json
     case, routes, producer = current_case(tmp_path, False, False)
     phase5 = tmp_path / 'phase5'
     run_native_phase5(producer, phase5)
@@ -1464,6 +1464,6 @@ def test_current_native_phase5_generation_enters_phase7c_without_validation_bypa
     assert report['status'] == 'generated'
     assert report['schedule_legality']['status'] == 'pass'
     assert report['design'] == case.ir.value['design']['name']
-    from emuflow.common.io import read_json
+    from emuflow_tools.document_io import read_json
     qor = read_json(output / 'qor_report.json')
     assert qor['tdm']['frame_slots'] == producer.header['route_constraints']['frame_slots']

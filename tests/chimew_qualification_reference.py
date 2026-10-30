@@ -8,14 +8,14 @@ import sqlite3
 from collections import defaultdict
 from typing import Any, Dict, Mapping, Optional, Sequence
 
-from emuflow.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_ALGORITHM2_INTERPRETATION, CHIMEW_BANK_CHANNEL_INTEGRATION_STATUS, CHIMEW_BANK_CHANNEL_NUMERIC_POLICY, CHIMEW_BANK_CHANNEL_PAPER_SCOPE, CHIMEW_BANK_CHANNEL_PROVIDER, CHIMEW_BANK_CHANNEL_REPORT_SCHEMA, CHIMEW_BANK_CHANNEL_STATUS, _candidate_cost, _raw_cost, validate_chimew_bank_channel_input
+from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_ALGORITHM2_INTERPRETATION, CHIMEW_BANK_CHANNEL_INTEGRATION_STATUS, CHIMEW_BANK_CHANNEL_NUMERIC_POLICY, CHIMEW_BANK_CHANNEL_PAPER_SCOPE, CHIMEW_BANK_CHANNEL_PROVIDER, CHIMEW_BANK_CHANNEL_REPORT_SCHEMA, CHIMEW_BANK_CHANNEL_STATUS, _candidate_cost, _raw_cost, validate_chimew_bank_channel_input
 from tests.chimew_grouping_fixture import _domain, _popcount, _tdm_ratio, validate_chimew_crossings
 from tests.chimew_refinement_fixture import CHIMEW_REFINED_GROUPING_SCHEMA, CHIMEW_REFINEMENT_PROVIDER, _pairwise_objective, _validate_initial_groups, validate_chimew_positions
 from tests.chimew_rudy_fixture import CHIMEW_RUDY_PROVIDER, CHIMEW_RUDY_REPORT_SCHEMA, _oracle as _rudy_oracle, validate_chimew_rudy_input
 from emuflow.common.errors import ValidationError
 
 
-from emuflow.transport.chimew.chimew_qualification import canonical_sha256
+from emuflow_tools.transport.chimew.chimew_qualification import canonical_sha256
 
 def _close(lhs, rhs):
     if isinstance(lhs, bool) or isinstance(rhs, bool): return lhs == rhs
@@ -65,7 +65,7 @@ def validate_chimew_bank_channel_report_artifact(
         raise ValidationError("Chimew bank/channel assignments are missing")
     if len(assignments) != len(problem["groups"]):
         raise ValidationError("Chimew bank/channel assignment coverage is invalid")
-    from emuflow.transport.chimew.chimew_bank_channel_report_storage import _normalize_assignment
+    from emuflow_tools.transport.chimew.chimew_bank_channel_report_storage import _normalize_assignment
 
     lookup = sqlite3.connect("")
     lookup.executescript(

@@ -36,7 +36,6 @@ def main(source_root: Path, install_root: Path) -> None:
         DEFAULT_XILINX_PRIMITIVE_LIBRARY, load_xilinx_primitive_library,
     )
     from emuflow.timing.engine_runtime import OPENSTA_RUNTIME_CHECK_SCRIPT
-    from emuflow.physical.vivado.vivado_physical import _vivado_script
     assert Path(emuflow.__file__).resolve().parent == package.resolve()
     for retired in ("cli", "phase3", "native_compile_adapter", "xilinx_rwroute", "frontend.yosys", "frontend.synthesis", "physical.xilinx_physical_macros", "physical.xilinx_packing", "scheduling.timing_routing", "scheduling.frame_search", "flow.multi_fpga_flow"):
         assert importlib.util.find_spec("emuflow." + retired) is None, retired
@@ -70,6 +69,9 @@ def main(source_root: Path, install_root: Path) -> None:
     assert digest(install_root / "share/emuflow/scripts/rapidwright/EmuFlowRWRoute.java") == digest(source_root / "scripts/rapidwright/EmuFlowRWRoute.java")
     assert not (install_root / "scripts/yosys/nvdla_compat.v").exists()
     from emuflow.flow.cli import _build_parser
+    import emuflow.transport.phase6_oracle
+    assert "emuflow_tools" not in sys.modules, "installed runtime imported optional tools"
+    assert importlib.util.find_spec("emuflow.common.io") is None
     _build_parser().parse_args(["run", "top.sv", "--top", "top", "--clock", "clk=10"])
     _build_parser().parse_args(["run", "design.run.json", "--out", "unused", "--backend", "vivado"])
     from emuflow.flow.designs.nvdla_contract import CATALOG_PATH, COMPAT_PATH
@@ -77,9 +79,7 @@ def main(source_root: Path, install_root: Path) -> None:
     assert OPENSTA_RUNTIME_CHECK_SCRIPT.resolve() == (
         install_root / "share/emuflow/scripts/opensta/validate_runtime.tcl"
     ).resolve()
-    assert _vivado_script("implement_indexed_partition.tcl").resolve() == (
-        install_root / "scripts/vivado/implement_indexed_partition.tcl"
-    ).resolve()
+    assert (install_root / "scripts/vivado/implement_indexed_partition.tcl").is_file()
     _, primitives = load_xilinx_primitive_library()
     platform = Platform.load(DEFAULT_PLATFORM_PATH)
     assert DEFAULT_XILINX_PRIMITIVE_LIBRARY.parent.parent == package / "data"

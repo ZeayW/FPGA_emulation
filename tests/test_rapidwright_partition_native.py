@@ -11,13 +11,13 @@ from unittest import mock
 import pytest
 from emuflow.common.errors import ValidationError
 from tests.yosys_reference import import_yosys_json
-from emuflow.physical.xilinx_physical_backend import run_rapidwright_openparf_native_candidate_backend
+from emuflow_tools.physical.xilinx_physical_backend import run_rapidwright_openparf_native_candidate_backend
 from tests.test_openparf_runtime_native import executable as placement_tool
 from tests.test_rwroute_stage_native import setup as route_tool
 from tests.test_phase2_native import _fixed_opensta
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 from tests.test_boundary_identity_storage import _header
-from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+from emuflow_tools.timing.boundary_identity_storage import write_boundary_identity_storage
 
 
 def case(root):
@@ -91,16 +91,16 @@ v['physical_resources']={'lut':1,'ff':2,'bram18k':0,'dsp48':0,'carry8':0,'uram28
 
 
 def run(kwargs,contract):
-    with mock.patch('emuflow.physical.xilinx_physical_backend.RAPIDWRIGHT_TIMING_CONTRACT',contract):
+    with mock.patch('emuflow_tools.physical.xilinx_physical_backend.RAPIDWRIGHT_TIMING_CONTRACT',contract):
         return run_rapidwright_openparf_native_candidate_backend(**kwargs)
 
 
 def test_complete_partition_is_owned_by_one_native_call(tmp_path):
     kwargs,contract,*_=case(tmp_path)
-    with (mock.patch('emuflow.physical.xilinx_netlist.emit_xilinx_mapped_index',side_effect=AssertionError('host mapped graph')),
-          mock.patch('emuflow.physical.openparf.qualification_native.run_qualification',side_effect=AssertionError('host placement coordinator')),
-          mock.patch('emuflow.physical.rapidwright.route_stage.run_native_rwroute_stage',side_effect=AssertionError('host route coordinator')),
-          mock.patch('emuflow.timing.xilinx_opensta.run_xilinx_routed_opensta',side_effect=AssertionError('host STA coordinator'))):
+    with (mock.patch('emuflow_tools.physical.xilinx_netlist.emit_xilinx_mapped_index',side_effect=AssertionError('host mapped graph')),
+          mock.patch('emuflow_tools.physical.openparf.qualification_native.run_qualification',side_effect=AssertionError('host placement coordinator')),
+          mock.patch('emuflow_tools.physical.rapidwright.route_stage.run_native_rwroute_stage',side_effect=AssertionError('host route coordinator')),
+          mock.patch('emuflow_tools.timing.xilinx_opensta.run_xilinx_routed_opensta',side_effect=AssertionError('host STA coordinator'))):
         result=run(kwargs,contract)
     assert result['implementation_id']=='native-rapidwright-partition-v1'
     assert result['result']['cell_accounting']['routed_cells']==3
@@ -117,7 +117,7 @@ def add_timing_identities(kwargs):
     from tests.test_local_path_timing_storage import _header as local_header, _record as local_record
     from tests.timing_facts import local_timing_facts
     from tests.logic_identity_fixture import identity_facts
-    from emuflow.timing.local_path_timing import path_id_set_sha256
+    from emuflow_tools.timing.local_path_timing import path_id_set_sha256
     root=kwargs['merged_ir_path'].parent
     # The output pin belongs to c1; its upstream delay remains independently queried.
     row=_record('tx','tx',0);row['merged_ir']['external_port']='q1';row['merged_ir']['external_port_bit']=0
@@ -140,9 +140,9 @@ def test_native_partition_publishes_all_three_typed_timing_owners(tmp_path):
     assert result['boundary_timing']['import']['endpoints']==1
     assert result['logic_segment_timing']['import']['segments']==1
     assert result['local_path_timing']['import']['local_paths']==1
-    from emuflow.timing.boundary_timing_storage import read_boundary_timing_storage
-    from emuflow.timing.logic_segment_timing_storage import read_logic_segment_timing_storage
-    from emuflow.timing.local_path_timing_storage import read_local_path_timing_storage
+    from emuflow_tools.timing.boundary_timing_storage import read_boundary_timing_storage
+    from emuflow_tools.timing.logic_segment_timing_storage import read_logic_segment_timing_storage
+    from emuflow_tools.timing.local_path_timing_storage import read_local_path_timing_storage
     for key,reader in [('boundary_timing',read_boundary_timing_storage),('logic_segment_timing',read_logic_segment_timing_storage),('local_path_timing',read_local_path_timing_storage)]:
         output=Path(result[key]['import']['output'])
         with reader(output) as view:
@@ -197,14 +197,14 @@ def test_native_input_generation_cannot_change_while_the_solver_runs(tmp_path):
 
 def test_host_rejects_changed_published_generation(tmp_path):
     kwargs,contract,*_=case(tmp_path)
-    from emuflow.physical import xilinx_physical_backend as backend
-    original=backend._small
+    from emuflow_tools.physical import xilinx_physical_backend as backend
+    original=backend.read_small_object
     def changed(path,*args):
         value=original(path,*args)
         if Path(path).name=='operation.json':
             report=Path(value['outputs'][0]['path']);report.write_bytes(report.read_bytes()+b'\n')
         return value
-    with mock.patch.object(backend,'_small',side_effect=changed),pytest.raises(ValidationError,match='output generation changed'):
+    with mock.patch.object(backend,'read_small_object',side_effect=changed),pytest.raises(ValidationError,match='output generation changed'):
         run(kwargs,contract)
 
 
@@ -230,7 +230,7 @@ def test_retry_uses_a_new_generation_without_mutating_the_accepted_partition(tmp
 
 
 def test_retired_python_partition_coordinators_are_absent():
-    from emuflow.physical import xilinx_physical_backend as backend
+    from emuflow_tools.physical import xilinx_physical_backend as backend
     assert not hasattr(backend,'_finish_rapidwright_routed_backend')
     assert not hasattr(backend,'_run_rapidwright_routed_backend_tail')
     assert not hasattr(backend,'_physical_clock_periods')

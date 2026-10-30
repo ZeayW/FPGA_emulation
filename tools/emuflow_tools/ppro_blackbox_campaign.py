@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Mapping, Sequence
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from .ppro_blackbox_calibration import EVALUATED_OUTCOMES
 from .ppro_blackbox_runner import cleanup_runtime_artifacts, execute_blackbox_queue
 from .ppro_blackbox_runtime import PProRuntimeConfig, render_ppro_runtime_binding

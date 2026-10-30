@@ -10,14 +10,12 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.platform.architecture import ArchitectureDB
-from emuflow.physical.openparf.xilinx_openparf_name_map_storage import read_xilinx_openparf_atomic_name_map
-from emuflow.common.io import file_sha256
-from emuflow.physical.xilinx_netlist import _IndexedCells
-from emuflow.physical.openparf import xilinx_openparf_atomic as adapter
-from emuflow.physical.openparf.xilinx_openparf_source_storage import (
-    XilinxOpenparfAtomicSourceView,
-)
+from emuflow_tools.platform.architecture import ArchitectureDB
+from emuflow_tools.physical.openparf.xilinx_openparf_name_map_storage import read_xilinx_openparf_atomic_name_map
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.physical.xilinx_netlist import _IndexedCells
+from emuflow_tools.physical.openparf import xilinx_openparf_atomic as adapter
+from emuflow_tools.physical.openparf.xilinx_openparf_source_storage import XilinxOpenparfAtomicSourceView
 from tests.openparf_export_fixture import mapped_facts, export_atomic_facts
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 from tests import openparf_input_reference as reference
@@ -194,8 +192,8 @@ def test_native_store_seal_cannot_be_bypassed_by_a_cached_source_view(tmp_path):
 
 
 def test_retired_input_generators_are_absent_from_installed_modules():
-    from emuflow.physical.openparf import xilinx_openparf_source_storage as sources
-    from emuflow.physical.openparf import xilinx_openparf_name_map_storage as names
+    from emuflow_tools.physical.openparf import xilinx_openparf_source_storage as sources
+    from emuflow_tools.physical.openparf import xilinx_openparf_name_map_storage as names
 
     for name in (
         "_collect_atoms",
@@ -243,7 +241,7 @@ def test_native_source_view_cannot_rebind_after_verified_receipt(tmp_path, chang
 
 def test_native_input_rejects_a_different_typed_mapped_namespace(tmp_path):
     import shutil
-    from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+    from emuflow_tools.physical.xilinx_netlist import open_xilinx_mapped_index
 
     mapped, _, architecture = write_openparf_runtime_fixture(tmp_path)
     with mapped_facts(mapped) as owner:

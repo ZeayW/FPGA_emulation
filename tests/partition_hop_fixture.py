@@ -10,7 +10,7 @@ from tests.partition_balance_fixture import active_partition_fpgas
 from tests.partition_balance_fixture import transported_cut_classes_for_clusters
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
 from tests.native_partition_kernel_driver import initialize
-from emuflow.partition.partition_ir import load_partition_ir
+from emuflow_tools.partition.partition_ir import load_partition_ir
 from emuflow.platform.platform import Platform
 from tests.yosys_reference import import_yosys_json
 

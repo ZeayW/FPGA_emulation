@@ -33,10 +33,10 @@ from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.common.errors import ImportError
 from emuflow.storage.store_publication import bind_store_source, validate_store_destination
 from emuflow.ir.emuir_storage import write_emuir_sqlite
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.ir.ir import EMUIR_SCHEMA, EmuIR
 from emuflow.ir.resources import ResourceVector, classify_primitive_resources
-from emuflow.common.streaming_json import StreamingJSONObjectReader
+from emuflow_tools.common.streaming_json import StreamingJSONObjectReader
 
 
 _CLOCK_NAME = re.compile(r"(^|[_/])(clk|clock)([_/]|$)", re.IGNORECASE)
@@ -566,7 +566,7 @@ def import_yosys_json_indexed(
         from tests.xilinx_normalization_reference import normalize_xilinx_indexed_staging
         if staging_transform is not None and staging_transform is not normalize_xilinx_indexed_staging:
             raise ImportError("hierarchical import requires the current native Xilinx normalization or no transform")
-        from emuflow.frontend.yosys_hierarchy_native import import_hierarchical_emuir
+        from emuflow_tools.frontend.yosys_hierarchy_native import import_hierarchical_emuir
         return import_hierarchical_emuir(
             path, output, top, clocks, source_stream=_source_stream,
             normalization_library=(DEFAULT_XILINX_PRIMITIVE_LIBRARY if staging_transform is not None else None),

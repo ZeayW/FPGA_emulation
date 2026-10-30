@@ -10,11 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from emuflow.physical.rapidwright.rapidwright_provider import (
-    load_rapidwright_provider_manifest,
-    load_rapidwright_route_certificate,
-    validate_rapidwright_provider_manifest,
-)
+from emuflow_tools.physical.rapidwright.rapidwright_provider import load_rapidwright_provider_manifest, load_rapidwright_route_certificate, validate_rapidwright_provider_manifest
 
 
 def _sha256(path: Path) -> str:

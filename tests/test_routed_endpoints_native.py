@@ -11,11 +11,12 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.document_io import read_json
 from emuflow.common.native_tools import native_file_generation
-from emuflow.physical.xilinx_netlist import IndexedXilinxMappedNetlist
-from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
-from emuflow.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
+from emuflow_tools.physical.xilinx_netlist import IndexedXilinxMappedNetlist
+from emuflow_tools.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
 from tests.routed_timing_adapter import build_xilinx_routed_timing, validate_xilinx_routed_timing
 from tests.test_rwroute_native import write_mapped
 from tests import test_xilinx_rwroute as rwroute_fixture
@@ -82,8 +83,8 @@ def test_native_records_manifest_bytes_and_validation_match_independent_producer
             raise AssertionError("Python route metadata population")
     c["route"]["clock_gates"] = NoIteration()
     c["route"]["virtual_io"] = NoIteration()
-    with patch("emuflow.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python mapped cells")), \
-         patch("emuflow.physical.xilinx_physical_handoff._ClusterSequence.__iter__", side_effect=AssertionError("Python sites")), \
+    with patch("emuflow_tools.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python mapped cells")), \
+         patch("emuflow_tools.physical.xilinx_physical_handoff._ClusterSequence.__iter__", side_effect=AssertionError("Python sites")), \
          patch("tests.xilinx_timing_reference._build_payload", side_effect=AssertionError("Python endpoints")):
         report = run(c, actual, sink)
     assert actual.read_bytes() == expected.read_bytes()
@@ -175,7 +176,7 @@ def test_path_producer_keeps_generation_from_before_manifest_read(tmp_path):
 
 def test_consumer_keeps_the_produced_timing_generation(tmp_path):
     from tests.routed_endpoint_adapter import bind_routed_timing_sources
-    from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta
+    from emuflow_tools.timing.xilinx_opensta import run_xilinx_routed_opensta
     c = case(tmp_path);sink = {};output = tmp_path / "native" / "timing.json"
     run(c, output, sink)
     sources=bind_routed_timing_sources(output,sink)
@@ -356,8 +357,8 @@ def test_large_repeated_net_population_uses_no_python_site_or_endpoint_table(tmp
         source_generations={name: list(native_file_generation(path)) for name, path in
                             [("route", c["route_path"]), ("nets", c["nets"]), ("pips", c["pips"])]})
     # This is a repeated binding-kernel input, not a qualified physical route.
-    with patch("emuflow.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cells")), \
-         patch("emuflow.physical.xilinx_physical_handoff._ClusterSequence.__iter__", side_effect=AssertionError("Python sites")):
+    with patch("emuflow_tools.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cells")), \
+         patch("emuflow_tools.physical.xilinx_physical_handoff._ClusterSequence.__iter__", side_effect=AssertionError("Python sites")):
         report = run(c)
     assert report["logical_endpoints"] == 2*count
     assert report["exact_site_bindings"] == 2*count

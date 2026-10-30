@@ -297,7 +297,7 @@ def _run(platform, clusters, assignments):
     sources = [first[1], first[2], *(item for owner in owners for item in owner[3])]
     kind = 3 if len(owners) == 2 else first[0]
     require_native_schema('partition-decision-request-v1')
-    from emuflow.partition.partition_limits import planning_resource_capacities
+    from emuflow_tools.partition.partition_limits import planning_resource_capacities
     from emuflow.ir.resources import RESOURCE_FIELDS
     parts = tuple(fpga.id for fpga in platform.fpgas)
     planning = planning_resource_capacities(platform.fpgas, constraints.get('resource_reservations_by_fpga', {}))

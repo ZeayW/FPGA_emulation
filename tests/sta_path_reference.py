@@ -6,9 +6,9 @@ import math
 import re
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import write_json
+from emuflow.common.json_io import write_json
 from emuflow.ir.ir import EmuIR
-from emuflow.timing.sta import STA_PATH_DATABASE_SCHEMA, STA_PATH_DATABASE_TSV_HEADER
+from emuflow_tools.timing.sta import STA_PATH_DATABASE_SCHEMA, STA_PATH_DATABASE_TSV_HEADER
 
 LIMIT = 4096
 

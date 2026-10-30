@@ -38,7 +38,7 @@ def test_configuration_matches_independent_reference_and_binary_policy(inputs, t
     board.write_text(json.dumps(data))
     config['route_constraints_path'].write_text(json.dumps(routes))
     with patch('emuflow.ir.ir.EmuIR.load', side_effect=AssertionError('Python graph materialization')), patch(
-            'emuflow.partition.partition_ir.load_partition_ir', side_effect=AssertionError('Python circuit count view')):
+            'emuflow_tools.partition.partition_ir.load_partition_ir', side_effect=AssertionError('Python circuit count view')):
         generated = write_request(tmp_path/'native-policy', ir.path, board, **config)
     reference = reference_request(tmp_path/'reference-policy', ir.path, board, **config)
     actual, expected = json.loads(generated.read_text()), json.loads(reference.read_text())
@@ -72,7 +72,7 @@ def test_configuration_rejects_invalid_sources_without_publishing(inputs, tmp_pa
 @pytest.mark.parametrize('damage', [None, 'signoff', 'coverage', 'source', 'observations', 'duplicate'])
 def test_board_link_projection_matches_independent_contract(inputs, tmp_path, damage):
     from emuflow.platform.platform import Platform
-    from emuflow.platform.board_link_timing import build_board_link_timing_model, directed_route_link_delays, validate_board_link_timing
+    from emuflow_tools.platform.board_link_timing import build_board_link_timing_model, directed_route_link_delays, validate_board_link_timing
     from emuflow.common.errors import ValidationError
     ir, board, config = options(inputs, tmp_path)
     platform = Platform.load(board)

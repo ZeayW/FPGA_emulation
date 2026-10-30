@@ -8,14 +8,14 @@ from emuflow.common.errors import ValidationError
 from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable
 from emuflow.storage.store_publication import bind_store_source, require_store_sources_unchanged
 from emuflow.common.tool_runtime import NativeToolProcess
-from emuflow.transport.transport_native import transport_request
+from emuflow_tools.transport.transport_native import transport_request
 
 
 def prepare_configuration_request(directory, platform_path, *, clock_periods,
                            transport_cost_path=None, equivalence_cycles=1,
                            equivalence_seed=20260727):
     """Submit only source references and finite options to the native owner."""
-    from emuflow.transport.board_configuration import prepare_phase6
+    from emuflow_tools.transport.board_configuration import prepare_phase6
     return prepare_phase6(directory, platform_path, clock_periods=clock_periods,
         transport_cost_path=transport_cost_path, equivalence_cycles=equivalence_cycles,
         equivalence_seed=equivalence_seed)
@@ -69,7 +69,7 @@ def run_native_phase6(source, assignment, schedule, platform, platform_path, out
              'small_design_equivalence':equivalence, 'managed_storage':managed_storage,
              'transport_cost':transport_cost}
     if pinned:
-        from emuflow.transport.pin_artifacts_native import _board_sources, _row
+        from emuflow_tools.transport.pin_artifacts_native import _board_sources, _row
         rows = _board_sources(platform, Path(output).absolute().parent, platform_path)
         for role, value, schema in (("schedule",schedule,"physical-input-document-v1"),
                 ("plan",pin_plan,"pin-plan-selector-v1"),

@@ -7,8 +7,8 @@ select algorithms or change artifact schemas.
 | --- | --- |
 | `src/core` | Shared C++ implementation library |
 | `src/cli` | C++ executable entry points |
-| `src/python/emuflow` | Python package and remaining tool/control adapters |
-| `tools/emuflow_tools` | Separately installed research and dataset tools |
+| `src/python/emuflow` | Bounded compile client, runtime contracts, OpenPARF host and small-design oracle |
+| `tools/emuflow_tools` | Separately installed native-stage qualification clients, artifact readers, source preparation and research tools |
 | `tests` | Independent validation, bounded fixtures and regression tests |
 | `engines` | Third-party tool sources |
 
@@ -29,7 +29,7 @@ Python resources remain in `emuflow/data`, with their location resolved through
 `emuflow.common.paths` independently of a consumer module's depth.
 
 Python consumers import the current domain module directly, for example
-`emuflow_tools.stage_clients.partition` or `emuflow.physical.vivado.vivado_physical`.
+`emuflow_tools.stage_clients.partition` or `emuflow_tools.physical.vivado.vivado_physical`.
 Retired flat module paths have no forwarding packages or aliases.
 
 The installed commands remain `emuflow` and `emuflow-native`. Directory

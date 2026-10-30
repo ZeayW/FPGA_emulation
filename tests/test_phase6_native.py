@@ -7,13 +7,13 @@ import subprocess
 
 import pytest
 
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.common.native_tools import native_file_generation
 from emuflow_tools.stage_clients.transport import validate_phase6
 from emuflow_tools.stage_clients.transport_native import run_native_phase6
 from emuflow.transport.runtime import build_virtual_runtime
 from emuflow.transport.split_netlist_storage import SplitNetlistView
-from emuflow.transport.transport_native import transport_request
+from emuflow_tools.transport.transport_native import transport_request
 from tests.native_build import emuflow_native
 from tests.test_split_overlay_native import owners
 

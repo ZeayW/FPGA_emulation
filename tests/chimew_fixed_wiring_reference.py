@@ -2,10 +2,10 @@
 from collections.abc import Mapping
 from typing import Any
 from emuflow.platform.platform import Platform
-from emuflow.transport.virtual_board import INVENTORY_PATH
-from emuflow.common.io import file_sha256
+from emuflow_tools.transport.virtual_board import INVENTORY_PATH
+from emuflow.common.json_io import file_sha256
 from emuflow.common.errors import ValidationError
-from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels, FIXED_WIRING_MAP_SCHEMA, FIXED_WIRING_CLASS
+from emuflow_tools.transport.chimew.chimew_fixed_wiring import FixedWiringChannels, FIXED_WIRING_MAP_SCHEMA, FIXED_WIRING_CLASS
 
 def build_fixed_wiring_chimew_electrical_map(
     platform: Platform, bank_channel_input: Mapping[str, Any], *,
@@ -18,8 +18,8 @@ def build_fixed_wiring_chimew_electrical_map(
     pins. The existing adapter validates channel geometry and grouping against
     its separately sealed bank/channel input.
     """
-    from emuflow.transport.chimew.chimew_bank_channel import validate_chimew_bank_channel_input
-    from emuflow.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER
+    from emuflow_tools.transport.chimew.chimew_bank_channel import validate_chimew_bank_channel_input
+    from emuflow_tools.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_PROVIDER
     from tests.pin_contract_fixture import validate_chimew_electrical_map
 
     problem = validate_chimew_bank_channel_input(bank_channel_input)

@@ -7,7 +7,8 @@ import pytest
 from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
 from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow_tools.flow_validation import _checked_flow_member
 from tests.frontend_input_fixture import input_request, write_timing, write_report
 from tests.native_build import emuflow_native
@@ -195,7 +196,7 @@ def test_native_prepared_input_rejects_unsealed_or_incomplete_publication(tmp_pa
 def test_supplied_json_is_imported_natively_without_staging_copy(tmp_path, compressed, top):
     import gzip
     from types import SimpleNamespace
-    from emuflow.frontend.inputs import prepare_inputs
+    from emuflow_tools.frontend.inputs import prepare_inputs
     source = ROOT / "examples/yosys/counter.json"
     if compressed:
         packed = tmp_path / "source.json.gz"

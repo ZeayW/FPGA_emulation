@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from emuflow.common.errors import EmuFlowError
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.timing.xilinx_preplacement_timing import (
     validate_xilinx_preplacement_timing_db,
     RAPIDWRIGHT_TIMING_DATA_SHA256,

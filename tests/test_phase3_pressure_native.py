@@ -11,14 +11,15 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.ir.emuir_compact import write_compact_emuir
-from emuflow.common.io import read_json, write_json
+from emuflow_tools.document_io import read_json
+from emuflow.common.json_io import write_json
 from emuflow_tools.stage_clients.opensta import OPENSTA_PROVIDER
 from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters, build_partition_assignment)
-from emuflow.partition.partition_ir import load_partition_ir
+from emuflow_tools.partition.partition_ir import load_partition_ir
 from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
 from emuflow.common.native_tools import native_file_generation
-from emuflow.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
+from emuflow_tools.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
 from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner
 from tests import partition_pressure_fixture as reference_fixture
 
@@ -208,7 +209,7 @@ def test_native_model_is_deterministic_without_python_graph_or_protocol(inputs,m
     args,initial,timing=inputs
     a=pressure_kernel_inputs(*args,timing_database_path=timing)
     b=pressure_kernel_inputs(*args,timing_database_path=timing)
-    with patch('emuflow.partition.partition_ir._CompactPartitionInstances.__iter__',side_effect=AssertionError('host graph')):
+    with patch('emuflow_tools.partition.partition_ir._CompactPartitionInstances.__iter__',side_effect=AssertionError('host graph')):
         actual,trace=run(args,a,initial,max_moves)
         repeated,other=run(args,b,initial,max_moves)
     assert dict(actual['cluster_assignment'])==dict(repeated['cluster_assignment'])

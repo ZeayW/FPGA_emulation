@@ -13,7 +13,7 @@ import struct
 import zlib
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from tests.native_column_fixture import read_fixture_columns, _ClusterScratch, _ColumnOwner, _MappedColumn
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import resolve_native_executable
@@ -77,7 +77,7 @@ def compact_source(ir):
     if getattr(ir, 'path', None) is not None and str(ir.path).endswith(('.sqlite', '.sqlite3')):
         return ir
     from emuflow.ir.emuir_compact import write_compact_emuir
-    from emuflow.partition.partition_ir import load_partition_ir
+    from emuflow_tools.partition.partition_ir import load_partition_ir
     scratch = _ClusterScratch(prefix='partition-source-facts-')
     path = Path(scratch.name)/'source.sqlite'
     write_compact_emuir(path, ir.to_dict())
@@ -279,7 +279,7 @@ def build_partition_assignment(ir, platform, clusters_artifact, constraints, clu
         provider, seed, provider_metadata=None, *, _include_semantic_contract=True,
         _stream_semantic_records=False,_defer_derived_records=False):
     from emuflow.partition.combinational_cut import semantic_contract_sha256
-    from emuflow.partition.partition_limits import planning_resource_capacities
+    from emuflow_tools.partition.partition_limits import planning_resource_capacities
     rows=clusters_artifact['clusters'];source=getattr(rows,'_fixture_ir',None) or compact_source(ir)
     if getattr(rows,'implementation_id',None)=='native-primary-clusters-v1' and getattr(rows,'native_artifact',None) is None:
         raise ValidationError('native assignment primary ownership is missing')

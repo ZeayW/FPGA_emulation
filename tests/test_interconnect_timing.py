@@ -2,11 +2,7 @@
 import copy
 import pytest
 
-from emuflow.platform.board_link_timing import (
-    build_board_link_timing_model,
-    directed_route_link_delays,
-    validate_board_link_timing,
-)
+from emuflow_tools.platform.board_link_timing import build_board_link_timing_model, directed_route_link_delays, validate_board_link_timing
 from emuflow.common.errors import ValidationError
 from tests.global_sta_fixture import bind_physical_checks
 from emuflow.platform.platform import Platform

@@ -17,7 +17,7 @@ MODULES = {
 
 
 def produce(kind, output, generation=0):
-    from emuflow.common.io import write_json
+    from emuflow.common.json_io import write_json
     from emuflow.storage.store_publication import bind_store_source
 
     module = importlib.import_module(MODULES[kind])
@@ -173,7 +173,7 @@ def native_handoff(tmp_path, monkeypatch):
 
 def test_native_handoff_rejection_preserves_prior_generation(tmp_path,native_handoff):
     from tests.physical_handoff_native_fixture import build_native_handoff
-    from emuflow.physical import handoff as native
+    from emuflow_tools.physical import handoff as native
     first=build_native_handoff(native_handoff,tmp_path/'first.sqlite')
     store=Path(first['physical_handoff'])
     old=store.read_bytes()
@@ -192,7 +192,7 @@ def test_native_handoff_rejection_preserves_prior_generation(tmp_path,native_han
 
 def test_native_handoff_original_sources_remain_bound_until_request_execution(tmp_path,native_handoff):
     from tests.physical_handoff_native_fixture import build_native_handoff
-    from emuflow.physical import handoff as native
+    from emuflow_tools.physical import handoff as native
     first=build_native_handoff(native_handoff,tmp_path/'first.sqlite')
     store=Path(first['physical_handoff']);old=store.read_bytes()
     write=native._write_request
@@ -220,7 +220,7 @@ def test_handoff_rejects_active_sql_source_wal_before_new_publication(tmp_path,n
 
 @pytest.mark.parametrize('changed', ['mapped', 'certificate', 'output'])
 def test_handoff_source_lease_covers_final_lazy_sink_adoption(tmp_path, native_handoff, changed):
-    from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract
+    from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract
     from tests.physical_handoff_native_fixture import build_native_handoff
     first = build_native_handoff(native_handoff, tmp_path / 'first')
     prior = Path(first['physical_handoff'])
@@ -261,7 +261,7 @@ def test_handoff_rejects_malformed_certificate_lineage(tmp_path, native_handoff,
 
 
 def test_handoff_rejects_unclaimed_native_device_inputs(tmp_path, native_handoff):
-    from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract
+    from emuflow_tools.physical.handoff import materialize_xilinx_openparf_atomic_contract
     extra = tmp_path / 'unexpected.json'
     extra.write_text('{}')
     with pytest.raises(ValidationError, match='source catalog'):
@@ -274,8 +274,8 @@ def test_handoff_rejects_unclaimed_native_device_inputs(tmp_path, native_handoff
 
 def test_independent_native_audit_rejoins_original_device_semantics(tmp_path, native_handoff):
     import sqlite3
-    from emuflow.physical.handoff import audit_physical_handoff
-    from emuflow.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff
+    from emuflow_tools.physical.handoff import audit_physical_handoff
+    from emuflow_tools.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff
     from tests.physical_handoff_native_fixture import build_native_handoff
     report = build_native_handoff(native_handoff, tmp_path / 'owner')
     handoff = Path(report['physical_handoff'])
@@ -291,7 +291,7 @@ def test_independent_native_audit_rejoins_original_device_semantics(tmp_path, na
 def test_cli_requires_typed_physical_owner_and_retires_json_validator_routes(tmp_path, native_handoff):
     from emuflow.flow.cli import _build_parser
     parser = _build_parser()
-    from emuflow.physical.handoff import audit_physical_handoff
+    from emuflow_tools.physical.handoff import audit_physical_handoff
     from tests.physical_handoff_native_fixture import build_native_handoff
     report = build_native_handoff(native_handoff, tmp_path / 'typed-owner')
     checked = audit_physical_handoff(native_handoff.mapped, Path(report['physical_handoff']), native_handoff.architecture)

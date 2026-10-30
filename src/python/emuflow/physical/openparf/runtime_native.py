@@ -8,7 +8,7 @@ import tempfile
 from emuflow.common.errors import ValidationError
 from emuflow.common.native_tools import native_file_generation, resolve_native_executable, require_native_schema
 from emuflow.common.tool_runtime import NativeToolProcess
-from emuflow.physical.handoff import _small
+from emuflow.common.control_document import read_small_object
 
 
 def invoke_runtime(mode, report_path, *, sources=(), python=None, installation=None,
@@ -37,7 +37,7 @@ def invoke_runtime(mode, report_path, *, sources=(), python=None, installation=N
             completed=process.finish()
         if completed.returncode:
             raise ValidationError('native OpenPARF runtime failed: '+completed.stdout)
-        operation=_small(proof,262144)
+        operation=read_small_object(proof,262144)
         outputs=operation.get('outputs',[])
         fields=('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
         expected=1 if mode=='preflight' else 2 if mode=='metrics' else 4 if checkpoint else 3
@@ -51,7 +51,7 @@ def invoke_runtime(mode, report_path, *, sources=(), python=None, installation=N
         for source in rows:
             if list(native_file_generation(source['path']))!=source['generation']:
                 raise ValidationError('OpenPARF runtime input changed')
-        result=_small(report_path)
+        result=read_small_object(report_path)
         if (result.get('schema')!='emuflow.openparf-runtime-report/v1' or result.get('status')!='pass'
                 or result.get('implementation_id')!='native-openparf-runtime-v1' or result.get('mode')!=mode):
             raise ValidationError('native OpenPARF runtime result disagrees')

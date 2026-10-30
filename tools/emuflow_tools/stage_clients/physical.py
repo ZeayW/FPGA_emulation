@@ -6,11 +6,11 @@ from pathlib import Path
 import tempfile
 from typing import Any, Dict, Mapping, Optional, Sequence
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256
+from emuflow.common.json_io import file_sha256
 from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable, native_install_roots
 from emuflow.common.paths import DATA_ROOT, REPOSITORY_ROOT
 from emuflow.common.tool_runtime import NativeToolProcess
-from emuflow.physical.handoff import _small
+from emuflow.common.control_document import read_small_object
 from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
 
 MULTI_FPGA_PHYSICAL_SCHEMA = "emuflow.multi-fpga-physical-flow/v1"
@@ -47,7 +47,7 @@ def _invoke(request,output):
                 environment=dict(os.environ),scratch_parent=root,termination_grace_ms=15000) as process:
             completed=process.finish()
         if completed.returncode:raise ValidationError('native multi-FPGA physical flow failed: '+completed.stdout)
-        operation=_small(proof,1048576);rows=operation.get('outputs',[])
+        operation=read_small_object(proof,1048576);rows=operation.get('outputs',[])
         partial=request['selected_fpgas'] is not None
         names=[('physical-partition-batch.json','physical-partition-batch-v1')] if partial else [
             ('multi-fpga-physical-flow-report.json','physical-flow-report-v1'),('physical-summary.json','physical-summary-v1')]
@@ -62,7 +62,7 @@ def _invoke(request,output):
             for row in request['sources']:
                 if list(native_file_generation(row['path']))!=row['generation']:
                     raise ValidationError('native physical flow source generation changed')
-        unchanged();report=_small(output/names[0][0]);unchanged()
+        unchanged();report=read_small_object(output/names[0][0]);unchanged()
         schema='emuflow.physical-partition-batch/v1' if partial else MULTI_FPGA_PHYSICAL_SCHEMA
         if (report.get('schema')!=schema or report.get('status')!='pass' or
                 report.get('implementation_id')!='native-multi-fpga-physical-v1'):
@@ -76,7 +76,7 @@ def _backend_sources(backend, *, architecture=None, yosys=None, openparf_install
         _source("yosys",engine,"external-tool-executable-v1")]
     _container(sources,"yosys-container",engine,"yosys")
     if backend=='vivado':
-        from emuflow.physical.vivado.vivado_physical import _vivado_script
+        from emuflow_tools.physical.vivado.vivado_physical import _vivado_script
         sources.append(_source('backend.tool',resolve_native_executable('vivado',vivado),'external-tool-executable-v1'))
         for path in sorted(_vivado_script('implement_indexed_partition.tcl').parent.glob('*.tcl')):
             sources.append(_source('backend.script.'+path.name,path,'exact-sha256-text-v1'))
@@ -85,7 +85,7 @@ def _backend_sources(backend, *, architecture=None, yosys=None, openparf_install
     else:
         from emuflow.physical.openparf.openparf import _runtime_location
         from emuflow.physical.openparf import openparf_native_driver
-        from emuflow.physical.rapidwright.xilinx_rwroute import RAPIDWRIGHT_TIMING_CONTRACT
+        from emuflow.timing.rapidwright_contract import RAPIDWRIGHT_TIMING_CONTRACT
         from emuflow_tools.stage_clients.opensta import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT
         required=(architecture,rapidwright_jar,rapidwright_java,rapidwright_device_data,rapidwright_timing_data)
         if any(p is None for p in required):raise ValidationError('RapidWright backend runtime is incomplete')
@@ -230,4 +230,4 @@ def validate_multi_fpga_physical_report(report,physical_summary=None,*,physical_
             result=process.finish()
         if result.returncode:raise ValidationError('native physical report validation failed: '+result.stdout)
         require_store_sources_unchanged(sources)
-        return _small(output)['summary']
+        return read_small_object(output)['summary']

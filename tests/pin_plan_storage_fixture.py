@@ -8,10 +8,11 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json
-from emuflow.transport.pin_planning import PIN_PLAN_SCHEMA
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.document_io import read_json
+from emuflow_tools.transport.pin_planning import PIN_PLAN_SCHEMA
 from emuflow.storage.store_publication import publish_sqlite_store, commit_store_selector, require_store_sources_unchanged, bind_store_source
-from emuflow.transport.pin_plan_storage import PinPlanView
+from emuflow_tools.transport.pin_plan_storage import PinPlanView
 
 PIN_PLAN_STORAGE_SCHEMA = "emuflow.pin-plan-storage/v1"
 PIN_PLAN_APPLICATION_ID = 0x454D5550

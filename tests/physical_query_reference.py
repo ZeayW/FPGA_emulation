@@ -9,7 +9,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
-from emuflow.ir.indexed_physical_ir import IndexedPhysicalIR
+from emuflow_tools.ir.indexed_physical_ir import IndexedPhysicalIR
 from emuflow.validation.equivalence import _lut_definition
 def _vivado_mapped_name(value):
     return value.replace("\\", "\\\\")

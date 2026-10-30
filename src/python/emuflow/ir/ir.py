@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, Mapping, Set
 
 from emuflow.common.errors import ValidationError
 from emuflow.ir.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite
-from emuflow.common.io import read_json
+from emuflow.common.json_io import read_json
 from emuflow.ir.resources import ResourceVector
 
 

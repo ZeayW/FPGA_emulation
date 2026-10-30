@@ -9,19 +9,13 @@ from collections import Counter, defaultdict
 
 import pytest
 
-from emuflow.transport import virtual_board
+from emuflow_tools.transport import virtual_board
 from tests.virtual_binding_fixture import native_binding, binding_text
 from emuflow.platform.default_platform import materialize_research_platform, research_platform_path
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.platform.platform import Platform
-from emuflow.transport.virtual_board import (
-    INVENTORY_PATH,
-    build_virtual_board,
-    validate_virtual_binding,
-    validate_virtual_board,
-    write_wiring_csv,
-)
+from emuflow_tools.transport.virtual_board import INVENTORY_PATH, build_virtual_board, validate_virtual_binding, validate_virtual_board, write_wiring_csv
 
 
 @pytest.fixture

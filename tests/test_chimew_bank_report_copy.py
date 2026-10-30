@@ -11,9 +11,9 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
-from emuflow.transport.chimew.chimew_bank_channel import evaluate_chimew_bank_channel_assignment as assign
-from emuflow.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
-from emuflow.transport.chimew import chimew_bank_channel_report_storage as storage
+from emuflow_tools.transport.chimew.chimew_bank_channel import evaluate_chimew_bank_channel_assignment as assign
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew import chimew_bank_channel_report_storage as storage
 from tests.native_build import emuflow_native
 from tests.test_chimew_bank_native_store import document
 

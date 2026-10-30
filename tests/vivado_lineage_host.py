@@ -10,7 +10,8 @@ def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str,
     """Import tool observations in the shared core; host traffic stays bounded."""
     import tempfile
     import subprocess
-    from emuflow.common.io import read_json, write_json
+    from emuflow_tools.document_io import read_json
+    from emuflow.common.json_io import write_json
     from emuflow.common.native_tools import resolve_native_stage_command
 
     if retain_stage not in inventories:

@@ -4,9 +4,9 @@ import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 from emuflow.flow.benchmark_inputs import BenchmarkRun, BENCHMARK_RUN_SCHEMA
-from emuflow.timing.timing_io import timing_io_sha256
-from emuflow.common.io import write_json
-from emuflow.frontend.frontend_native import run_rtl_frontend
+from emuflow_tools.timing.timing_io import timing_io_sha256
+from emuflow.common.json_io import write_json
+from emuflow_tools.frontend.frontend_native import run_rtl_frontend
 from emuflow.common.errors import ValidationError
 
 BENCHMARK_REPORT_SCHEMA = "emuflow.benchmark-report/v2"

@@ -7,11 +7,11 @@ from types import SimpleNamespace
 from typing import Optional
 _CompileContext=SimpleNamespace
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.common.native_tools import resolve_native_executable, native_file_generation
 from emuflow.platform.platform import Platform
-from emuflow.platform.board_link_timing import validate_board_link_timing
-from emuflow.transport.transport_cost import validate_transport_cost_database
+from emuflow_tools.platform.board_link_timing import validate_board_link_timing
+from emuflow_tools.transport.transport_cost import validate_transport_cost_database
 from emuflow.physical.openparf.openparf import validate_openparf_runtime
 from emuflow_tools.stage_clients.opensta import check_opensta_engine_version
 from emuflow.frontend.policy import VALID_XILINX_MAPPING_STRATEGIES
@@ -138,8 +138,8 @@ def _compile_preflight(ctx: _CompileContext):
             raise EmuFlowError("Chimew requires --physical and the Xilinx mapping with RapidWright or Vivado")
         if ctx.physical_architecture is None:
             raise EmuFlowError("Chimew requires the source-qualified Xilinx ArchitectureDB package geometry")
-        from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
-        from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels
+        from emuflow_tools.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
+        from emuflow_tools.transport.chimew.chimew_fixed_wiring import FixedWiringChannels
         board = FixedWiringChannels(Platform.load(ctx.platform_path))
         parts = {fpga.part for fpga in Platform.load(ctx.platform_path).fpgas}
         if len(parts) != 1:
@@ -278,13 +278,13 @@ def _compile_preflight(ctx: _CompileContext):
     if ctx.physical and ctx.phase6_provider == "baseline":
         prepare_physical_policy_reference(ctx)
     if ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources:
-        from emuflow.frontend.frontend_native import prepare_frontend
+        from emuflow_tools.frontend.frontend_native import prepare_frontend
         prepare_frontend(ctx)
     elif ctx.prepared_frontend is not None or ctx.prepared_timing is not None or ctx.yosys_json is not None:
-        from emuflow.frontend.inputs import prepare_inputs
+        from emuflow_tools.frontend.inputs import prepare_inputs
         prepare_inputs(ctx)
     if ctx.internal_timing_database and ctx.prepared_timing is None:
-        from emuflow.timing.phase2_native import prepare_configuration_request
+        from emuflow_tools.timing.phase2_native import prepare_configuration_request
         from emuflow.common.native_tools import native_file_generation
         ctx.native_phase2_configuration = prepare_configuration_request(
             ctx.output_dir / ".native-phase2-configuration",

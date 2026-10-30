@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import read_json
+from emuflow.common.json_io import read_json
 from emuflow.frontend.policy import VALID_SYNTHESIS_POLICIES, VALID_XILINX_FAMILIES, YOSYS_DEFINE
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 

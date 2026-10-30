@@ -19,7 +19,7 @@ from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import native_file_generation
 from tests.pin_plan_storage_fixture import write_pin_plan_storage
 from tests.chimew_binding_storage_fixture import write_chimew_binding_storage
-from emuflow.transport.transport_storage import DDL
+from emuflow_tools.transport.transport_storage import DDL
 from tests.native_build import emuflow_native
 from tests.test_pin_plan_storage import _plan
 
@@ -48,9 +48,7 @@ def private_store(root, schema="pin-plan-store-v1"):
                 root / "positions.json", _positions()
             ).store_path
         elif schema == "chimew-bank-input-store-v1":
-            from emuflow.transport.chimew.chimew_bank_channel_storage import (
-                write_chimew_bank_channel_storage,
-            )
+            from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
             from tests.test_chimew_bank_channel import ChimewBankChannelTest
 
             case = ChimewBankChannelTest()
@@ -363,9 +361,7 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
             )
             schema = "position-hints-store-v1"
         elif kind == "bank_input":
-            from emuflow.transport.chimew.chimew_bank_channel_storage import (
-                write_chimew_bank_channel_storage,
-            )
+            from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
             from tests.test_chimew_bank_channel import ChimewBankChannelTest
 
             case = ChimewBankChannelTest()
@@ -408,8 +404,8 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
 def test_existing_identical_store_does_not_bypass_source_checks_or_leak_staging(
     tmp_path, kind
 ):
-    from emuflow.transport.pin_plan_storage import copy_pin_plan_storage
-    from emuflow.transport.chimew.chimew_binding_storage import copy_chimew_binding_storage
+    from emuflow_tools.transport.pin_plan_storage import copy_pin_plan_storage
+    from emuflow_tools.transport.chimew.chimew_binding_storage import copy_chimew_binding_storage
 
     source, _temporary = private_store(tmp_path)
     bound = store_publication.bind_store_source(source, "pin-plan-store-v1")
@@ -435,10 +431,7 @@ def test_existing_identical_store_does_not_bypass_source_checks_or_leak_staging(
 def test_indexed_bank_input_republication_streams_without_materializing_or_waiting_on_itself(
     tmp_path,
 ):
-    from emuflow.transport.chimew.chimew_bank_channel_storage import (
-        BankChannelInputView,
-        write_chimew_bank_channel_storage,
-    )
+    from emuflow_tools.transport.chimew.chimew_bank_channel_storage import BankChannelInputView, write_chimew_bank_channel_storage
     from tests.test_chimew_bank_channel import ChimewBankChannelTest
 
     case = ChimewBankChannelTest()

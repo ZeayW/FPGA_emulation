@@ -384,7 +384,7 @@ class PProBlackboxRunnerTest(unittest.TestCase):
                 timeout_seconds=base.timeout_seconds,
                 cleanup_paths=(scratch,),
             )
-            from emuflow.common.io import write_json as real_write_json
+            from emuflow.common.json_io import write_json as real_write_json
 
             calls = 0
 

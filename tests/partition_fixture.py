@@ -33,7 +33,7 @@ def write_fixture_solution(ir, platform_path, path, *, cut_mode="sequential-only
 def run_phase3_fixture(*args, **kwargs):
     import inspect
     from emuflow_tools.stage_clients.partition import run_phase3
-    from emuflow.partition.partition_ir import load_partition_ir
+    from emuflow_tools.partition.partition_ir import load_partition_ir
     bound = inspect.signature(run_phase3).bind(*args, **kwargs)
     bound.apply_defaults()
     options = bound.arguments

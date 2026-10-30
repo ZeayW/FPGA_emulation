@@ -12,13 +12,10 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 import fcntl
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json
+from emuflow.common.json_io import file_sha256
+from emuflow_tools.document_io import read_json
 from emuflow.storage.store_publication import bind_store_source, require_store_sources_unchanged, publish_sqlite_store, commit_store_selector
-from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
-    REPORT_STORAGE_SCHEMA, REPORT_APPLICATION_ID, REPORT_USER_VERSION,
-    BankChannelReportView as _CoreReportView, _AssignmentSequence, _canonical,
-    _normalize_assignment, _logical_sha256, _report_lease, _connect, _string,
-)
+from emuflow_tools.transport.chimew.chimew_bank_channel_report_storage import REPORT_STORAGE_SCHEMA, REPORT_APPLICATION_ID, REPORT_USER_VERSION, BankChannelReportView as _CoreReportView, _AssignmentSequence, _canonical, _normalize_assignment, _logical_sha256, _report_lease, _connect, _string
 
 _SELECTOR_KEYS = {
     "schema",
@@ -62,7 +59,7 @@ def _valid_digest(value: Any) -> bool:
 def _normalize_header(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the bounded selector header without coercing identities."""
 
-    from emuflow.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_REPORT_SCHEMA
+    from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_REPORT_SCHEMA
 
     if not isinstance(value, Mapping) or set(value) != _HEADER_KEYS:
         raise ValidationError("Chimew bank/channel report header has an invalid shape")
@@ -118,7 +115,7 @@ class BankChannelReportView(_CoreReportView):
     def _initialize(
         self, selector_path: Path, *, _verified_store_sha256: str | None
     ) -> None:
-        from emuflow.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_REPORT_SCHEMA
+        from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_REPORT_SCHEMA
 
         self.manifest_path = selector_path.resolve(strict=True)
         selector_source = bind_store_source(
@@ -289,7 +286,7 @@ def _write_locked(
     derive_physical_costs: bool,
     source_bindings,
 ) -> BankChannelReportView:
-    from emuflow.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_REPORT_SCHEMA
+    from emuflow_tools.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_REPORT_SCHEMA
 
     if document.get("schema") != CHIMEW_BANK_CHANNEL_REPORT_SCHEMA:
         raise ValidationError("Chimew bank/channel report schema is invalid")

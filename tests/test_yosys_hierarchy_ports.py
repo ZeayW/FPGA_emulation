@@ -9,7 +9,7 @@ from contextlib import closing
 from pathlib import Path
 
 from emuflow.common.errors import ImportError
-from emuflow.frontend.yosys_hierarchy_native import stage_hierarchy
+from emuflow_tools.frontend.yosys_hierarchy_native import stage_hierarchy
 from unittest.mock import patch
 from tests.native_build import emuflow_native
 
@@ -20,7 +20,7 @@ def expand(value):
     with tempfile.TemporaryDirectory() as directory:
         store = Path(directory)/"hierarchy.sqlite"
         native = str(emuflow_native())
-        with patch("emuflow.frontend.yosys_hierarchy_native.resolve_native_executable",return_value=native), patch("emuflow.frontend.yosys_hierarchy_native.require_native_schema"):
+        with patch("emuflow_tools.frontend.yosys_hierarchy_native.resolve_native_executable",return_value=native), patch("emuflow_tools.frontend.yosys_hierarchy_native.require_native_schema"):
             _,ports,_,_ = stage_hierarchy(Path("<test-stream>"),store,"top",source_stream=io.StringIO(json.dumps(value)))
         with closing(sqlite3.connect(store)) as connection:
             cells = {row[0]:json.loads(row[1]) for row in connection.execute("SELECT id,record_json FROM staging_instances")}
@@ -52,8 +52,8 @@ def fixture(direction, binding):
 class HierarchyPortTest(unittest.TestCase):
     def test_constant_child_outputs_propagate_through_nested_parent_aliases(self):
         from tests.yosys_reference import import_yosys_json_indexed
-        from emuflow.ir.indexed_physical_ir import IndexedPhysicalIR
-        from emuflow.physical.vivado.vivado_source import validate_vivado_source
+        from emuflow_tools.ir.indexed_physical_ir import IndexedPhysicalIR
+        from emuflow_tools.physical.vivado.vivado_source import validate_vivado_source
 
         for constant in ("0", "1", "x", "z"):
             with self.subTest(constant=constant), tempfile.TemporaryDirectory() as directory:

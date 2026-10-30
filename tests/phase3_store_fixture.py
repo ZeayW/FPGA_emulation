@@ -16,7 +16,7 @@ import tempfile
 import zlib
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, write_json
+from emuflow.common.json_io import file_sha256, write_json
 from emuflow.partition import phase3_assignment_index as index
 from emuflow.storage.store_publication import StoreSource, require_store_sources_unchanged
 
@@ -182,7 +182,7 @@ def write_current_assignment_fixture(path, ir, assignment):
 
 def cluster_column_facts(path):
     """Bounded logical column bytes for full catalog publication assertions."""
-    from emuflow.common.io import read_json
+    from emuflow_tools.document_io import read_json
     path = Path(path)
     selector = read_json(path)
     with sqlite3.connect(path.with_name(selector['artifact'])) as db:

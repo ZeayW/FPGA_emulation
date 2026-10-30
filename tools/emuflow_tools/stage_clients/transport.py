@@ -9,19 +9,19 @@ from typing import Any, Dict, Mapping, Optional
 from emuflow.validation.equivalence import simulate_partition_equivalence
 from emuflow.transport.phase6_oracle import _static_exact_equivalence_evidence
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
-from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
+from emuflow_tools.document_io import read_json
+from emuflow_tools.transport.chimew.chimew_binding_storage import read_chimew_binding
 from emuflow.ir.ir import EmuIR
 from emuflow.platform.platform import Platform
-from emuflow.transport.pin_plan_storage import read_pin_plan
+from emuflow_tools.transport.pin_plan_storage import read_pin_plan
 from emuflow.common.native_tools import require_native_schema
-from emuflow.transport.position_hints_storage import read_position_hints
-from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
-from emuflow.transport.transport_cost import predict_transport_resources, validate_transport_cost_database
+from emuflow_tools.transport.position_hints_storage import read_position_hints
+from emuflow_tools.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
+from emuflow_tools.transport.transport_cost import predict_transport_resources, validate_transport_cost_database
 from emuflow.transport.runtime import build_virtual_runtime
 from emuflow.transport.split_netlist_storage import read_compact_emuir_control_metadata, read_split_resource_reservations, validate_split_netlists_sqlite
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.transport.transport_storage import read_lane_map, read_transport, read_virtual_binding
+from emuflow_tools.transport.transport_storage import read_lane_map, read_transport, read_virtual_binding
 
 
 PHASE6_REPORT_SCHEMA = "emuflow.phase6-report/v1"
@@ -51,7 +51,7 @@ def _validate_virtual_board_artifacts(
     board: Mapping[str, Any],
     binding: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    from emuflow.transport.virtual_board import validate_virtual_binding, validate_virtual_board
+    from emuflow_tools.transport.virtual_board import validate_virtual_binding, validate_virtual_board
 
     wiring_validation = validate_virtual_board(platform, board)
     binding_validation = validate_virtual_binding(
@@ -138,7 +138,7 @@ def run_phase6(
     runtime = build_virtual_runtime(schedule, platform, clock_periods)
     virtual_board = None
     if platform.virtual_board_model is not None:
-        from emuflow.transport.virtual_board import build_virtual_board
+        from emuflow_tools.transport.virtual_board import build_virtual_board
         virtual_board = build_virtual_board(platform)
     transport_cost = None
     if transport_cost_path is not None:
@@ -245,7 +245,7 @@ def validate_phase6(
                 if electrical_binding_path is not None
                 else manifest_path.parent / manifest["electrical_binding"]
             )
-            from emuflow.transport.chimew.chimew_phase6 import validate_chimew_phase6_binding
+            from emuflow_tools.transport.chimew.chimew_phase6 import validate_chimew_phase6_binding
 
             validate_chimew_phase6_binding(
                 schedule,
@@ -317,7 +317,7 @@ def validate_phase6(
     if platform.virtual_board_model is not None:
         if virtual_metadata != _virtual_board_artifact_paths(platform):
             raise ValidationError("Phase 6 declared virtual board requires wiring, binding and pin constraints")
-        from emuflow.physical.fixed_io import prepare_fixed_io
+        from emuflow_tools.physical.fixed_io import prepare_fixed_io
         root = manifest_path.parent
         artifacts = {
             "manifest": manifest,

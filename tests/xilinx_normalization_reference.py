@@ -9,7 +9,8 @@ from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
 from emuflow.ir.resources import ResourceVector, classify_primitive_resources
 
 from emuflow.physical.xilinx_primitives import (DEFAULT_XILINX_PRIMITIVE_LIBRARY, XILINX_PRIMITIVE_LIBRARY_SCHEMA, XILINX_ULTRASCALEPLUS_OPEN_PROFILE, load_xilinx_primitive_library, validate_xilinx_primitive_library)

@@ -18,8 +18,8 @@ import pytest
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.native_tools import native_file_generation
-from emuflow.physical.rapidwright.route_stage import run_native_rwroute_stage
-from emuflow.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
+from emuflow_tools.physical.rapidwright.route_stage import run_native_rwroute_stage
+from emuflow_tools.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
 from tests.native_build import emuflow_native
 from tests.physical_handoff_fixture import write_handoff_fixture
 from tests.test_rwroute_native import write_mapped
@@ -113,7 +113,7 @@ out.write_text(json.dumps(v))
 
 
 def run(root,options,contract):
-    with mock.patch('emuflow.physical.rapidwright.xilinx_rwroute.RAPIDWRIGHT_TIMING_CONTRACT',contract):
+    with mock.patch('emuflow.timing.rapidwright_contract.RAPIDWRIGHT_TIMING_CONTRACT',contract):
         return run_native_rwroute_stage(None,root/'route.json',**options)
 
 
@@ -130,7 +130,7 @@ def test_complete_route_owner_exports_routes_and_independently_validates(tmp_pat
     runtime=Path(observation['env']);assert (runtime/'data/parts.db').is_file()
     for kind in ('nets','pips'):
         assert (tmp_path/result['manifest']['payloads'][kind]['path']).is_file()
-    with mock.patch('emuflow.physical.rapidwright.xilinx_rwroute.RAPIDWRIGHT_TIMING_CONTRACT',contract):
+    with mock.patch('emuflow.timing.rapidwright_contract.RAPIDWRIGHT_TIMING_CONTRACT',contract):
         independent=validate_xilinx_route_db(tmp_path/'route.json',rwroute_input_path=Path(result['input']),
             mapped_path=options['mapped_path'],packed_path=options['handoff_path'],placement_path=options['handoff_path'])
     assert independent['route_sha256']==result['route']['route_sha256']

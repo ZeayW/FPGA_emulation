@@ -8,15 +8,12 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, write_json
-from emuflow.physical.openparf.xilinx_openparf_atomic import (build_xilinx_openparf_atomic_source)
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
 from tests.openparf_placement_reference import (materialize_xilinx_openparf_atomic_source, read_xilinx_openparf_atomic_source)
-from emuflow.physical.xilinx_netlist import (
-    emit_xilinx_mapped_index,
-    open_xilinx_mapped_index,
-)
+from emuflow_tools.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
 from tests.openparf_source_fixture import write_xilinx_openparf_atomic_source_storage
-from emuflow.physical.openparf.xilinx_openparf_source_storage import OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
+from emuflow_tools.physical.openparf.xilinx_openparf_source_storage import OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
 from tests.yosys_reference import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 

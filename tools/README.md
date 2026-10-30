@@ -50,3 +50,10 @@ alternate production stage controllers.
 replay used by qualification scripts and component tests. They are excluded from
 the production runtime and expose no replacement stage command tree. The retained
 small-design behavioral oracle remains in the runtime with explicit size bounds.
+
+Domain packages under `frontend`, `partition`, `physical`, `timing` and `transport`
+contain independent native-stage clients, artifact readers and qualification
+helpers. The complete native flow uses its shared C++ owners directly. Runtime
+JSON I/O reads ordinary control objects; `document_io.read_json` is the explicit
+tool API for opening typed artifact selectors. Both use the runtime's single
+atomic writer and file-identity implementation.

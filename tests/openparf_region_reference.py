@@ -3,9 +3,9 @@ from collections import Counter
 import math
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple, Dict
-from emuflow.platform.architecture import ArchitectureDB
+from emuflow_tools.platform.architecture import ArchitectureDB
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 _ACTIVE_REGION_RESOURCE_HEADROOM=1.5
 
 def _cluster_resource(cluster: Mapping[str, Any]) -> str:

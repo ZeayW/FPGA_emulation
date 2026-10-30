@@ -12,19 +12,17 @@ import copy
 import pytest
 
 from tests.chimew_fixed_wiring_reference import build_fixed_wiring_chimew_electrical_map
-from emuflow.transport.chimew.chimew_fixed_wiring import (
-    FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels,
-)
-from emuflow.transport.chimew.chimew_phase6 import run_chimew_phase6_adapter, validate_chimew_adapter_generation, chimew_adapter_report_generation_path
+from emuflow_tools.transport.chimew.chimew_fixed_wiring import FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels
+from emuflow_tools.transport.chimew.chimew_phase6 import run_chimew_phase6_adapter, validate_chimew_adapter_generation, chimew_adapter_report_generation_path
 from tests.pin_contract_fixture import validate_chimew_electrical_map, validate_chimew_phase6_binding
-from emuflow.transport.chimew.chimew_bank_channel import validate_chimew_bank_channel_input
-from emuflow.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
-from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
+from emuflow_tools.transport.chimew.chimew_bank_channel import validate_chimew_bank_channel_input
+from emuflow_tools.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
+from emuflow_tools.transport.chimew.chimew_binding_storage import read_chimew_binding
 from tests.chimew_binding_storage_fixture import write_chimew_binding_storage
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import file_sha256, write_json
-from emuflow.transport.pin_plan_storage import read_pin_plan
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.transport.pin_plan_storage import read_pin_plan
 from emuflow.platform.platform import Platform
 from tests.native_build import chimew_bank_channel_assigner
 
@@ -148,9 +146,7 @@ def test_report_committed_adapter_accepts_fixed_differential_map(fixed_case, tmp
 
 
 def test_selected_channels_reach_the_existing_phase7_lvds_contract(fixed_case, tmp_path):
-    from emuflow.transport.virtual_board import (
-        build_virtual_board,
-    )
+    from emuflow_tools.transport.virtual_board import build_virtual_board
     platform, schedule, problem, electrical = fixed_case
     result = build_chimew_phase6_pin_plan(schedule, platform, problem, electrical,
         executable=str(chimew_bank_channel_assigner()))

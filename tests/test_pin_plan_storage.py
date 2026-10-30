@@ -7,9 +7,9 @@ import pytest
 
 import tests.pin_plan_storage_fixture as pin_storage
 from emuflow.common.errors import ValidationError
-from emuflow.transport.pin_plan_storage import PIN_PLAN_STORAGE_SCHEMA, PinPlanEntrySequence, PinPlanView, read_pin_plan
+from emuflow_tools.transport.pin_plan_storage import PIN_PLAN_STORAGE_SCHEMA, PinPlanEntrySequence, PinPlanView, read_pin_plan
 from tests.pin_plan_storage_fixture import write_pin_plan_storage
-from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA
+from emuflow_tools.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA
 
 
 def _plan():

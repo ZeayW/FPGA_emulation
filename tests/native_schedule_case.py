@@ -13,7 +13,7 @@ import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.common.native_tools import native_file_generation
 from emuflow.platform.platform import RatioDelayModel
-from emuflow.routing.system_route_storage import read_system_routes, _demand_from_route
+from emuflow_tools.routing.system_route_storage import read_system_routes, _demand_from_route
 from tests.native_route_seal_fixture import write_route_store_fixture
 from emuflow.scheduling.tdm import _write_native_schedule_board_request
 from tests.schedule_reference import build_tdm_schedule

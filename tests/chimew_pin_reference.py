@@ -8,9 +8,9 @@ from collections.abc import Mapping
 from typing import Any, Dict, Tuple
 from emuflow.common.errors import ValidationError
 from emuflow.platform.platform import Platform
-from emuflow.transport.chimew.chimew_bank_channel import validate_chimew_bank_channel_input, evaluate_chimew_bank_channel_assignment
-from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels, FIXED_WIRING_CLASS, FIXED_WIRING_MAP_SCHEMA, FIXED_WIRING_BINDING_SCHEMA, electrical_channel_pin_keys
-from emuflow.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_SCHEMA_V1, CHIMEW_ELECTRICAL_MAP_SCHEMA, CHIMEW_ELECTRICAL_MAP_PROVIDER, CHIMEW_PHASE6_BINDING_SCHEMA, CHIMEW_PHASE6_BINDING_PROVIDER
+from emuflow_tools.transport.chimew.chimew_bank_channel import validate_chimew_bank_channel_input, evaluate_chimew_bank_channel_assignment
+from emuflow_tools.transport.chimew.chimew_fixed_wiring import FixedWiringChannels, FIXED_WIRING_CLASS, FIXED_WIRING_MAP_SCHEMA, FIXED_WIRING_BINDING_SCHEMA, electrical_channel_pin_keys
+from emuflow_tools.transport.chimew.chimew_phase6 import CHIMEW_ELECTRICAL_MAP_SCHEMA_V1, CHIMEW_ELECTRICAL_MAP_SCHEMA, CHIMEW_ELECTRICAL_MAP_PROVIDER, CHIMEW_PHASE6_BINDING_SCHEMA, CHIMEW_PHASE6_BINDING_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import canonical_tdm_schedule_sha256
 from tests.pin_planning_reference import _assignment_metrics, _baseline_assignment, validate_pin_plan, SIGNAL_POSITION_HINTS_SCHEMA, PIN_PLAN_SCHEMA, CHIMEW_PIN_PLAN_PROVIDER, CHIMEW_PHYSICAL_POSITION_PROVIDER
 _IOSTANDARD_VOLTAGES = {"LVCMOS12":1.2,"LVCMOS15":1.5,"LVCMOS18":1.8,"LVCMOS25":2.5,"LVCMOS33":3.3}

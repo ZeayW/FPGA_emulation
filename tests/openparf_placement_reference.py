@@ -36,16 +36,17 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 
-from emuflow.platform.architecture import ArchitectureDB
+from emuflow_tools.platform.architecture import ArchitectureDB
 
 from emuflow.common.errors import ImportError, ValidationError
 
 from emuflow.storage.store_publication import bind_store_source, publish_sqlite_store, require_store_sources_unchanged, validate_store_destination
 
-from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
 
 
-from emuflow.physical.xilinx_native_device_constraints import load_xilinx_native_device_constraints, require_xilinx_native_constraint_capability
+from emuflow_tools.physical.xilinx_native_device_constraints import load_xilinx_native_device_constraints, require_xilinx_native_constraint_capability
 
 from tests.xilinx_packing_reference import DUAL_OUTPUT_LUT_TYPE
 
@@ -55,9 +56,9 @@ from tests.xilinx_packing_reference import LUT_TYPES
 
 from tests.xilinx_macro_reference import build_xilinx_physical_macro_contract
 
-from emuflow.physical.openparf.xilinx_openparf_source_storage import OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA, materialize_xilinx_openparf_atomic_source, read_xilinx_openparf_atomic_source
+from emuflow_tools.physical.openparf.xilinx_openparf_source_storage import OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA, materialize_xilinx_openparf_atomic_source, read_xilinx_openparf_atomic_source
 
-from emuflow.physical.openparf.xilinx_openparf_name_map_storage import OPENPARF_ATOMIC_NAME_MAP_SCHEMA, OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA, XilinxOpenparfAtomicNameMapView, read_xilinx_openparf_atomic_name_map
+from emuflow_tools.physical.openparf.xilinx_openparf_name_map_storage import OPENPARF_ATOMIC_NAME_MAP_SCHEMA, OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA, XilinxOpenparfAtomicNameMapView, read_xilinx_openparf_atomic_name_map
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
 
@@ -2750,4 +2751,4 @@ def validate_xilinx_openparf_atomic_placement(
             certificate_builder.close()
         placement_index.close()
 
-from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source, export_xilinx_openparf_atomic
+from emuflow_tools.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source, export_xilinx_openparf_atomic

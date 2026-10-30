@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json
+from emuflow_tools.document_io import read_json
 from emuflow.platform.platform import Platform
 from emuflow.transport.bank_allocation import apply_bank_domain_ratios
 from emuflow.routing.routing import ArcKey, _arc_key, build_directed_graph, normalize_route_constraints, route_link_delay_ns, route_link_delay_coefficients_ns
 from tests.routing_validation_reference import assignment_has_static_exact_contract, estimate_tdm_ratio, validate_system_routes
-from emuflow.routing.routing_candidates import ROUTE_CANDIDATE_GENERATORS
+from emuflow_tools.routing.routing_candidates import ROUTE_CANDIDATE_GENERATORS
 
 
 STA_PATHS_SCHEMA = "emuflow.sta-paths/v1"

@@ -10,7 +10,7 @@ import pytest
 from emuflow.ir.ir import EmuIR
 from tests.yosys_reference import import_yosys_json_indexed
 from tests.xilinx_normalization_reference import normalize_xilinx_mapped_json, normalize_xilinx_indexed_staging
-from emuflow.frontend import yosys_hierarchy_native as host
+from emuflow_tools.frontend import yosys_hierarchy_native as host
 from tests.native_build import emuflow_native
 from tests.yosys_hierarchy_reference import _stream_yosys_hierarchy_to_staging,_expand_staged_yosys_hierarchy
 from tests.test_xilinx_normalization_native import source as xilinx_source

@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any, DefaultDict, Dict, Iterable, Mapping
 
 from emuflow.common.errors import ValidationError
-from emuflow.common.io import read_json, write_json
-from emuflow.physical.rapidwright.xilinx_rwroute import RAPIDWRIGHT_TIMING_DATA_REVISION, RAPIDWRIGHT_TIMING_DATA_SHA256
+from emuflow.common.json_io import read_json, write_json
+from emuflow.timing.rapidwright_contract import RAPIDWRIGHT_TIMING_DATA_REVISION, RAPIDWRIGHT_TIMING_DATA_SHA256
 
 
 XILINX_PREPLACEMENT_TIMING_SCHEMA = (

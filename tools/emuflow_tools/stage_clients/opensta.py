@@ -15,13 +15,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, DefaultDict, Dict, Iterable, Mapping, Optional, Sequence
 
-from emuflow.timing.timing_io import timing_io_sha256
+from emuflow_tools.timing.timing_io import timing_io_sha256
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.common.json_io import file_sha256, write_json
+from emuflow_tools.document_io import read_json
 from emuflow.ir.ir import EmuIR
 from emuflow.common.native_tools import resolve_native_executable
 from emuflow.common.process_output import run_with_bounded_output
-from emuflow.timing.sta import import_sta_path_database_tsv_streaming, validate_sta_path_database_path_value
+from emuflow_tools.timing.sta import import_sta_path_database_tsv_streaming, validate_sta_path_database_path_value
 from emuflow.timing.xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA, validate_xilinx_preplacement_timing_db
 
 
@@ -990,7 +991,7 @@ def _classify_indexed_through_net_timing_endpoints(
 ) -> Dict[str, Dict[str, Any]]:
     """Classify compact EmuIR using integer connectivity, not Python records."""
 
-    from emuflow.timing.indexed_timing import _scalar_pin
+    from emuflow_tools.timing.indexed_timing import _scalar_pin
 
     requested: Dict[int, str] = {}
     for net in through_nets:
@@ -1276,7 +1277,7 @@ def _run_opensta_path_database(
         # OpenSTA's intentionally small Verilog reader does not accept net
         # declaration keywords on ports, attributes, or instance parameters.
         # Those constructs do not affect static timing connectivity.
-        from emuflow.timing.opensta_export_native import export_opensta_inputs
+        from emuflow_tools.timing.opensta_export_native import export_opensta_inputs
         input_export = export_opensta_inputs(ir, verilog=verilog_path, net_map=net_map_path,
                                             timing_cell_types=instance_cell_types)
         liberty_path.write_text(
@@ -1380,7 +1381,7 @@ def _run_opensta_path_database(
     covered_through_nets = []
     through_coverage: Dict[str, Any] | None = None
     if through_net_ids:
-        from emuflow.timing.sta import _sta_path_payload, _open_sqlite_read_only
+        from emuflow_tools.timing.sta import _sta_path_payload, _open_sqlite_read_only
         payload, _digest, _count, _format = _sta_path_payload(output_path, database)
         path_nets = set()
         connection = _open_sqlite_read_only(payload)
@@ -1513,7 +1514,7 @@ def run_opensta_path_database(
     """Use compact streaming input for production Xilinx timing extraction."""
     from emuflow.ir.emuir_storage import is_emuir_sqlite
     from emuflow.ir.emuir_compact import is_compact_emuir
-    from emuflow.timing.indexed_timing import IndexedTimingView
+    from emuflow_tools.timing.indexed_timing import IndexedTimingView
     if not is_emuir_sqlite(ir_path) or not is_compact_emuir(ir_path):
         raise ValidationError("OpenSTA requires compact EmuIR v2 and indexed streaming input")
     if (architecture_timing_db_path is not None and
